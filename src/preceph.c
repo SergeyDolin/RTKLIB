@@ -70,6 +70,26 @@ static int code2sys(char code)
     if (code=='L') return SYS_LEO; /* SP3-d */
     return SYS_NONE;
 }
+/*convert observation code CHAR to NUM*/
+int codeconv(char *obscode)
+{
+    int i;
+    
+    int codeL[] = {CODE_L1C,CODE_L1P,CODE_L1W,CODE_L1Y,CODE_L1M,CODE_L1N,CODE_L1S,CODE_L1L,CODE_L1E,CODE_L1A
+    ,CODE_L1B,CODE_L1X,CODE_L1Z,CODE_L2C,CODE_L2D,CODE_L2S,CODE_L2L,CODE_L2X,CODE_L2P,CODE_L2W,CODE_L2Y,CODE_L2M
+    ,CODE_L2N,CODE_L5I,CODE_L5Q,CODE_L5X,CODE_L7I,CODE_L7Q,CODE_L7X,CODE_L6A,CODE_L6B,CODE_L6C,CODE_L6X,CODE_L6Z
+    ,CODE_L6S,CODE_L6L,CODE_L8I,CODE_L8Q,CODE_L8X,CODE_L2I,CODE_L2Q,CODE_L6I,CODE_L6Q,CODE_L3I,CODE_L3Q,CODE_L3X
+    ,CODE_L1I,CODE_L1Q,CODE_L5A,CODE_L5B,CODE_L5C,CODE_L9A,CODE_L9B,CODE_L9C,CODE_L9X,CODE_L1D,CODE_L5D,CODE_L5P
+    ,CODE_L5Z,CODE_L6E,CODE_L7D,CODE_L7P,CODE_L7Z,CODE_L8D,CODE_L8P,CODE_L4A,CODE_L4B,CODE_L4X};
+    char *codeC[] = {"C1C","C1P","C1W","C1Y","C1M","C1N","C1S","C1L","C1E","C1A","C1B","C1X","C1Z","C2C","C2D"
+    ,"C2S","C2L","C2X","C2P","C2W","C2Y","C2M","C2N","C5I","C5Q","C5X","C7I","C7Q","C7X","C6A","C6B","C6C","C6X","C6Z","C6S"
+    ,"C6L","C8I","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q","C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B"
+    ,"C9C","C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z","C8D","C8P","C4A","C4B","C4X"};
+      
+    for (i = 0; i < 68; i++) if(!strcmp(codeC[i], obscode)) return codeL[i];
+
+    return 0;
+}
 /* read SP3 header -----------------------------------------------------------*/
 static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
                     double *bfact, char *tsys)
@@ -345,6 +365,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 {
     FILE *fp,*fpd;
     double cbias;
+    char station[32];
      /*
      str1 -> BIAS, str2 -> SVN, str3 -> PRN, str4 -> OBS1, 
      str5 -> OBS2, str6 -> BIAS_START, str7 -> BIAS_END, 
@@ -419,26 +440,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
     return 1;
 }
 
-/*convert observation code CHAR to NUM*/
-int codeconv(char *obscode)
-{
-    int i;
-    
-    int codeL[] = {CODE_L1C,CODE_L1P,CODE_L1W,CODE_L1Y,CODE_L1M,CODE_L1N,CODE_L1S,CODE_L1L,CODE_L1E,CODE_L1A
-    ,CODE_L1B,CODE_L1X,CODE_L1Z,CODE_L2C,CODE_L2D,CODE_L2S,CODE_L2L,CODE_L2X,CODE_L2P,CODE_L2W,CODE_L2Y,CODE_L2M
-    ,CODE_L2N,CODE_L5I,CODE_L5Q,CODE_L5X,CODE_L7I,CODE_L7Q,CODE_L7X,CODE_L6A,CODE_L6B,CODE_L6C,CODE_L6X,CODE_L6Z
-    ,CODE_L6S,CODE_L6L,CODE_L8I,CODE_L8Q,CODE_L8X,CODE_L2I,CODE_L2Q,CODE_L6I,CODE_L6Q,CODE_L3I,CODE_L3Q,CODE_L3X
-    ,CODE_L1I,CODE_L1Q,CODE_L5A,CODE_L5B,CODE_L5C,CODE_L9A,CODE_L9B,CODE_L9C,CODE_L9X,CODE_L1D,CODE_L5D,CODE_L5P
-    ,CODE_L5Z,CODE_L6E,CODE_L7D,CODE_L7P,CODE_L7Z,CODE_L8D,CODE_L8P,CODE_L4A,CODE_L4B,CODE_L4X};
-    char *codeC[] = {"C1C","C1P","C1W","C1Y","C1M","C1N","C1S","C1L","C1E","C1A","C1B","C1X","C1Z","C2C","C2D"
-    ,"C2S","C2L","C2X","C2P","C2W","C2Y","C2M","C2N","C5I","C5Q","C5X","C7I","C7Q","C7X","C6A","C6B","C6C","C6X","C6Z","C6S"
-    ,"C6L","C8I","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q","C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B"
-    ,"C9C","C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z","C8D","C8P","C4A","C4B","C4X"};
-      
-    for (i = 0; i < 68; i++) if(!strcmp(codeC[i], obscode)) return codeL[i];
 
-    return 0;
-}
 
 /* read DCB parameters ---------------------------------------------------------
 * read differential code bias (DCB) parameters
@@ -471,7 +473,7 @@ extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
         readdcbf(efiles[i],nav,sta);
     }
     for (i=0;i<MAXEXFILE;i++) free(efiles[i]);
-    dcbf = 1;
+    
     return 1;
 }
 /* polynomial interpolation by Neville's algorithm ---------------------------*/

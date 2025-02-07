@@ -56,10 +56,6 @@ extern "C" {
 #endif
 
 /* constants -----------------------------------------------------------------*/
-#define MAXERRDAT 200
-int dcbf;
-char *station[32];
-
 #define VER_RTKLIB  "2.4.3"             /* library version */
 
 #define PATCH_LEVEL "b34"               /* patch level */
