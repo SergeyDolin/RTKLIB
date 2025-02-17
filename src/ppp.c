@@ -394,7 +394,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     
     if (sys==SYS_GPS) 
     {
-        if (nav->cbias[obs->sat-1][CODE_L1C-1][CODE_L1W-1] == 0.0)
+        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
             if (codes[0]==CODE_L1C)
             {   
@@ -411,39 +411,64 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         {
             if (codes[0]==CODE_L1C)
             {   
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C-1][CODE_L1W-1];   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];   
             }
             if (codes[1]==CODE_L2W)
             {
-                P[1]-=nav->cbias[obs->sat-1][CODE_L2W-1][CODE_L2W-1];
+                P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
             }
         }
-        
-        
     }
     if (sys==SYS_GLO)
     {
-        if (codes[0]==CODE_L1C)
+        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P] == 0.0)
         {
-            P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1P-1];
+            if (codes[0]==CODE_L1C)
+            {
+                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1P-1];
+            }
+            if (codes[1]==CODE_L2P)
+            {
+                P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L2C-1]-nav->ssr[obs->sat-1].cbias[CODE_L2P-1];
+            }
         }
-        if (codes[1]==CODE_L2P)
+        else
         {
-            P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L2C-1]-nav->ssr[obs->sat-1].cbias[CODE_L2P-1];
+            if (codes[0]==CODE_L1C)
+            {   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P];   
+            }
+            if (codes[1]==CODE_L2P)
+            {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2P];
+            }
         }
     }
     if (sys == SYS_GAL)
     {
-
-        if (codes[0]==CODE_L1X)
+        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
-            P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1X-1];
-            L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+            if (codes[0]==CODE_L1X)
+            {
+                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1X-1];
+                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+            }
+            if (codes[1]==CODE_L7X)
+            {
+                P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L7Q-1]-nav->ssr[obs->sat-1].cbias[CODE_L7X-1];
+                L[1]+=nav->ssr[obs->sat-1].pbias[CODE_L7Q-1];
+            }
         }
-        if (codes[1]==CODE_L7X)
+        else
         {
-            P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L7Q-1]-nav->ssr[obs->sat-1].cbias[CODE_L7X-1];
-            L[1]+=nav->ssr[obs->sat-1].pbias[CODE_L7Q-1];
+            if (codes[0]==CODE_L1X)
+            {   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1X];   
+            }
+            if (codes[1]==CODE_L7X)
+            {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L7Q][CODE_L7X];
+            }
         }
     }
     

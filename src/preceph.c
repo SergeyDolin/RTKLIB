@@ -363,9 +363,8 @@ extern int readsap(const char *file, gtime_t time, nav_t *nav)
 /* read DCB parameters file --------------------------------------------------*/
 static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 {
-    FILE *fp,*fpd;
+    FILE *fp;
     double cbias;
-    char station[32];
      /*
      str1 -> BIAS, str2 -> SVN, str3 -> PRN, str4 -> OBS1, 
      str5 -> OBS2, str6 -> BIAS_START, str7 -> BIAS_END, 
@@ -373,7 +372,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
      */
     char buff[2048],str1[32]="",str2[32]="",str3[32]="";
     char str4[32],str5[32]="",str6[32]="",str7[32],str8[32]="";
-    char str9[32]="",str10[32]="",str11[32]="",target_code1[4]="",target_code2[4]="",target_sat[4]="",target_rcv[32]="";    
+    char str9[32]="",str10[32]="",str11[32]="",str12[32]="",target_code1[4]="",target_code2[4]="";    
     int sat,start=0;
 
     
@@ -390,52 +389,29 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
     while (fgets(buff,sizeof(buff),fp)) {
         if (strstr(buff, "*BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ BIAS_END______ UNIT __ESTIMATED_VALUE____ _STD_DEV___")) start=1;
         if (strstr(buff,"POINTS")) start=0;
-        if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10)<0) continue;
-        /*trace(3,"%s %s %s %3s %s %s %s %s %s %s \n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10);*/
+        if (strstr(buff,"DSB  G    G   ABMF")) start=3;
+        if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12)<0) continue;
+        trace(3,"%s %s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12);
+        if(start == 3) {
+            fclose(fp);
+            return 1;
+        }
         if (start == 2)
-        {
+        {   
             strcpy(target_code1, str4);
             strcpy(target_code2, str5);
-            strcpy(target_sat, str3);
             if(!strcmp(target_code1, str4) && !strcmp(target_code2, str5))
             {
                 cbias = atof(str9); /*DCB*/
-                sat=satid2no(target_sat);
-                nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=cbias*1E-9*CLIGHT;
+                sat=satid2no(str3);
+                nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=(cbias*1E-9*CLIGHT);
             }   
+            trace(3, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
         }
         start=2;
     }
     
     fclose(fp);
-
-    if (!(fpd=fopen(file,"r"))) {
-        trace(0,"dcb parameters file open error: %s\n",file);
-        return 0;
-    }
-
-    while (fgets(buff,sizeof(buff),fpd)) {
-        if (strstr(buff, "POINTS")) start=1;
-        if (strstr(buff,"-BIAS/SOLUTION ")) start=0;
-        if (!start||sscanf(buff,"%s %s %s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11)<0)
-        /*trace(3,"%s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11);*/
-        if (start == 2){
-            if (!strcmp(station,str4))
-            {
-                strcpy(target_code1, str5);
-                strcpy(target_code2, str6);
-                strcpy(target_rcv, str4);
-                if(!strcmp(target_code1, str5) && !strcmp(target_code2, str6))
-                {
-                    cbias = atof(str10); /*DCB*/
-                    nav->rbias[(int)station][codeconv(target_code1)][codeconv(target_code2)] = cbias*1E-9*CLIGHT;
-                }
-            }
-        }
-        if (start == 1) start = 2;
-        
-    }
-    fclose(fpd);
     
     return 1;
 }
