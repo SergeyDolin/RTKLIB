@@ -406,6 +406,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                 P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
                 L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
             }
+            if (codes[2]==CODE_L5Q)
+            {
+                P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
+                L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
+            }
         }
         else
         {
@@ -416,6 +421,10 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             if (codes[1]==CODE_L2W)
             {
                 P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
+            }
+            if (codes[2]==CODE_L5Q)
+            {
+                P[2]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
             }
         }
     }
@@ -491,7 +500,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     if (freq[0]==0.0||freq[2]==0.0) return;
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[2]));
     C2=-SQR(freq[2])/(SQR(freq[0])-SQR(freq[2]));
-    
+   
     if (L[0]!=0.0&&L[2]!=0.0) *Lc=C1*L[0]+C2*L[2];
     if (P[0]!=0.0&&P[2]!=0.0) *Pc=C1*P[0]+C2*P[2];
     

@@ -583,7 +583,7 @@ typedef struct {
     double rbias_DCB; 
 } rcv_t;
 
-rcv_t rbias[50];
+/* rcv_t rbias[50]; */
 
 typedef struct {        /* almanac type */
     int sat;            /* satellite number */
