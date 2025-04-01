@@ -3,6 +3,7 @@
 *.obs
 *.ini
 *.local
+*.pos
 Release
 Release_Build
 Debug

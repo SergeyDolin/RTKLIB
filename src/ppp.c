@@ -390,7 +390,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         P[i]=obs->P[i]-dants[i]-dantr[i];
         codes[i] = obs->code[i];
     }
-    
+
     
     if (sys==SYS_GPS) 
     {
@@ -488,12 +488,13 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 
     /* iono-free LC */
     *Lc=*Pc=0.0;
-    if (freq[0]==0.0||freq[1]==0.0) return;
-    C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[1]));
-    C2=-SQR(freq[1])/(SQR(freq[0])-SQR(freq[1]));
+    if (freq[0]==0.0||freq[2]==0.0) return;
+    C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[2]));
+    C2=-SQR(freq[2])/(SQR(freq[0])-SQR(freq[2]));
     
-    if (L[0]!=0.0&&L[1]!=0.0) *Lc=C1*L[0]+C2*L[1];
-    if (P[0]!=0.0&&P[1]!=0.0) *Pc=C1*P[0]+C2*P[1];
+    if (L[0]!=0.0&&L[2]!=0.0) *Lc=C1*L[0]+C2*L[2];
+    if (P[0]!=0.0&&P[2]!=0.0) *Pc=C1*P[0]+C2*P[2];
+    
     free(codes);
 }
 /* detect cycle slip by LLI --------------------------------------------------*/
