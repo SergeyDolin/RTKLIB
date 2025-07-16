@@ -320,19 +320,43 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     return 1;
 }
 /* measurement error variance ------------------------------------------------*/
-static double varerr(int sat, int sys, double el, int idx, int type,
-                     const prcopt_t *opt)
-{
-    double fact=1.0,sinel=sin(el);
-    
-    if (type==1) fact*=opt->eratio[idx==0?0:1];
-    fact*=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
-    
-    if (sys==SYS_GPS||sys==SYS_QZS) {
-        if (idx==2) fact*=EFACT_GPS_L5; /* GPS/QZS L5 error factor */
+static double varerr(int sat, int sys, double el, double snr_rover,
+                     int f, const prcopt_t *opt) {
+    double a,b;
+    double fact=1;
+    double sinel=sin(el), var;
+    int frq, code;
+
+    frq=f/2; code=f%2; /* phase = 0, code = 1 */
+    /* increase variance for pseudoranges */
+    if (code) fact=opt->eratio[frq];
+    if (fact<=0.0) fact=opt->eratio[0];
+    /* adjust variances for constellation */
+    switch(sys) {
+        case SYS_GPS: fact*=EFACT_GPS;break;
+        case SYS_GLO: fact*=EFACT_GLO;break;
+        case SYS_GAL: fact*=EFACT_GAL;break;
+        case SYS_SBS: fact*=EFACT_SBS;break;
+        case SYS_QZS: fact*=EFACT_QZS;break;
+        case SYS_CMP: fact*=EFACT_CMP;break;
+        case SYS_IRN: fact*=EFACT_IRN;break;
+        default:      fact*=EFACT_GPS;break;
     }
-    if (opt->ionoopt==IONOOPT_IFLC) fact*=3.0;
-    return SQR(fact*opt->err[1])+SQR(fact*opt->err[2]/sinel);
+
+    if (sys==SYS_GPS||sys==SYS_QZS) {
+        if (code==1) {
+            fact*=2;
+        }
+    }
+    
+    a=fact*opt->err[1];
+    b=fact*opt->err[2];
+
+    var=fact * (SQR(a) + SQR(b / sinel));
+
+    var*=(opt->ionoopt==IONOOPT_IFLC)?SQR(3.0):1.0;
+
+    return var;
 }
 /* initialize state and covariance -------------------------------------------*/
 static void initx(rtk_t *rtk, double xi, double var, int i)
