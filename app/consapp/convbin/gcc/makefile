@@ -11,7 +11,7 @@ OPTIONS= -DTRACE -DENAGLO -DENAQZS -DENAGAL -DENACMP -DENAIRN -DNFREQ=5 -DNEXOBS
 
 CFLAGS = -O3 -ansi -pedantic -Wall -Wno-unused-but-set-variable $(INCLUDE) $(OPTIONS) -g
 
-LDLIBS = -lm -lrt
+LDLIBS = -lm
 
 all  : convbin
 

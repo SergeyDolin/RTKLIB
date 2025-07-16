@@ -374,7 +374,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 {
     double freq[NFREQ]={0},C1,C2;
     int *codes;
-    int i,sys=satsys(obs->sat,NULL);
+    int i,ix=0,sys=satsys(obs->sat,NULL),frq,frq2,bias_ix;
     
     codes = (int *)malloc(NFREQ * sizeof(int));
     
@@ -389,11 +389,14 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
         P[i]=obs->P[i]-dants[i]-dantr[i];
         codes[i] = obs->code[i];
+        if (sys == SYS_GAL) {
+            trace(2,"CODE: %f, P[%f]: %f\n\r",obs->code[i], freq[i], obs->P[i]-dants[i]-dantr[i]);
+        }
     }
 
-    
     if (sys==SYS_GPS) 
     {
+        
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
             if (codes[0]==CODE_L1C)
@@ -410,6 +413,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             {
                 P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
                 L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
+                
             }
         }
         else
@@ -454,8 +458,9 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     if (sys == SYS_GAL)
-    {
-        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
+    {   
+
+        if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] != 0.0)
         {
             if (codes[0]==CODE_L1X)
             {
@@ -470,18 +475,57 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
         else
         {
-            if (codes[0]==CODE_L1X)
-            {   
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1X];   
+            
+            if (codes[0] == CODE_L1C || codes[0] == CODE_L1X) {  /* E1 */
+                if (L[0] != 0.0 && P[0] != 0.0) {
+                    P[0]+=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];  
+                }
             }
-            if (codes[1]==CODE_L7X)
-            {
-                P[1]+=nav->cbias[obs->sat-1][CODE_L7Q][CODE_L7X];
+            if (codes[2] == CODE_L5Q || codes[2] == CODE_L7X) {  /* E5a */
+                if (L[2] != 0.0 && P[2] != 0.0) {
+                    P[2]+=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
+                }
             }
         }
     }
     
-    
+    if (sys == SYS_QZS)
+    {
+        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
+        {
+            if (codes[0]==CODE_L1C)
+            {   
+                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];   
+                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+            }
+            if (codes[1]==CODE_L2W)
+            {
+                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
+                L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
+            }
+            if (codes[2]==CODE_L5Q)
+            {
+                P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
+                L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
+            }
+        }
+        else
+        {
+            if (codes[0]==CODE_L1C)
+            {   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];   
+            }
+            if (codes[1]==CODE_L2W)
+            {
+                P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
+            }
+            if (codes[2]==CODE_L5Q)
+            {
+                P[2]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
+            }
+        }
+    }
+
     if (sys == SYS_CMP)
     {
         if (obs->code[0]==CODE_L2I)
@@ -494,15 +538,16 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     
-
     /* iono-free LC */
     *Lc=*Pc=0.0;
-    if (freq[0]==0.0||freq[2]==0.0) return;
-    C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[2]));
-    C2=-SQR(freq[2])/(SQR(freq[0])-SQR(freq[2]));
-   
-    if (L[0]!=0.0&&L[2]!=0.0) *Lc=C1*L[0]+C2*L[2];
-    if (P[0]!=0.0&&P[2]!=0.0) *Pc=C1*P[0]+C2*P[2];
+    frq2=L[1]==0.0?2:1;  /* if L[1]==0, try L[2] */
+    
+    if (freq[0]==0.0||freq[frq2]==0.0) return;
+    C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
+    C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
+    if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
+    if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
+    trace(2, "L1: %f L5: %f SYS: %d SAT: %d\n\r", L[0], L[2], sys, satno(sys, obs->sat));
     
     free(codes);
 }
