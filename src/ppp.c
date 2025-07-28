@@ -123,6 +123,7 @@ static double STD(rtk_t *rtk, int i)
     if (rtk->sol.stat==SOLQ_FIX) return SQRT(rtk->Pa[i+i*rtk->nx]);
     return SQRT(rtk->P[i+i*rtk->nx]);
 }
+
 /* write solution status for PPP ---------------------------------------------*/
 extern int pppoutstat(rtk_t *rtk, char *buff)
 {
@@ -398,7 +399,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 {
     double freq[NFREQ]={0},C1,C2;
     int *codes;
-    int i,ix=0,sys=satsys(obs->sat,NULL),frq,frq2,bias_ix;
+    int i,sys=satsys(obs->sat,NULL),frq2;
     
     codes = (int *)malloc(NFREQ * sizeof(int));
     
@@ -501,14 +502,16 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         {
             
             if (codes[0] == CODE_L1C || codes[0] == CODE_L1X) {  /* E1 */
-                if (L[0] != 0.0 && P[0] != 0.0) {
-                    P[0]+=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];  
-                }
+                
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];  
             }
-            if (codes[2] == CODE_L5Q || codes[2] == CODE_L7X) {  /* E5a */
-                if (L[2] != 0.0 && P[2] != 0.0) {
-                    P[2]+=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
-                }
+            
+            if (codes[2] == CODE_L5X) {
+                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];
+            } 
+            if (codes[2] == CODE_L7X) {  /* E5a */
+
+                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
             }
         }
     }
@@ -1295,9 +1298,16 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             break;
         }
         /* measurement update of ekf states */
-        if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {
-            trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
-            break;
+        if (opt->kalman == 0){
+            if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {
+                trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
+                break;
+            }
+        } else if (opt->kalman == 1) {
+            if ((info=filter_vbakf(xp,Pp,H,v,R,rtk->nx,nv))) {
+                trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
+                break;
+            }
         }
         /* postfit residuals */
         if (ppp_res(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel)) {

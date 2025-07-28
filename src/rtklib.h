@@ -966,6 +966,7 @@ typedef struct {        /* SNR mask type */
 typedef struct {        /* processing options type */
     int mode;           /* positioning mode (PMODE_???) */
     int soltype;        /* solution type (0:forward,1:backward,2:combined) */
+    int kalman;         /* kalman filter type (0: base, 1: vbbra) */
     int nf;             /* number of frequencies (1:L1,2:L1+L2,3:L1+L2+L5) */
     int navsys;         /* navigation system */
     double elmin;       /* elevation mask angle (rad) */
@@ -1343,6 +1344,8 @@ EXPORT int  solve (const char *tr, const double *A, const double *Y, int n,
 EXPORT int  lsq   (const double *A, const double *y, int n, int m, double *x,
                    double *Q);
 EXPORT int  filter(double *x, double *P, const double *H, const double *v,
+                   const double *R, int n, int m);
+EXPORT int  filter_vbakf(double *x, double *P, const double *H, const double *v,
                    const double *R, int n, int m);
 EXPORT int  smoother(const double *xf, const double *Qf, const double *xb,
                      const double *Qb, int n, double *xs, double *Qs);
