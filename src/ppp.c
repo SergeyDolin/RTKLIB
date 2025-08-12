@@ -123,7 +123,6 @@ static double STD(rtk_t *rtk, int i)
     if (rtk->sol.stat==SOLQ_FIX) return SQRT(rtk->Pa[i+i*rtk->nx]);
     return SQRT(rtk->P[i+i*rtk->nx]);
 }
-
 /* write solution status for PPP ---------------------------------------------*/
 extern int pppoutstat(rtk_t *rtk, char *buff)
 {
@@ -321,43 +320,19 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     return 1;
 }
 /* measurement error variance ------------------------------------------------*/
-static double varerr(int sat, int sys, double el, double snr_rover,
-                     int f, const prcopt_t *opt) {
-    double a,b;
-    double fact=1;
-    double sinel=sin(el), var;
-    int frq, code;
-
-    frq=f/2; code=f%2; /* phase = 0, code = 1 */
-    /* increase variance for pseudoranges */
-    if (code) fact=opt->eratio[frq];
-    if (fact<=0.0) fact=opt->eratio[0];
-    /* adjust variances for constellation */
-    switch(sys) {
-        case SYS_GPS: fact*=EFACT_GPS;break;
-        case SYS_GLO: fact*=EFACT_GLO;break;
-        case SYS_GAL: fact*=EFACT_GAL;break;
-        case SYS_SBS: fact*=EFACT_SBS;break;
-        case SYS_QZS: fact*=EFACT_QZS;break;
-        case SYS_CMP: fact*=EFACT_CMP;break;
-        case SYS_IRN: fact*=EFACT_IRN;break;
-        default:      fact*=EFACT_GPS;break;
-    }
-
-    if (sys==SYS_GPS||sys==SYS_QZS) {
-        if (code==1) {
-            fact*=2;
-        }
-    }
+static double varerr(int sat, int sys, double el, int idx, int type,
+                     const prcopt_t *opt)
+{
+    double fact=1.0,sinel=sin(el);
     
-    a=fact*opt->err[1];
-    b=fact*opt->err[2];
-
-    var=fact * (SQR(a) + SQR(b / sinel));
-
-    var*=(opt->ionoopt==IONOOPT_IFLC)?SQR(3.0):1.0;
-
-    return var;
+    if (type==1) fact*=opt->eratio[idx==0?0:1];
+    fact*=sys==SYS_GLO?EFACT_GLO:(sys==SYS_SBS?EFACT_SBS:EFACT_GPS);
+    
+    if (sys==SYS_GPS||sys==SYS_QZS) {
+        if (idx==2) fact*=EFACT_GPS_L5; /* GPS/QZS L5 error factor */
+    }
+    if (opt->ionoopt==IONOOPT_IFLC) fact*=3.0;
+    return SQR(fact*opt->err[1])+SQR(fact*opt->err[2]/sinel);
 }
 /* initialize state and covariance -------------------------------------------*/
 static void initx(rtk_t *rtk, double xi, double var, int i)
@@ -414,14 +389,10 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
         P[i]=obs->P[i]-dants[i]-dantr[i];
         codes[i] = obs->code[i];
-        if (sys == SYS_GAL) {
-            trace(2,"CODE: %f, P[%f]: %f\n\r",obs->code[i], freq[i], obs->P[i]-dants[i]-dantr[i]);
-        }
     }
 
     if (sys==SYS_GPS) 
     {
-        
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
             if (codes[0]==CODE_L1C)
@@ -438,7 +409,6 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             {
                 P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
                 L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
-                
             }
         }
         else
@@ -483,9 +453,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     if (sys == SYS_GAL)
-    {   
-
-        if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] != 0.0)
+    {
+        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
             if (codes[0]==CODE_L1X)
             {
@@ -500,18 +469,13 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
         else
         {
-            
-            if (codes[0] == CODE_L1C || codes[0] == CODE_L1X) {  /* E1 */
-                
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];  
+            if (codes[0]==CODE_L1X)
+            {   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1X];   
             }
-            
-            if (codes[2] == CODE_L5X) {
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];
-            } 
-            if (codes[2] == CODE_L7X) {  /* E5a */
-
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
+            if (codes[1]==CODE_L7X)
+            {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L7Q][CODE_L7X];
             }
         }
     }
@@ -565,16 +529,15 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     
+
     /* iono-free LC */
     *Lc=*Pc=0.0;
-    frq2=L[1]==0.0?2:1;  /* if L[1]==0, try L[2] */
-    
+    frq2=L[1]==0?2:1;  /* if L[1]==0, try L[2] */
     if (freq[0]==0.0||freq[frq2]==0.0) return;
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
     C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
     if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
     if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
-    trace(2, "L1: %f L5: %f SYS: %d SAT: %d\n\r", L[0], L[2], sys, satno(sys, obs->sat));
     
     free(codes);
 }
@@ -1046,7 +1009,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     double ve[MAXOBS*2*NFREQ]={0},vmax=0;
     char str[32];
     int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
-    int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1;
+    int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1,frq,code;
     
     time2str(obs[0].time,str,2);
     
@@ -1090,6 +1053,8 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         for (j=0;j<2*NF(opt);j++) {
             
             dcb=bias=0.0;
+            code=j%2; /* 0=phase, 1=code */
+            frq=j/2;
             
             if (opt->ionoopt==IONOOPT_IFLC) {
                 if ((y=j%2==0?Lc:Pc)==0.0) continue;
@@ -1298,16 +1263,9 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             break;
         }
         /* measurement update of ekf states */
-        if (opt->kalman == 0){
-            if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {
-                trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
-                break;
-            }
-        } else if (opt->kalman == 1) {
-            if ((info=filter_vbakf(xp,Pp,H,v,R,rtk->nx,nv))) {
-                trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
-                break;
-            }
+        if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {
+            trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
+            break;
         }
         /* postfit residuals */
         if (ppp_res(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel)) {

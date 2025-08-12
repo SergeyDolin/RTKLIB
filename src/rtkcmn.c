@@ -162,7 +162,6 @@
 #define POLYCRC24Q  0x1864CFBu  /* CRC24Q polynomial */
 
 #define SQR(x)      ((x)*(x))
-#define SQRT(x)     ((x)<=0.0||(x)!=(x)?0.0:sqrt(x))
 #define MAX_VAR_EPH SQR(300.0)  /* max variance eph to reject satellite (m^2) */
 
 static const double gpst0[]={1980,1, 6,0,0,0}; /* gps time reference */
@@ -202,62 +201,15 @@ const double chisqr[100]={      /* chi-sqr(n) (alpha=0.001) */
     126 ,127 ,128 ,129 ,131 ,132 ,133 ,134 ,135 ,137 ,
     138 ,139 ,140 ,142 ,143 ,144 ,145 ,147 ,148 ,149
 };
-
-const double tdistb_0400[30] = {    /*alpha=0.4*/
-1.3764, 1.0607, 0.9785, 0.9410, 0.9195, 0.9057, 0.8960, 0.8889,
- 0.8834, 0.8791, 0.8755, 0.8726, 0.8702, 0.8681, 0.8662, 0.8647,
- 0.8633, 0.8620, 0.8610, 0.8600, 0.8591, 0.8583, 0.8575, 0.8569,
- 0.8562, 0.8557, 0.8551, 0.8546, 0.8542, 0.8538,
-};
-
-const double tdistb_0250[30] = {    /*alpha=0.25*/
-        1.000, 0.817, 0.765, 0.741, 0.727, 0.718, 0.711, 0.706, 0.703, 0.700,
-        0.697, 0.696, 0.694, 0.692, 0.691, 0.690, 0.689, 0.688, 0.687, 0.687,
-        0.686, 0.686, 0.685, 0.685, 0.684, 0.684, 0.684, 0.683, 0.683, 0.683
-};
-
-const double tdistb_0100[30] = {    /*alpha=0.10*/
-        3.078, 1.886, 1.638, 1.533, 1.476, 1.440, 1.415, 1.397, 1.383, 1.372,
-        1.363, 1.356, 1.350, 1.345, 1.341, 1.337, 1.333, 1.330, 1.328, 1.325,
-        1.323, 1.321, 1.319, 1.318, 1.316, 1.315, 1.314, 1.313, 1.311, 1.310
-};
-
-const double tdistb_0050[30] = {    /*ѧ��t�ֲ�������ˮƽ0.05*/
-        6.314, 2.920, 2.353, 2.132, 2.015, 1.943, 1.895, 1.860, 1.833, 1.813,
-        1.796, 1.782, 1.771, 1.761, 1.753, 1.746, 1.740, 1.734, 1.729, 1.724,
-        1.721, 1.717, 1.714, 1.711, 1.708, 1.706, 1.703, 1.701, 1.699, 1.697
-};
-
-const double tdistb_0025[30] = {    /*ѧ��t�ֲ�������ˮƽ0.025*/
-        12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,2.228,
-        2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
-        2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042
-};
-
-const double tdistb_0010[30] = {    /*ѧ��t�ֲ�������ˮƽ0.01*/
-        31.821, 6.965, 4.541, 3.747, 3.365, 3.143, 2.998, 2.896, 2.821, 2.764,
-        2.718, 2.681, 2.650, 2.624, 2.602, 2.583, 2.567, 2.552, 2.539, 2.528,
-        2.518, 2.508, 2.500, 2.492, 2.485, 2.479, 2.473, 2.467, 2.462, 2.457
-};
-
-const double tdistb_0005[30] = {    /*ѧ��t�ֲ�������ˮƽ0.005*/
-        63.657, 9.925, 5.841, 4.604, 4.032, 3.707, 3.499, 3.355, 3.250, 3.169,
-        3.106, 3.055, 3.012, 2.977, 2.947, 2.921, 2.898, 2.878, 2.861, 2.845,
-        2.831, 2.819, 2.807, 2.797, 2.787, 2.779, 2.771, 2.763, 2.756, 2.750
-};
-
-const double tdistb_0001[30] = {    /*ѧ��t�ֲ�������ˮƽ0.001*/
-        318.309, 22.327, 10.215, 7.173, 5.893, 5.208, 4.785, 4.501, 4.297, 4.144,
-        4.025, 3.930, 3.852, 3.787, 3.733, 3.686, 3.646, 3.610, 3.579, 3.552,
-};
 const prcopt_t prcopt_default={ /* defaults processing options */
-    PMODE_SINGLE,0,0,2,SYS_GPS,   /* mode,kalman,soltype,nf,navsys */
+    PMODE_SINGLE,0,2,SYS_GPS,   /* mode,soltype,nf,navsys */
     15.0*D2R,{{0,0}},           /* elmin,snrmask */
     0,1,1,1,                    /* sateph,modear,glomodear,bdsmodear */
     5,0,10,1,                   /* maxout,minlock,minfix,armaxiter */
     0,0,0,0,                    /* estion,esttrop,dynamics,tidecorr */
     1,0,0,0,0,                  /* niter,codesmooth,intpref,sbascorr,sbassatsel */
     0,0,                        /* rovpos,refpos */
+    WEIGHTOPT_ELEVATION,        /* weightmode */
     {100.0,100.0},              /* eratio[] */
     {100.0,0.003,0.003,0.0,1.0}, /* err[] */
     {30.0,0.03,0.3},            /* std[] */
@@ -1016,15 +968,6 @@ extern double *mat(int n, int m)
     }
     return p;
 }
-extern double *mat_scale(int n,double a)
-{
-    double *p;
-    int i;
-
-    if ((p = zeros(n, n))) for (i = 0; i < n; i++) p[i + i * n]=a;
-    return p;
-
-}
 /* new integer matrix ----------------------------------------------------------
 * allocate memory of integer matrix 
 * args   : int    n,m       I   number of rows and columns of matrix
@@ -1323,108 +1266,6 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
     free(Ay);
     return info;
 }
-
-
-/*ref to "A Variational Bayesian-Based Robust Adaptive Filtering for Precise Point Positioning Using Undifferenced and Uncombined Observations"*/
-static int vbakf_(const double *x,const double *P,const double *H,const double *v,
-                  const double *R,int n,int m,double *xp,double *Pp)
-{
-    double *x_1=mat(n, 1),*xk1k=mat(n,1),*Pk1k1=mat(n,n),*Pk1k=mat(n,n);
-    double *Tk1k=mat(n,n),*Ak=mat(n,n),*Tkk=mat(n,n),*E_i_Pk1k=mat(n,n);
-    double *P_0=mat(m,n),*P_1=mat(m,m),*zk1k=mat(m,1),*E_i_Pk1k_0=mat(m,n);
-    double *Pzzk1k=mat(m,m),*Pxzk1k=mat(n,m),*Kk=mat(n,m),*Kk_=mat(n,n);
-    double *P1=mat(n,n),*P2=mat(n,n),*R1=mat(n,m),*I=eye(n),*v_post_=mat(m,m),*v_post=mat(m,1);
-    double tao_P=2,v_all1=0.0,v_all2=0.0,V_all1=0.0,V_all2=0.0;
-    double *F=mat(n,m),*Q=mat(m,m),*v_N=mat(m,1),*T=mat(m,1),*RI=mat(m,m);
-    int N=1,tk1k,tkk,info,i,j,jj;
-    float fabs_v;
-
-    matcpy(Q, R, m, m);
-    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);                /*F=P*H       F(n,m),P(n,n),H(n,m)*/
-    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);                /*Q=H'*F+R    Q(m,m),H(n,m),F(n,m)*/
-    if (!(info = matinv(Q, m))) {
-        matmul("NN", m, m, m, 1.0, R, Q, 0.0, v_post_);
-    }
-    matmul("NN", m, 1, m, -1.0, v_post_, v, 0.0, v_post);    /*v_postres=-R*inv(Q)*v_prires;*/
-
-    /*robust*/
-    matcpy(RI,R,m,m);
-    for (j=0;j<m;j++) {
-        fabs_v=fabs(v_post[j]);
-        v_N[j]=fabs_v/sqrt(v_post_[j*m+j]*RI[j*m+j]);
-        if (j%2==0) v_all1=v_all1+v_N[j];
-        if (j%2==1) v_all2=v_all2+v_N[j];
-    }
-    for (jj=0;jj<(m/2);jj++) {/*phase*/
-        V_all1=V_all1+SQR(v_N[2*jj]-v_all1/(m/2));
-    }
-    for (jj=0;jj<(m/2);jj++) { /*pseudorange*/
-        V_all2=V_all2+SQR(v_N[2*jj+1]-v_all2/(m/2));
-    }
-    for (j=0; j<m; j++) {
-        if (j%2==0) { /*phase*/
-            T[j]=fabs(v_N[j]-v_all1/(m/2))/SQRT(V_all1/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j])); /*down weight*/
-            }
-            if (T[j]>tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*10000000.0; 
-            }
-        }
-        if (j%2==1) { /*pseudorange*/
-            T[j]=fabs(v_N[j]-v_all2/(m/2))/SQRT(V_all2/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j]));
-            }
-            if (T[j]>tdistb_0010[m/2-1]) {
-                RI[j*m+j]=RI[j*m+j]*100000000.0;
-            }
-        }
-    }
-
-    /*adaptive*/
-    matcpy(Pk1k,P,n,n);
-    tk1k=n+1+tao_P;                                                                     /*tk1k = (nx + 1 + tao_P)*/
-    matmul("NN", n, n, n, 1.0, mat_scale(n, tao_P), Pk1k, 0.0, Tk1k);    /*Tk1k=tao_P*Pk1k*/
-    matcpy(xp, x, n, 1);                                                             /*xkk=xk1k*/
-    matcpy(xk1k, x, n, 1);
-    matcpy(Pp, Pk1k, n, n);                                                              /*Pkk=Pk1k*/
-    for (i = 0; i < N; i++) {
-        matcpy(Ak, Pp, n, n);
-        matcpy(x_1, xp, n, 1);
-        matmul("NN", n, 1, n, -1.0, eye(n), xk1k, 1.0, x_1);
-        matmul("NT", n, n, 1, 1.0, x_1, x_1, 1.0, Ak);                      /*Ak=(xkk-xk1k)*(xkk-xk1k)'+Pp*/
-        tkk = tk1k + 1;                                                                        /*tkk=tk1k+1*/
-        matcpy(Tkk, Ak, n, n);                                                                 /*Tkk=Tk1k+Ak*/
-        matmul("NN", n, n, n, 1.0, eye(n), Tk1k, 1.0,Tkk);
-        if (!(info=matinv(Tkk,n))){                                                            /*E_i_Pk1k=(tkk-nx-1)*inv(Tkk)*/
-            matmul("NN",n,n,n,1.0, mat_scale(n,(tkk-n-1)*1.0),Tkk,0.0,E_i_Pk1k);
-        }
-        matcpy(Pzzk1k, RI, m, m);
-        if (!(info = matinv(E_i_Pk1k, n))){                                                    /*D_Pk1k = inv(E_i_Pk1k)*/
-            matmul("TN", m, n, n, 1.0, H, E_i_Pk1k, 0.0, E_i_Pk1k_0);
-            matmul("NN", m, m, n, 1.0, E_i_Pk1k_0, H, 1.0, Pzzk1k);             /*Pzzk1k = H*D_Pk1k*H'+D_R   Pzzk1k=H*Pk1k*H'+R*/
-            matmul("NN", n, m, n, 1.0, E_i_Pk1k, H, 0.0, Pxzk1k);               /*Pxzk1k = D_Pk1k*H'         Pxzk1k=Pk1k*H'*/
-            if (!(info = matinv(Pzzk1k, m))) {
-                matmul("NN", n, m, m, 1.0, Pxzk1k, Pzzk1k, 0.0, Kk);            /*Kk=Pxzk1k*inv(Pzzk1k)      Kk=Pxzk1k*inv(Pzzk1k)*/
-                matcpy(xp, xk1k, n, 1);
-                matmul("NN", n, 1, m, 1.0, Kk, v, 1.0, xp);/*v */               /*xp=xk1k+Kk*(z-H*xk1k)      xkk=xk1k+Kk*(z-H*xk1k)*/
-                matmul("NT", n, n, m, 1.0, Kk, H, 0.0, Kk_);
-                matcpy(Pp, E_i_Pk1k, n, n);
-                matmul("NN", n, n, n, -1.0, Kk_, E_i_Pk1k, 1.0, Pp);            /*Pp=D_Pk1k-Kk*H*D_Pk1k      Pkk=Pk1k-Kk*H*Pk1k*/
-            }
-        }
-    }
-    free(x_1);
-    free(xk1k); free(Pk1k1); free(Pk1k);
-    free(Tk1k); free(Ak); free(Tkk); free(E_i_Pk1k);
-    free(P_0); free(P_1); free(zk1k); free(E_i_Pk1k_0);
-    free(Pzzk1k); free(Pxzk1k); free(Kk); free(Kk_);
-    free(P1); free(P2); free(R1); free(I);
-    free(F); free(RI); free(v_N); free(T); free(Q);
-    free(v_post); free(v_post_);
-    return info;
-}
 /* kalman filter ---------------------------------------------------------------
 * kalman filter state update as follows:
 *
@@ -1476,27 +1317,6 @@ extern int filter(double *x, double *P, const double *H, const double *v,
         for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
     }
     info=filter_(x_,P_,H_,v,R,k,m,xp_,Pp_);
-    for (i=0;i<k;i++) {
-        x[ix[i]]=xp_[i];
-        for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
-    }
-    free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
-    return info;
-}
-extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
-                  const double *R, int n, int m)
-{
-    double *x_,*xp_,*P_,*Pp_,*H_;
-    int i,j,k,info,*ix;
-    
-    ix=imat(n,1); for (i=k=0;i<n;i++) if (x[i]!=0.0&&P[i+i*n]>0.0) ix[k++]=i;
-    x_=mat(k,1); xp_=mat(k,1); P_=mat(k,k); Pp_=mat(k,k); H_=mat(k,m);
-    for (i=0;i<k;i++) {
-        x_[i]=x[ix[i]];
-        for (j=0;j<k;j++) P_[i+j*k]=P[ix[i]+ix[j]*n];
-        for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
-    }
-    info=vbakf_(x_,P_,H_,v,R,k,m,xp_,Pp_);
     for (i=0;i<k;i++) {
         x[ix[i]]=xp_[i];
         for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
@@ -3747,6 +3567,8 @@ extern double satazel(const double *pos, const double *e, double *azel)
 * return : none
 * notes  : dop[0]-[3] return 0 in case of dop computation error
 *-----------------------------------------------------------------------------*/
+#define SQRT(x)     ((x)<0.0||(x)!=(x)?0.0:sqrt(x))
+
 extern void dops(int ns, const double *azel, double elmin, double *dop)
 {
     double H[4*MAXSAT],Q[16],cosel,sinel;
