@@ -28,6 +28,8 @@
 
 /* constants/macros ----------------------------------------------------------*/
 
+#define VAR_ISBP    SQR(0.001)      /*   ISB(pseudorange) (m^2) */
+
 #define SQR(x)      ((x)*(x))
 
 #if 0 /* enable GPS-QZS time offset estimation */
@@ -100,8 +102,8 @@ static double prange(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
     
     /* P1-C1,P2-C2 DCB correction */
     if (sys==SYS_GPS||sys==SYS_GLO) {
-        if (obs->code[0]==CODE_L1C) P1+=nav->cbias[sat-1][1][1]; /* C1->P1 */
-        if (obs->code[1]==CODE_L2C) P2+=nav->cbias[sat-1][2][2]; /* C2->P2 */
+        if (obs->code[0]==CODE_L1C) P1+=nav->cbias[sat-1][1][0]; /* C1->P1 */
+        if (obs->code[1]==CODE_L2C) P2+=nav->cbias[sat-1][2][0]; /* C2->P2 */
     }
     if (opt->ionoopt==IONOOPT_IFLC) { /* dual-frequency */
         
@@ -307,11 +309,14 @@ static int rescode(int iter, const obsd_t *obs, int n, const double *rs,
         for (j=0;j<NX;j++) {
             H[j+nv*NX]=j<3?-e[j]:(j==3?1.0:0.0);
         }
+        /*trace(0, "%e %e %e %e \n\r", x[4] ,x[5],x[6],x[7]);*/
         /* time system offset and receiver bias correction */
         if      (sys==SYS_GLO) {v[nv]-=x[4]; H[4+nv*NX]=1.0; mask[1]=1;}
         else if (sys==SYS_GAL) {v[nv]-=x[5]; H[5+nv*NX]=1.0; mask[2]=1;}
         else if (sys==SYS_CMP) {v[nv]-=x[6]; H[6+nv*NX]=1.0; mask[3]=1;}
         else if (sys==SYS_IRN) {v[nv]-=x[7]; H[7+nv*NX]=1.0; mask[4]=1;}
+
+       
 #if 0 /* enable QZS-GPS time offset estimation */
         else if (sys==SYS_QZS) {v[nv]-=x[8]; H[8+nv*NX]=1.0; mask[5]=1;}
 #endif
@@ -344,7 +349,7 @@ static int valsol(const double *azel, const int *vsat, int n,
     
     trace(3,"valsol  : n=%d nv=%d\n",n,nv);
     
-    /* Chi-square validation of residuals */
+    /* Chi-square validation of residuals*/ 
     vv=dot(v,v,nv);
     if (nv>nx&&vv>chisqr[nv-nx-1]) {
         sprintf(msg,"chi-square error nv=%d vv=%.1f cs=%.1f",nv,vv,chisqr[nv-nx-1]);
@@ -372,7 +377,6 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
 {
     double x[NX]={0},dx[NX],Q[NX*NX],*v,*H,*var,sig;
     int i,j,k,info,stat,nv,ns;
-    
     trace(3,"estpos  : n=%d\n",n);
     
     v=mat(n+4,1); H=mat(NX,n+4); var=mat(n+4,1);
@@ -393,7 +397,9 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
         for (j=0;j<nv;j++) {
             sig=sqrt(var[j]);
             v[j]/=sig;
+            
             for (k=0;k<NX;k++) H[k+j*NX]/=sig;
+            
         }
         /* least square estimation */
         if ((info=lsq(H,v,NX,nv,dx,Q))) {
@@ -411,6 +417,7 @@ static int estpos(const obsd_t *obs, int n, const double *rs, const double *dts,
             sol->dtr[2]=x[5]/CLIGHT; /* GAL-GPS time offset (s) */
             sol->dtr[3]=x[6]/CLIGHT; /* BDS-GPS time offset (s) */
             sol->dtr[4]=x[7]/CLIGHT; /* IRN-GPS time offset (s) */
+            /*trace(0, "%e %e %e %e\n\r", sol->dtr[0],sol->dtr[1],sol->dtr[2],sol->dtr[3]);*/
             for (j=0;j<6;j++) sol->rr[j]=j<3?x[j]:0.0;
             for (j=0;j<3;j++) sol->qr[j]=(float)Q[j+j*NX];
             sol->qr[3]=(float)Q[1];    /* cov xy */

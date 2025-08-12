@@ -43,7 +43,7 @@ static char snrmask_[NFREQ][1024];
 /* system options table ------------------------------------------------------*/
 #define SWTOPT  "0:off,1:on"
 #define MODOPT  "0:single,1:dgps,2:kinematic,3:static,4:movingbase,5:fixed,6:ppp-kine,7:ppp-static,8:ppp-fixed"
-#define FRQOPT  "1:l1,2:l1+2,3:l1+2+3,4:l1+2+3+4,5:l1+2+3+4+5"
+#define FRQOPT  "1:l1,2:l1+l2,3:l1+l2+l5,4:l1+l2+l5+l6"
 #define TYPOPT  "0:forward,1:backward,2:combined"
 #define IONOPT  "0:off,1:brdc,2:sbas,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
 #define TRPOPT  "0:off,1:saas,2:sbas,3:est-ztd,4:est-ztdgrad"
@@ -62,9 +62,11 @@ static char snrmask_[NFREQ][1024];
 #define POSOPT  "0:llh,1:xyz,2:single,3:posfile,4:rinexhead,5:rtcm,6:raw"
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
+#define KALMAN  "0:base,1:vbbra"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
+    {"pos1-kalman",     3,  (void *)&prcopt_.kalman,     KALMAN },
     {"pos1-frequency",  3,  (void *)&prcopt_.nf,         FRQOPT },
     {"pos1-soltype",    3,  (void *)&prcopt_.soltype,    TYPOPT },
     {"pos1-elmask",     1,  (void *)&elmask_,            "deg"  },
