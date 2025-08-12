@@ -160,8 +160,9 @@
 
 #define POLYCRC32   0xEDB88320u /* CRC32 polynomial */
 #define POLYCRC24Q  0x1864CFBu  /* CRC24Q polynomial */
-
+#define NUM_SYS     6
 #define SQR(x)      ((x)*(x))
+#define SQRT(x)     ((x)<=0.0||(x)!=(x)?0.0:sqrt(x))
 #define MAX_VAR_EPH SQR(300.0)  /* max variance eph to reject satellite (m^2) */
 
 static const double gpst0[]={1980,1, 6,0,0,0}; /* gps time reference */
@@ -201,22 +202,69 @@ const double chisqr[100]={      /* chi-sqr(n) (alpha=0.001) */
     126 ,127 ,128 ,129 ,131 ,132 ,133 ,134 ,135 ,137 ,
     138 ,139 ,140 ,142 ,143 ,144 ,145 ,147 ,148 ,149
 };
+
+const double tdistb_0400[30] = {    /*alpha=0.4*/
+1.3764, 1.0607, 0.9785, 0.9410, 0.9195, 0.9057, 0.8960, 0.8889,
+ 0.8834, 0.8791, 0.8755, 0.8726, 0.8702, 0.8681, 0.8662, 0.8647,
+ 0.8633, 0.8620, 0.8610, 0.8600, 0.8591, 0.8583, 0.8575, 0.8569,
+ 0.8562, 0.8557, 0.8551, 0.8546, 0.8542, 0.8538,
+};
+
+const double tdistb_0250[30] = {    /*alpha=0.25*/
+        1.000, 0.817, 0.765, 0.741, 0.727, 0.718, 0.711, 0.706, 0.703, 0.700,
+        0.697, 0.696, 0.694, 0.692, 0.691, 0.690, 0.689, 0.688, 0.687, 0.687,
+        0.686, 0.686, 0.685, 0.685, 0.684, 0.684, 0.684, 0.683, 0.683, 0.683
+};
+
+const double tdistb_0100[30] = {    /*alpha=0.10*/
+        3.078, 1.886, 1.638, 1.533, 1.476, 1.440, 1.415, 1.397, 1.383, 1.372,
+        1.363, 1.356, 1.350, 1.345, 1.341, 1.337, 1.333, 1.330, 1.328, 1.325,
+        1.323, 1.321, 1.319, 1.318, 1.316, 1.315, 1.314, 1.313, 1.311, 1.310
+};
+
+const double tdistb_0050[30] = {    /*ѧ��t�ֲ�������ˮƽ0.05*/
+        6.314, 2.920, 2.353, 2.132, 2.015, 1.943, 1.895, 1.860, 1.833, 1.813,
+        1.796, 1.782, 1.771, 1.761, 1.753, 1.746, 1.740, 1.734, 1.729, 1.724,
+        1.721, 1.717, 1.714, 1.711, 1.708, 1.706, 1.703, 1.701, 1.699, 1.697
+};
+
+const double tdistb_0025[30] = {    /*ѧ��t�ֲ�������ˮƽ0.025*/
+        12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262,2.228,
+        2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
+        2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042
+};
+
+const double tdistb_0010[30] = {    /*ѧ��t�ֲ�������ˮƽ0.01*/
+        31.821, 6.965, 4.541, 3.747, 3.365, 3.143, 2.998, 2.896, 2.821, 2.764,
+        2.718, 2.681, 2.650, 2.624, 2.602, 2.583, 2.567, 2.552, 2.539, 2.528,
+        2.518, 2.508, 2.500, 2.492, 2.485, 2.479, 2.473, 2.467, 2.462, 2.457
+};
+
+const double tdistb_0005[30] = {    /*ѧ��t�ֲ�������ˮƽ0.005*/
+        63.657, 9.925, 5.841, 4.604, 4.032, 3.707, 3.499, 3.355, 3.250, 3.169,
+        3.106, 3.055, 3.012, 2.977, 2.947, 2.921, 2.898, 2.878, 2.861, 2.845,
+        2.831, 2.819, 2.807, 2.797, 2.787, 2.779, 2.771, 2.763, 2.756, 2.750
+};
+
+const double tdistb_0001[30] = {    /*ѧ��t�ֲ�������ˮƽ0.001*/
+        318.309, 22.327, 10.215, 7.173, 5.893, 5.208, 4.785, 4.501, 4.297, 4.144,
+        4.025, 3.930, 3.852, 3.787, 3.733, 3.686, 3.646, 3.610, 3.579, 3.552,
+};
 const prcopt_t prcopt_default={ /* defaults processing options */
-    PMODE_SINGLE,0,2,SYS_GPS,   /* mode,soltype,nf,navsys */
+    PMODE_SINGLE,0,0,2,SYS_GPS,0,  /* mode,kalman,soltype,nf,navsys,arprod */
     15.0*D2R,{{0,0}},           /* elmin,snrmask */
-    0,1,1,1,                    /* sateph,modear,glomodear,bdsmodear */
-    5,0,10,1,                   /* maxout,minlock,minfix,armaxiter */
+    0,1,1,1,0,0,                /* sateph,modear,glomodear,gpsmodear,bdsmodear,arfilter */
+    20,0,20,1,10,4,5,           /* maxout,minlock,minfix,armaxiter,mindropsats,minfixsats,minholdsats*/
     0,0,0,0,                    /* estion,esttrop,dynamics,tidecorr */
     1,0,0,0,0,                  /* niter,codesmooth,intpref,sbascorr,sbassatsel */
     0,0,                        /* rovpos,refpos */
-    WEIGHTOPT_ELEVATION,        /* weightmode */
     {100.0,100.0},              /* eratio[] */
-    {100.0,0.003,0.003,0.0,1.0}, /* err[] */
+    {100.0,0.003,0.003,0.0,1.0},/* err[] */
     {30.0,0.03,0.3},            /* std[] */
     {1E-4,1E-3,1E-4,1E-1,1E-2,0.0}, /* prn[] */
     5E-12,                      /* sclkstab */
     {3.0,0.9999,0.25,0.1,0.05}, /* thresar */
-    0.0,0.0,0.05,               /* elmaskar,almaskhold,thresslip */
+    0.0,0.0,0.05,0.1,           /* elmaskar,elmaskhold,thresslip,varholdamb */
     30.0,30.0,30.0,             /* maxtdif,maxinno,maxgdop */
     {0},{0},{0},                /* baseline,ru,rb */
     {"",""},                    /* anttype */
@@ -269,6 +317,26 @@ static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
     {"C"       ,"IQX"       ,""        ,""       ,""       ,""      ,""}, /* SBS */
     {"IQXDPAN" ,"IQXDPZ"    ,"DPX"     ,"IQXA"   ,"DPX"    ,""      ,""}, /* BDS */
     {"ABCX"    ,"ABCX"      ,""        ,""       ,""       ,""      ,""}  /* IRN */
+};
+
+static char obsfrqstr[7][MAXFREQ][5]={
+        {"L1", "L2", "L5", "",   "",    "", ""},       /*GPS*/
+        {"G1", "G2", "G3", "G1a","G2a", "", ""},       /*GLO*/
+        {"E1", "E5b","E5a","E6", "E5ab","", ""},       /*GAL*/
+        {"L1", "L2", "L5", "L6", "",    "", ""},       /*QZS*/
+        {"L1", "L5", "","","",          "",""},        /*SBS*/
+        {"B1I","B2I","B2a","B3I","B2ab","B1C", "B2b"}, /*BDS*/
+        {"L5", "S",  "",   "",   "",    "", ""},       /*IRN*/
+};
+
+static int obsfrqidx[7][MAXFREQ][1]={
+        {0,1,2,3,4,5,6},                               /*GPS*/
+        {0,1,2,3,0+NFREQ,1+NFREQ,2+NFREQ},             /*GLO*/
+        {0,1,2,3,4,5,6},                               /*GAL*/
+        {0,1,2,3,4,5,6},                               /*QZS*/
+        {0,1,2,3,4,5,6},                               /*SBS*/
+        {0,1,2,3,4,0+NFREQ,1+NFREQ},                   /*BDS*/
+        {0,1,2,3,4,5,6},                               /*IRN*/
 };
 static fatalfunc_t *fatalfunc=NULL; /* fatal callback function */
 
@@ -362,6 +430,234 @@ extern void dgetrs_(char *, int *, int *, double *, int *, int *, double *,
 extern int gmf_(double *mjd, double *lat, double *lon, double *hgt, double *zd,
                 double *gmfh, double *gmfw);
 #endif
+
+extern void mjd2time(const mjd_t *mjd,gtime_t *t)
+{
+    double fmjd=mjd->day+(mjd->ds.tos+mjd->ds.sn)/86400.0;
+    int a=(int)floor(fmjd+1.0+1.0e-9)+2400000;
+    double frac=fmjd+0.5+2400000.5-a;
+    int b=a+1537;
+    int c=(int)floor((b-122.1)/365.25+1.0e-9);
+    int d=(int)floor(365.25*c+1.0e-9);
+    int e=(int)floor((b-d)/30.6001+1.0e-9);
+    int day=b-d-(int)floor(30.6001*e);
+    int month=e-1-12*(int)floor(e/14.0+1.0e-9);
+    int year=c-4715-(int)floor((7+month)/10.0+1.0e-9);
+
+    double thh=frac*24.0;
+    int hour=(int)floor(thh+1.0e-9);
+    double tmin=(thh-hour)*60.0;
+    int min=(int)floor(tmin+1.0e-9);
+    double sec=(tmin-min)*60.0;
+
+    double ep[6]={0};
+    ep[0]=year;ep[1]=month;ep[2]=day;
+    ep[3]=hour;ep[4]=min;ep[5]=sec;
+    *t=epoch2time(ep);
+}
+
+static void res_class(res_t *res,int pri)
+{
+    int i,j=0,k=0,type;
+    if(pri){
+        for(i=0;i<res->nv;i++){
+            type=(res->vflag[i]>>4)&0xF;
+            if(type==1){
+                res->npr++;
+            }
+            else if(type==0){
+                res->ncp++;
+            }
+        }
+        res->pri_pr=mat(res->npr,1);
+        res->pri_cp=mat(res->ncp,1);
+        res->post_pr=mat(res->npr,1);
+        res->post_cp=mat(res->ncp,1);
+        res->pr_idx=imat(res->npr,1);
+        res->cp_idx=imat(res->ncp,1);
+        res->norm_pr=mat(res->npr,1);
+        res->norm_cp=mat(res->ncp,1);
+    }
+
+    for(i=0;i<res->nv;i++){
+        type=(res->vflag[i]>>4)&0xF;
+        if(type==1){
+            if(pri){
+                res->pr_idx[j]=i;
+                res->pri_pr[j++]=fabs(res->pri_v[i]);
+            }
+            else{
+                res->norm_pr[j]=res->post_v[i]/(res->sigma0*SQRT(res->R[i+i*res->nv]));
+                res->post_pr[j++]=res->post_v[i];
+            }
+        }
+        else if(type==0){
+            if(pri){
+                res->cp_idx[k]=i;
+                res->pri_cp[k++]=fabs(res->pri_v[i]);
+            }
+            else{
+                res->norm_cp[k]=res->post_v[i]/(res->sigma0*SQRT(res->R[i+i*res->nv]));
+                res->post_cp[k++]=res->post_v[i];
+            }
+        }
+    }
+}
+
+static int quicksortonce(double *a,int low,int high){
+    double pivot = a[low];
+    int i=low,j=high;
+
+    while(i<j){
+        while(a[j]>=pivot&&i<j){
+            j--;
+        }
+        a[i]=a[i];
+        while(a[i]<=pivot&&i<j){
+            i++;
+        }
+        a[j]=a[i];
+    }
+    a[i]=pivot;
+    return i;
+}
+
+static void quicksort(double *a,int low,int high){
+    if(low >= high) return;
+
+    int pivot = quicksortonce(a, low, high);
+
+    quicksort(a, low, pivot-1);
+    quicksort(a, pivot+1, high);
+}
+
+extern int median(double *a,int n){
+    quicksort(a, 0, n-1);
+    if(n%2!=0){
+        return a[n/2];
+    } else {
+        return (a[n/2]+a[n/2-1])/2;
+    }
+}
+
+extern int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vflag,int nv,int *exc){
+    
+    double v_SYS[NUM_SYS][MAXOBS]={0},v_copy[MAXOBS]={0},mean,thres=20.0;
+    int nv_SYS[NUM_SYS]={0},sat_SYS[NUM_SYS][MAXOBS]={0};
+    int i,j,sat,sys_idx,qc_flag=0;
+    prcopt_t *popt=&rtk->opt;
+
+    for(j=0;j<nv;j++){
+        sat=(vflag[i]>>8)&0xFF;
+        sys_idx=satsysidx(sat);
+        sat_SYS[sys_idx][nv_SYS[sys_idx]]=sat;
+        v_SYS[sys_idx][nv_SYS[sys_idx]++]=pri_v[j];
+    }
+
+    for(j=0;j<NUM_SYS;j++){
+        if(nv_SYS[j]<=0) continue;
+        matcpy(v_copy,v_SYS[j],nv_SYS[j],1);
+        mean=median(v_copy,nv_SYS[j]);
+        for(i=0;i<nv_SYS[j];i++){
+            if(fabs(v_SYS[j][i]-mean)>thres){
+                sat=sat_SYS[j][i];
+                exc[sat-1]=1;
+                qc_flag=1;
+            }
+        }
+    }
+    return qc_flag;
+}
+
+extern void init_prires(const double *v,const int *vflag,int nv,res_t *res)
+{
+    res->pri_v=mat(nv,1);
+    res->vflag=imat(nv,1);
+    matcpy(res->pri_v,v,nv,1);
+    for(int i=0;i<nv;i++){
+        res->vflag[i]=vflag[i];
+    }
+    res->nv=nv;
+    res_class(res,1);
+}
+
+extern void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const double *R, int nv)
+{
+    if (!res || !post_v || !R || nv <= 0) {
+        trace(2, "init_postres: invalid input\n");
+        return;
+    }
+
+    res->post_v = mat(nv, 1);
+    res->R = mat(nv, nv);
+    if (!res->post_v || !res->R) {
+        trace(2, "init_postres: memory allocation failed\n");
+        if (res->post_v) free(res->post_v);
+        if (res->R) free(res->R);
+        return;
+    }
+
+    res->nv = nv;
+    matcpy(res->post_v, post_v, nv, 1);
+    matcpy(res->R, R, nv, nv);
+    res_class(res, 0);
+
+    if (res->ncp > 0 && res->cp_idx && res->vflag) {
+        int sat, frq;
+        for (int i = 0; i < res->ncp; i++) {
+            sat = (res->vflag[res->cp_idx[i]] >> 8) & 0xFF;
+            frq = (res->vflag[res->cp_idx[i]] & 0xF);
+            if (sat >= 1 && sat <= MAXSAT && frq >= 0 && frq < NFREQ) {
+                rtk->ssat[sat-1].norm_v[0][frq] = res->norm_cp[i];
+                rtk->ssat[sat-1].norm_v[1][frq] = res->norm_pr[i];
+            }
+        }
+    }
+}
+
+extern void freeres(res_t *res)
+{
+    res->npr=res->ncp=res->nv=0;
+    if(res->vflag){
+        free(res->vflag);res->vflag=NULL;
+    }
+    if(res->pri_v){
+        free(res->pri_v);res->pri_v=NULL;
+    }
+    if(res->post_v){
+        free(res->post_v);res->post_v=NULL;
+    }
+    if(res->pr_idx){
+        free(res->pr_idx);res->pr_idx=NULL;
+    }
+    if(res->cp_idx){
+        free(res->cp_idx);res->cp_idx=NULL;
+    }
+    if(res->pri_pr){
+        free(res->pri_pr);res->pri_pr=NULL;
+    }
+    if(res->pri_cp){
+        free(res->pri_cp);res->pri_cp=NULL;
+    }
+    if(res->post_pr){
+        free(res->post_pr);res->post_pr=NULL;
+    }
+    if(res->post_cp){
+        free(res->post_cp);res->post_cp=NULL;
+    }
+    if(res->norm_pr){
+        free(res->norm_pr);res->norm_pr=NULL;
+    }
+    if(res->norm_cp){
+        free(res->norm_cp);res->norm_cp=NULL;
+    }
+    if(res->R){
+        free(res->R);res->R=NULL;
+    }
+    if(res->Qvv){
+        free(res->Qvv);res->Qvv=NULL;
+    }
+}
 
 /* fatal error ---------------------------------------------------------------*/
 static void fatalerr(const char *format, ...)
@@ -460,6 +756,27 @@ extern int satsys(int sat, int *prn)
     if (prn) *prn=sat;
     return sys;
 }
+
+EXPORT int  satsysidx(int sat)
+{
+    int prn;
+    int sys=satsys(sat,&prn);
+
+    switch(sys){
+        case SYS_GPS: return 0;
+        case SYS_GLO: return 1;
+        case SYS_GAL: return 2;
+        case SYS_CMP:
+        {
+            if(prn>18) return NSYS;
+            else return 3;
+        }
+        case SYS_QZS: return 4;
+    }
+
+    return -1;
+}
+
 /* satellite id to satellite number --------------------------------------------
 * convert satellite id to satellite number
 * args   : char   *id       I   satellite id (nn,Gnn,Rnn,Enn,Jnn,Cnn,Inn or Snn)
@@ -600,7 +917,6 @@ extern char *code2obs(uint8_t code)
 static int code2freq_GPS(uint8_t code, double *freq)
 {
     char *obs=code2obs(code);
-    
     switch (obs[0]) {
         case '1': *freq=FREQ1; return 0; /* L1 */
         case '2': *freq=FREQ2; return 1; /* L2 */
@@ -749,12 +1065,10 @@ extern double code2freq(int sys, uint8_t code, int fcn)
 *-----------------------------------------------------------------------------*/
 extern double sat2freq(int sat, uint8_t code, const nav_t *nav)
 {
-    int i,fcn=0,sys,prn;
+    int i,fcn=-8,sys,prn;
     
     sys=satsys(sat,&prn);
-    
-    if (sys==SYS_GLO) {
-        if (!nav) return 0.0;
+    if (sys==SYS_GLO && nav) {
         for (i=0;i<nav->ng;i++) {
             if (nav->geph[i].sat==sat) break;
         }
@@ -953,6 +1267,13 @@ extern int decode_word(uint32_t word, uint8_t *data)
     for (i=0;i<3;i++) data[i]=(uint8_t)(word>>(22-i*8));
     return 1;
 }
+
+extern int newround(double d){
+    int i;
+    if(d>=0) i=(int)(d+0.5);
+    else i=(int)(d-0.5);
+    return i;
+}
 /* new matrix ------------------------------------------------------------------
 * allocate memory of matrix 
 * args   : int    n,m       I   number of rows and columns of matrix
@@ -967,6 +1288,15 @@ extern double *mat(int n, int m)
         fatalerr("matrix memory allocation error: n=%d,m=%d\n",n,m);
     }
     return p;
+}
+extern double *mat_scale(int n,double a)
+{
+    double *p;
+    int i;
+
+    if ((p = zeros(n, n))) for (i = 0; i < n; i++) p[i + i * n]=a;
+    return p;
+
 }
 /* new integer matrix ----------------------------------------------------------
 * allocate memory of integer matrix 
@@ -1266,6 +1596,108 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
     free(Ay);
     return info;
 }
+
+
+/*ref to "A Variational Bayesian-Based Robust Adaptive Filtering for Precise Point Positioning Using Undifferenced and Uncombined Observations"*/
+static int vbakf_(const double *x,const double *P,const double *H,const double *v,
+                  const double *R,int n,int m,double *xp,double *Pp)
+{
+    double *x_1=mat(n, 1),*xk1k=mat(n,1),*Pk1k1=mat(n,n),*Pk1k=mat(n,n);
+    double *Tk1k=mat(n,n),*Ak=mat(n,n),*Tkk=mat(n,n),*E_i_Pk1k=mat(n,n);
+    double *P_0=mat(m,n),*P_1=mat(m,m),*zk1k=mat(m,1),*E_i_Pk1k_0=mat(m,n);
+    double *Pzzk1k=mat(m,m),*Pxzk1k=mat(n,m),*Kk=mat(n,m),*Kk_=mat(n,n);
+    double *P1=mat(n,n),*P2=mat(n,n),*R1=mat(n,m),*I=eye(n),*v_post_=mat(m,m),*v_post=mat(m,1);
+    double tao_P=2,v_all1=0.0,v_all2=0.0,V_all1=0.0,V_all2=0.0;
+    double *F=mat(n,m),*Q=mat(m,m),*v_N=mat(m,1),*T=mat(m,1),*RI=mat(m,m);
+    int N=1,tk1k,tkk,info,i,j,jj;
+    float fabs_v;
+
+    matcpy(Q, R, m, m);
+    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);                /*F=P*H       F(n,m),P(n,n),H(n,m)*/
+    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);                /*Q=H'*F+R    Q(m,m),H(n,m),F(n,m)*/
+    if (!(info = matinv(Q, m))) {
+        matmul("NN", m, m, m, 1.0, R, Q, 0.0, v_post_);
+    }
+    matmul("NN", m, 1, m, -1.0, v_post_, v, 0.0, v_post);    /*v_postres=-R*inv(Q)*v_prires;*/
+
+    /*robust*/
+    matcpy(RI,R,m,m);
+    for (j=0;j<m;j++) {
+        fabs_v=fabs(v_post[j]);
+        v_N[j]=fabs_v/sqrt(v_post_[j*m+j]*RI[j*m+j]);
+        if (j%2==0) v_all1=v_all1+v_N[j];
+        if (j%2==1) v_all2=v_all2+v_N[j];
+    }
+    for (jj=0;jj<(m/2);jj++) {/*phase*/
+        V_all1=V_all1+SQR(v_N[2*jj]-v_all1/(m/2));
+    }
+    for (jj=0;jj<(m/2);jj++) { /*pseudorange*/
+        V_all2=V_all2+SQR(v_N[2*jj+1]-v_all2/(m/2));
+    }
+    for (j=0; j<m; j++) {
+        if (j%2==0) { /*phase*/
+            T[j]=fabs(v_N[j]-v_all1/(m/2))/SQRT(V_all1/(m/2));
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j])); /*down weight*/
+            }
+            if (T[j]>tdistb_0010[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*10000000.0; 
+            }
+        }
+        if (j%2==1) { /*pseudorange*/
+            T[j]=fabs(v_N[j]-v_all2/(m/2))/SQRT(V_all2/(m/2));
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j]));
+            }
+            if (T[j]>tdistb_0010[m/2-1]) {
+                RI[j*m+j]=RI[j*m+j]*100000000.0;
+            }
+        }
+    }
+
+    /*adaptive*/
+    matcpy(Pk1k,P,n,n);
+    tk1k=n+1+tao_P;                                                                     /*tk1k = (nx + 1 + tao_P)*/
+    matmul("NN", n, n, n, 1.0, mat_scale(n, tao_P), Pk1k, 0.0, Tk1k);    /*Tk1k=tao_P*Pk1k*/
+    matcpy(xp, x, n, 1);                                                             /*xkk=xk1k*/
+    matcpy(xk1k, x, n, 1);
+    matcpy(Pp, Pk1k, n, n);                                                              /*Pkk=Pk1k*/
+    for (i = 0; i < N; i++) {
+        matcpy(Ak, Pp, n, n);
+        matcpy(x_1, xp, n, 1);
+        matmul("NN", n, 1, n, -1.0, eye(n), xk1k, 1.0, x_1);
+        matmul("NT", n, n, 1, 1.0, x_1, x_1, 1.0, Ak);                      /*Ak=(xkk-xk1k)*(xkk-xk1k)'+Pp*/
+        tkk = tk1k + 1;                                                                        /*tkk=tk1k+1*/
+        matcpy(Tkk, Ak, n, n);                                                                 /*Tkk=Tk1k+Ak*/
+        matmul("NN", n, n, n, 1.0, eye(n), Tk1k, 1.0,Tkk);
+        if (!(info=matinv(Tkk,n))){                                                            /*E_i_Pk1k=(tkk-nx-1)*inv(Tkk)*/
+            matmul("NN",n,n,n,1.0, mat_scale(n,(tkk-n-1)*1.0),Tkk,0.0,E_i_Pk1k);
+        }
+        matcpy(Pzzk1k, RI, m, m);
+        if (!(info = matinv(E_i_Pk1k, n))){                                                    /*D_Pk1k = inv(E_i_Pk1k)*/
+            matmul("TN", m, n, n, 1.0, H, E_i_Pk1k, 0.0, E_i_Pk1k_0);
+            matmul("NN", m, m, n, 1.0, E_i_Pk1k_0, H, 1.0, Pzzk1k);             /*Pzzk1k = H*D_Pk1k*H'+D_R   Pzzk1k=H*Pk1k*H'+R*/
+            matmul("NN", n, m, n, 1.0, E_i_Pk1k, H, 0.0, Pxzk1k);               /*Pxzk1k = D_Pk1k*H'         Pxzk1k=Pk1k*H'*/
+            if (!(info = matinv(Pzzk1k, m))) {
+                matmul("NN", n, m, m, 1.0, Pxzk1k, Pzzk1k, 0.0, Kk);            /*Kk=Pxzk1k*inv(Pzzk1k)      Kk=Pxzk1k*inv(Pzzk1k)*/
+                matcpy(xp, xk1k, n, 1);
+                matmul("NN", n, 1, m, 1.0, Kk, v, 1.0, xp);/*v */               /*xp=xk1k+Kk*(z-H*xk1k)      xkk=xk1k+Kk*(z-H*xk1k)*/
+                matmul("NT", n, n, m, 1.0, Kk, H, 0.0, Kk_);
+                matcpy(Pp, E_i_Pk1k, n, n);
+                matmul("NN", n, n, n, -1.0, Kk_, E_i_Pk1k, 1.0, Pp);            /*Pp=D_Pk1k-Kk*H*D_Pk1k      Pkk=Pk1k-Kk*H*Pk1k*/
+            }
+        }
+    }
+    free(x_1);
+    free(xk1k); free(Pk1k1); free(Pk1k);
+    free(Tk1k); free(Ak); free(Tkk); free(E_i_Pk1k);
+    free(P_0); free(P_1); free(zk1k); free(E_i_Pk1k_0);
+    free(Pzzk1k); free(Pxzk1k); free(Kk); free(Kk_);
+    free(P1); free(P2); free(R1); free(I);
+    free(F); free(RI); free(v_N); free(T); free(Q);
+    free(v_post); free(v_post_);
+    return info;
+}
 /* kalman filter ---------------------------------------------------------------
 * kalman filter state update as follows:
 *
@@ -1317,6 +1749,27 @@ extern int filter(double *x, double *P, const double *H, const double *v,
         for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
     }
     info=filter_(x_,P_,H_,v,R,k,m,xp_,Pp_);
+    for (i=0;i<k;i++) {
+        x[ix[i]]=xp_[i];
+        for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
+    }
+    free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
+    return info;
+}
+extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
+                  const double *R, int n, int m)
+{
+    double *x_,*xp_,*P_,*Pp_,*H_;
+    int i,j,k,info,*ix;
+    
+    ix=imat(n,1); for (i=k=0;i<n;i++) if (x[i]!=0.0&&P[i+i*n]>0.0) ix[k++]=i;
+    x_=mat(k,1); xp_=mat(k,1); P_=mat(k,k); Pp_=mat(k,k); H_=mat(k,m);
+    for (i=0;i<k;i++) {
+        x_[i]=x[ix[i]];
+        for (j=0;j<k;j++) P_[i+j*k]=P[ix[i]+ix[j]*n];
+        for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
+    }
+    info=vbakf_(x_,P_,H_,v,R,k,m,xp_,Pp_);
     for (i=0;i<k;i++) {
         x[ix[i]]=xp_[i];
         for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
@@ -1851,7 +2304,6 @@ extern uint32_t tickget(void)
 #ifdef WIN32
     return (uint32_t)timeGetTime();
 #else
-    struct timespec tp={0};
     struct timeval  tv={0};
     
 #ifdef CLOCK_MONOTONIC_RAW
@@ -2536,6 +2988,255 @@ extern void readpos(const char *file, const char *rcv, double *pos)
     }
     pos[0]=pos[1]=pos[2]=0.0;
 }
+
+/* get tgd parameter (m) -----------------------------------------------------*/
+static double gettgd(int sat, const nav_t *nav,int type)
+{
+    int i,sys=satsys(sat,NULL);
+
+    if (sys==SYS_GLO) {
+        for (i=0;i<nav->ng;i++) {
+            if (nav->geph[i].sat==sat) break;
+        }
+        return (i>=nav->ng)?0.0:-nav->geph[i].dtaun*CLIGHT;
+    }
+    else {
+        for (i=0;i<nav->n;i++) {
+            if (nav->eph[i].sat==sat) break;
+        }
+        return (i>=nav->n)?0.0:nav->eph[i].tgd[type]*CLIGHT;
+    }
+}
+
+static double corrTGD(const nav_t *nav,uint8_t code, int sat)
+{
+    int sys,prn,frq_idx=0;
+    sys=satsys(sat,&prn);
+    double dcb=0.0,gamma,b1,alpha=0.0,beta=0.0,freq;
+
+    if(sys==SYS_GPS||sys==SYS_QZS){  /*gamma=SQR(f1)/SQR(f2) TGD=beta*DCB=1/(1-gamma)*DCB */
+        alpha= SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ2));
+        beta =-SQR(FREQ2)/(SQR(FREQ1)-SQR(FREQ2));
+        dcb=gettgd(sat,nav,0)/beta; /*align to L1*/
+        frq_idx=code2freq_GPS(code,&freq);
+        if(frq_idx==0) return -dcb*beta;
+        else if(frq_idx==1) return +dcb*alpha;
+        else return 0.0;
+    }
+    else if(sys==SYS_GLO){
+        double freq1=sat2freq(sat,CODE_L1P,nav);
+        double freq2=sat2freq(sat,CODE_L2P,nav);
+        alpha= SQR(freq1)/(SQR(freq1)-SQR(freq2));
+        beta =-SQR(freq2)/(SQR(freq1)-SQR(freq2));
+        gamma=SQR(FREQ1_GLO/FREQ2_GLO);
+        dcb=-gettgd(sat,nav,0);   /*-dtanu*/
+        if(code==CODE_L1C||code==CODE_L1P) return -dcb*beta;
+        else if(code==CODE_L2C||code==CODE_L2P) return +dcb*alpha;
+        else return 0.0;
+    }
+    else if(sys==SYS_GAL){
+        if(getseleph(SYS_GAL)){
+            b1=gettgd(sat,nav,0);  /*BGD_E1E5a*/
+        }
+        else{
+            frq_idx=code2freq_GAL(code,&freq);
+            if(frq_idx==1||frq_idx==0){
+                alpha= SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ7));
+                beta =-SQR(FREQ7)/(SQR(FREQ1)-SQR(FREQ7));
+                dcb=gettgd(sat,nav,1)/beta;  /*BGD_E1E5b*/
+                if(frq_idx==0) return -dcb*beta;
+                if(frq_idx==1) return +dcb*alpha;
+            }
+            else if(frq_idx==2||frq_idx==0){
+                alpha= SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ5));
+                beta =-SQR(FREQ5)/(SQR(FREQ1)-SQR(FREQ5));
+                dcb=gettgd(sat,nav,0)/beta;  /*BGD_E1E5a*/
+                if(frq_idx==0) return -dcb*beta;
+                if(frq_idx==2) return +dcb*alpha;
+            }
+            else return 0.0;
+        }
+    }
+    else if(sys==SYS_CMP){ /*base on B3I*/
+        if(prn<=18){
+            frq_idx=code2freq_BDS(code,&freq);
+            if(frq_idx==0){ /*B1I*/
+                dcb=gettgd(sat,nav,0);
+                return -dcb;
+            }else if(freq==1){ /*B2I*/
+                dcb=gettgd(sat,nav,1);
+                return -dcb;
+            }
+            else return 0.0;
+        }
+        else{
+            frq_idx=code2freq_BDS(code,&freq);
+            if(frq_idx==0){ /*B1I*/
+                dcb=gettgd(sat,nav,0);
+                return -dcb;
+            }
+            else return 0.0;
+        }
+    }
+    else if(sys==SYS_IRN){
+        gamma=SQR(FREQ9/FREQ5);
+        b1=gettgd(sat,nav,0);
+        return -gamma*b1;
+    }
+}
+
+extern double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int sat)
+{
+    double isc=0.0;
+    int sys=satsys(sat,NULL);
+
+    if(sys==SYS_GPS){
+        if(code==CODE_L1C) isc=cbias[G1C1W];      /*L1C -> L1W*/
+        else if(code==CODE_L2C) isc=cbias[G2C2W]; /*L2C -> L2W*/
+        else if(code==CODE_L2S) isc=cbias[G2W2S]; /*L2S -> L2W*/
+        else if(code==CODE_L2L) isc=cbias[G2W2L]; /*L2L -> L2W*/
+        else if(code==CODE_L2X) isc=cbias[G2W2X]; /*L2X -> L2W*/
+        return isc;
+    }
+    else if(sys==SYS_GLO){
+        if(code==CODE_L1C) isc=cbias[R1C1P];      /*L1C -> L1P*/
+        else if(code==CODE_L2C) isc=cbias[R2C2P]; /*L2C -> L2P*/
+        return isc;
+    }
+    else if(sys==SYS_GAL){
+        return 0.0;
+    }
+    else if(sys==SYS_CMP){
+        return 0.0;
+    }
+    else if(sys==SYS_QZS){
+        return 0.0;
+    }
+}
+
+extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias,uint8_t code,int frq,int sat)
+{
+    double dcb=0.0,alpha_12,beta_12,beta_13,dcb_13=0.0;
+    int sys=satsys(sat,NULL);
+
+    if(sys==SYS_GPS){ /* broadcast and precise clock base on L1/L2 ionospheric-free combination*/
+        alpha_12=SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ2));
+        beta_12 =-SQR(FREQ2)/(SQR(FREQ1)-SQR(FREQ2));
+        if(frq==0){ /*L1*/
+            dcb=-beta_12*cbias[G1W2W];
+        }
+        else if(frq==1){ /*L2*/
+            dcb=+alpha_12*cbias[G1W2W];
+        }
+        else if(frq==2){ /*L5*/
+            beta_13=-SQR(FREQ5)/(SQR(FREQ1)-SQR(FREQ5));
+            if(code==CODE_L5X){
+                dcb_13=cbias[G1C5X]-cbias[G1C1W];
+
+            }
+            else if(code==CODE_L5Q){
+                dcb_13=cbias[G1C5Q]-cbias[G1C1W];
+            }
+            dcb=-(beta_13*cbias[G1W2W]-dcb_13);
+        }
+        trace(0,"%f\n\r",dcb);
+        return dcb;
+    }
+    else if(sys==SYS_GLO){ /*broadcast and precise clock base on G1/G2 ionospheric-free combination*/
+        double freq1=sat2freq(sat,CODE_L1C,nav);
+        double freq2=sat2freq(sat,CODE_L2C,nav);
+        alpha_12=SQR(freq1)/(SQR(freq1)-SQR(freq2));
+        beta_12 =-SQR(freq2)/(SQR(freq1)-SQR(freq2));
+        if(frq==0){ /*G1*/
+            dcb=-beta_12*cbias[R1P2P];
+        }
+        else if(frq==1){ /*G2*/
+            dcb=+alpha_12*cbias[R1P2P];
+        }
+        return dcb;
+    }
+    else if(sys==SYS_GAL){ /* broadcast and most AC's precise clock base on E1/E5a ionospheric-free combination */
+        alpha_12= SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ5));
+        beta_12 =-SQR(FREQ5)/(SQR(FREQ1)-SQR(FREQ5));
+        if(frq==0){ /*E1 1C*/
+            if(code==CODE_L1C) dcb=-beta_12*cbias[E1C5Q];
+            else if(code==CODE_L1X) dcb=-beta_12*cbias[E1X5X];
+        }
+        else if(frq==1){ /*E5b 7IQX*/
+            beta_13 =-SQR(FREQ7)/(SQR(FREQ1)-SQR(FREQ7));
+            if(code==CODE_L7Q){
+                dcb_13=cbias[E1C7Q];
+                dcb=-(beta_13*cbias[E1C5Q]-dcb_13);
+            }
+            else if(code==CODE_L7X){
+                dcb_13=cbias[E1X7X];
+                dcb=-(beta_13*cbias[E1X5X]-dcb_13);
+            }
+        }
+        else if(frq==2){ /*E5a 5IQX*/
+            if(code==CODE_L5Q) dcb=+alpha_12*cbias[E1C5Q];
+            else if(code==CODE_L5X) dcb=+alpha_12*cbias[E1X5X];
+        }
+        else if(frq==3){ /*E6 6C*/
+            beta_13 =-SQR(FREQ6)/(SQR(FREQ1)-SQR(FREQ6));
+            dcb_13=cbias[E1C6C];
+            dcb=-(beta_13*cbias[E1C5Q]-dcb_13);
+        }
+        else if(frq==4){ /*E5ab 8IQX*/
+            beta_13 =-SQR(FREQ8)/(SQR(FREQ1)-SQR(FREQ8));
+            if(code==CODE_L8Q){
+                dcb_13=cbias[E1C8Q];
+                dcb=-(beta_13*cbias[E1C5Q]-dcb_13);
+            }
+            else if(code==CODE_L8X){
+                dcb_13=cbias[E1X8X];
+                dcb=-(beta_13*cbias[E1X5X]-dcb_13);
+            }
+        }
+        return dcb;
+    }
+    else if(sys==SYS_QZS){
+        alpha_12=SQR(FREQ1)/(SQR(FREQ1)-SQR(FREQ2));
+        beta_12 =-SQR(FREQ2)/(SQR(FREQ1)-SQR(FREQ2));
+        if(frq==0){ /*L1*/
+            if(code==CODE_L1C) dcb=-beta_12*cbias[J1C2L];
+            else if(code==CODE_L1X) dcb=-beta_12*cbias[J1X2X];
+        }
+        else if(frq==1){ /*L2*/
+            if(code==CODE_L2L) dcb=+alpha_12*cbias[J1C2L];
+            else if(code==CODE_L2X) dcb=+alpha_12*cbias[J1X2X];
+        }
+        else if(frq==2){ /*L5*/
+            beta_13=-SQR(FREQ5)/(SQR(FREQ1)-SQR(FREQ5));
+            if(code==CODE_L5X){
+                dcb_13=cbias[J1C5X];
+                dcb=-(beta_13*cbias[J1X2X]-dcb_13);
+            }
+            else if(code==CODE_L5Q){
+                dcb_13=cbias[J1C5Q];
+                dcb=-(beta_13*cbias[J1C2L]-dcb_13);
+            }
+        }
+        else if(frq==3){ /*L6*/
+            beta_13=-SQR(FREQ6)/(SQR(FREQ1)-SQR(FREQ6));
+            dcb=0.0;
+        }
+        return dcb;
+    }
+}
+
+extern double corr_code_bias(const prcopt_t *popt,const nav_t *nav,const obsd_t *obs,int frq)
+{
+    double isc=0.0,dcb=0.0;
+    int ppp = (popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED);
+
+    isc=corrISC(popt,nav->cbias[obs->sat-1],obs->code[frq],obs->sat);
+
+    dcb=corrDCB(popt,nav,nav->cbias[obs->sat-1],obs->code[frq],frq,obs->sat);
+
+    return isc+dcb;
+}
+
 /* read blq record -----------------------------------------------------------*/
 static int readblqrecord(FILE *fp, double *odisp)
 {
@@ -3020,6 +3721,119 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
 }
+/* correct obs --------------------------------------------------------------*/
+/* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
+extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
+                         const double *dantr,const double *dants, double phw, double *L, double *P,
+                         double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info)
+{
+    int sat,prn,f;
+    double cbias[NFREQ+NEXOBS]={0},frqs[NFREQ+NEXOBS]={0},alpha=0.0,beta=0.0;
+    double corr_P[NFREQ+NEXOBS]={0},corr_L[NFREQ+NEXOBS]={0};
+    int ppp = ((popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED));
+
+    for(int i=0;i<NFREQ;i++){
+        P[i]=0.0;
+        if(L) L[i]=0.0;
+        if(Lc) Lc[i]=0.0;
+        if(Pc) Pc[i]=0.0;
+        if(freqs) freqs[i]=0.0;
+        if(dcbs) dcbs[i]=0.0;
+        if(sat_info){
+            sat_info->L[i]=0.0;
+            sat_info->P[i]=0.0;
+            sat_info->cor_L[i]=0.0;
+            sat_info->cor_P[i]=0.0;
+            sat_info->lam[i]=0.0;
+        }
+    }
+
+    sat=obs->sat;
+    satsys(sat,&prn);
+    /*frequency index-----------------------------*/
+    /*       0    1    2     3     4 |    5     6  NFREQ=5,NEXOBS=3
+     *  -----------------------------|------------
+     * GPS  L1   L2   L5     -     - |    -     -
+     * GLO  G1   G2   G3     -     - |    G1a   G2a
+     * GAL  E1   E5b  E5a   E6   E5ab|    -     -
+     * QZS  L1   L2   L5    L6     - |    -     -
+     * SBAS L1    -   L5     -     - |    -     -
+     * BD2  B1I  B2I   -   B3I     - |    -     -
+     * BD3  B1I   -   B2a  B3I   B2ab|   B1C    B2b
+     * IRN  L5   S     -     -     - |    -     -
+     * -------------------------------------------*/
+    for(f=0;f<NFREQ+NEXOBS;f++){ /*corrected UC obs*/
+        if(obs->P[f]==0.0) continue;
+
+        cbias[f]=corr_code_bias(popt,nav,obs,f);
+        corr_P[f]=obs->P[f]+cbias[f];
+        if(dantr){
+            corr_P[f]-=dantr[f];
+        }
+        if(dants){
+            corr_P[f]-=dants[f];
+        }
+        frqs[f]=sat2freq(sat,obs->code[f],nav);
+    }
+
+    for(f=0;f<NFREQ+NEXOBS;f++){
+        if(obs->L[f]==0.0) continue;
+
+        if(L){
+            if(obs->L[f]!=0.0) corr_L[f]=obs->L[f]*CLIGHT/frqs[f]-phw*CLIGHT/frqs[f];
+            if(popt->modear==ARMODE_CONT&&(popt->arprod>=AR_PROD_OSB_COD)){
+                double cosb=0.0,posb=0.0;
+                double a=cosb/CLIGHT*1E9;
+                double b=posb/CLIGHT*1E9;
+                corr_L[f]-=posb;
+                corr_P[f]-=cosb;
+            }
+        }
+        if(dantr){
+            corr_L[f]-=dantr[f];
+        }
+        if(dants){
+            corr_L[f]-=dants[f];
+        }
+    }
+
+    for(f=0;f<popt->nf;f++){   /*UC model*/
+        P[f]=corr_P[frq_idxs[f]-1];
+        if(L) L[f]=corr_L[frq_idxs[f]-1];
+        if(freqs) freqs[f]=frqs[frq_idxs[f]-1];
+        if(dcbs) dcbs[f]=cbias[f];
+        if(sat_info){
+            sat_info->P[f]=obs->P[frq_idxs[f]-1];
+            sat_info->L[f]=obs->L[frq_idxs[f]-1];
+            sat_info->lam[f]=CLIGHT/freqs[frq_idxs[f]-1];
+            sat_info->cor_P[f]=corr_P[frq_idxs[f]-1];
+            sat_info->cor_L[f]=corr_L[frq_idxs[f]-1];
+        }
+    }
+    /* dual-frequency ionospheric-free frequency index----------------------
+     *             0        1       2         3         4          5       6
+     *   ------------------------------------------------------------------
+     *  GPS    L1+L2    L1+L5       -         -   |     -          -       -
+     *  GLO    G1+G2    G1+G3       -         -   |     -          -       -
+     *  GAL    E1+E5b   E1+E5a   E1+E6    E1+E5ab |     -          -       -
+     *  QZS    L1+L2    L1+L5    L1+L6        -   |     -          -       -
+     *  SBAS   L1+L5        -       -         -   |     -          -       -
+     *  BD2    B1I+B2I      -    B1I+B3I      -   |     -          -       -
+     *  BD3       -     B1I+B2a  B1I+B3I  B1I+B2ab|B1C+B2a   B1C+B3I   B1C+B2ab
+     *  IRN    L5+S         -       -         -   |     -          -       -
+     * --------------------------------------------------------------------*/
+    if(popt->ionoopt==IONOOPT_IFLC){
+        if(popt->nf==1){   /*UofC model*/
+            if(Lc&&P[frq_idxs[0]-1]!=0.0&&L[frq_idxs[0]-1]!=0.0) Lc[0]=0.5*P[frq_idxs[0]-1]+0.5*L[frq_idxs[0]-1];
+        }
+        else if(popt->nf==2){ /*dual-frequency ionospheric-free*/
+            alpha= SQR(frqs[frq_idxs[0]-1])/(SQR(frqs[frq_idxs[0]-1])-SQR(frqs[frq_idxs[1]-1]));
+            beta =-SQR(frqs[frq_idxs[1]-1])/(SQR(frqs[frq_idxs[0]-1])-SQR(frqs[frq_idxs[1]-1]));
+            if(corr_P[frq_idxs[0]-1]!=0.0&&corr_P[frq_idxs[1]-1]!=0.0) Pc[0]=alpha*corr_P[frq_idxs[0]-1]+beta*corr_P[frq_idxs[1]-1];
+            if(L&&corr_L[frq_idxs[0]-1]!=0.0&&corr_L[frq_idxs[1]-1]!=0.0) Lc[0]=alpha*corr_L[frq_idxs[0]-1]+beta*corr_L[frq_idxs[1]-1];
+        }
+    }
+}
 /* debug trace functions -----------------------------------------------------*/
 #ifdef TRACE
 
@@ -3333,6 +4147,10 @@ extern int expath(const char *path, char *paths[], int nmax)
     
     return n;
 }
+
+extern int seliflc(int optnf, int sys){
+    return((optnf==2||sys!=SYS_GAL)?1:2);
+}
 /* generate local directory recursively --------------------------------------*/
 static int mkdir_r(const char *dir)
 {
@@ -3567,8 +4385,6 @@ extern double satazel(const double *pos, const double *e, double *azel)
 * return : none
 * notes  : dop[0]-[3] return 0 in case of dop computation error
 *-----------------------------------------------------------------------------*/
-#define SQRT(x)     ((x)<0.0||(x)!=(x)?0.0:sqrt(x))
-
 extern void dops(int ns, const double *azel, double elmin, double *dop)
 {
     double H[4*MAXSAT],Q[16],cosel,sinel;

@@ -4,7 +4,7 @@
 *          Copyright (C) 2007-2020 by T.TAKASU, All rights reserved.
 *
 * references :
-*     [1] S.Hilla, The Extended Standard Product 3 Orbit Format (SP3-c),
+*     [1] S.Hilla, The Extended Standard Product 3 Orbit For (SP3-c),
 *         12 February, 2007
 *     [2] J.Ray, W.Gurtner, RINEX Extensions to Handle Clock Information,
 *         27 August, 1998
@@ -58,6 +58,19 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
+typedef struct {
+    int sat;
+    gtime_t ts,te;
+    int code;
+    int type;
+    double bia;
+}bias_t;
+
+typedef struct {
+    int nb,nmax;
+    bias_t *data;
+}biases_t;
+
 /* satellite code to satellite system ----------------------------------------*/
 static int code2sys(char code)
 {
@@ -94,21 +107,21 @@ int codeconv(char *obscode)
 static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
                     double *bfact, char *tsys)
 {
-    int i,j,k=0,ns=0,sys,prn;
+    int i=0,j,k=0,ns=0,nl=5,sys,prn;
     char buff[1024];
     
     trace(3,"readsp3h:\n");
     
-    for (i=0;;i++) {
-        if (!fgets(buff,sizeof(buff),fp)) break;
-        
-        if (i==0) {
+    while (fgets(buff,sizeof(buff),fp)) {
+
+        if (buff[0]=='#'&&(buff[1]=='c'||buff[1]=='d')) {
             *type=buff[2];
             if (str2time(buff,3,28,time)) return 0;
         }
-        else if (!strncmp(buff,"+ ",2)) { /* satellite id */
-            if (ns==0) {
-                ns=(int)str2num(buff,4,2);
+        else if (buff[0]=='+'&&buff[1]==' ') {
+            if (i==2) {
+                ns=(int)str2num(buff,3,3);
+                if (ns>85) nl=ns/17+(ns%17!=0);
             }
             for (j=0;j<17&&k<ns;j++) {
                 sys=code2sys(buff[9+3*j]);
@@ -116,27 +129,17 @@ static int readsp3h(FILE *fp, gtime_t *time, char *type, int *sats,
                 if (k<MAXSAT) sats[k++]=satno(sys,prn);
             }
         }
-        else if (!strncmp(buff,"++",2)) { /* orbit accuracy */
-            continue;
-        }
-        else if (!strncmp(buff,"%c",2)) { /* time system */
+        else if (i==2*nl+2) {/* %c */
             strncpy(tsys,buff+9,3); tsys[3]='\0';
         }
-        else if (!strncmp(buff,"%f",2)&&bfact[0]==0.0) { /* fp base number */
+        else if (i==2*nl+4) {/* %f */
             bfact[0]=str2num(buff, 3,10);
             bfact[1]=str2num(buff,14,12);
         }
-        else if (!strncmp(buff,"%i",2)) {
-            continue;
+        else if (i==2*nl+11){
+            break; /* at end of header */
         }
-        else if (!strncmp(buff,"/*",2)) { /* comment */
-            continue;
-        }
-        else if (!strncmp(buff,"* ",2)) { /* first record */
-            /* roll back file pointer */
-            fseek(fp,-(long)strlen(buff),SEEK_CUR);
-            break;
-        }
+        i=i+1; /* line counter */
     }
     return ns;
 }
@@ -157,7 +160,7 @@ static int addpeph(nav_t *nav, peph_t *peph)
     nav->peph[nav->ne++]=*peph;
     return 1;
 }
-/* read SP3 body -------------------------------------------------------------*/
+/* read sp3 body -------------------------------------------------------------*/
 static void readsp3b(FILE *fp, char type, int *sats, int ns, double *bfact,
                      char *tsys, int index, int opt, nav_t *nav)
 {
@@ -170,7 +173,7 @@ static void readsp3b(FILE *fp, char type, int *sats, int ns, double *bfact,
     trace(3,"readsp3b: type=%c ns=%d index=%d opt=%d\n",type,ns,index,opt);
     
     while (fgets(buff,sizeof(buff),fp)) {
-        
+        if(buff[0]=='%'||buff[0]=='/') continue;
         if (!strncmp(buff,"EOF",3)) break;
         
         if (buff[0]!='*'||str2time(buff,3,28,&time)) {
@@ -315,8 +318,8 @@ extern void readsp3(const char *file, nav_t *nav, int opt)
     for (i=j=0;i<n;i++) {
         if (!(ext=strrchr(efiles[i],'.'))) continue;
         
-        if (!strstr(ext,".sp3")&&!strstr(ext,".SP3")&&
-            !strstr(ext,".eph")&&!strstr(ext,".EPH")) continue;
+        if (!strstr(ext+1,"sp3")&&!strstr(ext+1,"SP3")&&
+            !strstr(ext+1,"eph")&&!strstr(ext+1,"EPH")) continue;
         
         if (!(fp=fopen(efiles[i],"r"))) {
             trace(2,"sp3 file open error %s\n",efiles[i]);
@@ -334,6 +337,269 @@ extern void readsp3(const char *file, nav_t *nav, int opt)
     
     /* combine precise ephemeris */
     if (nav->ne>0) combpeph(nav,opt);
+}
+
+static int readupdf_ewl(const char *file, wl_upds_t *ewls)
+{
+    FILE *fp;
+    char buff[200]={'\0'};
+    int sat;
+
+    if(!ewls) return 0;
+    if (!(fp=fopen(file,"r"))) {
+        trace(2,"ewl upd parameters file open error: %s\n",file);
+        return 0;
+    }
+
+    while(fgets(buff, sizeof(buff),fp)){
+        if(!strncmp(buff, "EOF",3)) break;
+        if(!strncmp(buff, "%",1)) continue;
+        sat=satid2no(buff+1);
+        if(sat<=0) continue;
+        ewls->ewl[sat-1]=str2num(buff,14,6);
+    }
+
+    fclose(fp);
+
+    return 1;
+}
+
+static int readupdf_wl(const char *file, wl_upds_t *wls)
+{
+    FILE *fp;
+    char buff[200]={'\0'};
+    int sat;
+
+    if(!wls) return 0;
+    if (!(fp=fopen(file,"r"))) {
+        trace(2,"wl upd parameters file open error: %s\n",file);
+        return 0;
+    }
+
+    while(fgets(buff, sizeof(buff),fp)){
+        if(!strncmp(buff, "EOF",3)) break;
+        if(!strncmp(buff, "%",1)) continue;
+        sat=satid2no(buff+1);
+        if(sat<=0) continue;
+        wls->wl[sat-1]=str2num(buff,14,6);
+    }
+
+    fclose(fp);
+
+    return 1;
+}
+
+static int readupdf_nl(const char *file, nl_upds_t *nls)
+{
+    FILE *fp;
+    char buff[200]={'\0'};
+    int sat,ep=0;
+    mjd_t mjd;
+    gtime_t t={0};
+    nl_upd_t *nl_data_temp;
+
+    if(!nls) return 0;
+    if (!(fp=fopen(file,"r"))) {
+        trace(2,"nl upd parameters file open error: %s\n",file);
+        return 0;
+    }
+
+    while(fgets(buff, sizeof(buff),fp)){
+        if(!strncmp(buff, "EOF",3)) break;
+        if(!strncmp(buff, "%",1)) continue;
+        if(!strncmp(buff+1,"EPOCH-TIME",10)){
+            mjd.day=(long) str2num(buff,12,8);
+            mjd.ds.sn=(long) str2num(buff,20,12);
+            mjd.ds.tos=0.0;
+            mjd2time(&mjd,&t);
+            ep++;
+            nls->n=ep;
+            continue;
+        }
+        sat=satid2no(buff+1);
+        if(sat<=0) continue;
+        if(nls->n>=nls->nmax){
+            nls->nmax+=1024;
+            if(!(nl_data_temp=(nl_upd_t *)realloc(nls->data, sizeof(nl_upd_t)*nls->nmax))){
+                free(nls->data);
+                nls->data=NULL;
+                nls->n=nls->nmax=0;
+                return -1;
+            }
+            nls->data=nl_data_temp;
+        }
+        nls->data[ep-1].ts=t;
+        nls->data[ep-1].te=timeadd(t,30.0);
+        nls->data[ep-1].nl[sat-1]=str2num(buff,15,8);
+        nls->data[ep-1].std[sat-1]=str2num(buff,25,8);
+    }
+    fclose(fp);
+    return 0;
+}
+
+extern int readupd(const prcopt_t *opt,char *file_ewl,char *file_wl,char *file_nl, nav_t *nav)
+{
+    nav->upds=(void *)malloc(sizeof(upds_t));
+    readupdf_ewl(file_ewl,&nav->upds->wls);
+    readupdf_wl(file_wl,&nav->upds->wls);
+    readupdf_nl(file_nl,&nav->upds->nls);
+
+    return 0;
+}
+
+static int biasstr2time(const char *s, int i, int n, gtime_t *t) {
+    double ep[6];
+    ep[1] = 1.0;
+    ep[2] = 1.0;
+    double day, sec;
+    char str[256], *p = str;
+    if (i < 0 || (int) strlen(s) < i || (int) sizeof(str) - 1 < i) return -1;
+    for (s += i; *s && --n >= 0;) *p++ = *s++;
+    *p = '\0';
+    if (sscanf(str, "%lf:%lf:%lf", ep, &day, &sec) < 3)
+        return -1;
+    if (ep[0] < 100.0) ep[0] += ep[0] < 80.0 ? 2000.0 : 1900.0;
+    *t = timeadd(epoch2time(ep), 86400.0 * (day - 1.0) + sec);
+    return 0;
+}
+
+static int readosbf(const char *file,biases_t *sat_bias)
+{
+    FILE *fp;
+    bias_t *bias_temp;
+    char buff[200];
+    int i,code,sat,sys;
+    const char *obscodes[]={       /* observation code strings */
+            ""  ,"1C","1P","1W","1Y", "1M","1N","1S","1L","1E", /*  0- 9 */
+            "1A","1B","1X","1Z","2C", "2D","2S","2L","2X","2P", /* 10-19 */
+            "2W","2Y","2M","2N","5I", "5Q","5X","7I","7Q","7X", /* 20-29 */
+            "6A","6B","6C","6X","6Z", "6S","6L","8L","8Q","8X", /* 30-39 */
+            "2I","2Q","6I","6Q","3I", "3Q","3X","1I","1Q","5A", /* 40-49 */
+            "5B","5C","9A","9B","9C", "9X","1D","5D","5P","5Z", /* 50-59 */
+            "6E","7D","7P","7Z","8D", "8P","4A","4B","4X",""    /* 60-69 */
+    };
+
+    if (!(fp=fopen(file,"r"))) {
+        trace(0,"fcb parameters file open error: %s\n",file);
+        return 0;
+    }
+    
+
+    memset(sat_bias,0, sizeof(biases_t));
+    while(fgets(buff, sizeof(buff),fp)){
+        if ((!strncmp(buff + 1, "OSB", 3)) && (!strncmp(buff + 65, "ns", 2))) {
+            sat = satid2no(buff + 11);
+            if(sat<=0) continue;
+            int range = (buff[25] == 'C' ? 1 : 0);
+            for (i = 0; i < MAXCODE; i++){
+                if (!strncmp(obscodes[i], buff + 26, 2)){
+                    code=i;
+                    break;
+                }
+            }
+            gtime_t t1, t2;
+            char st1[20], st2[20];
+            if (biasstr2time(buff, 35, 14, &t1)) continue;
+            if (biasstr2time(buff, 50, 14, &t2)) continue;
+            time2str(t1, st1, 0);
+            time2str(t2, st2, 0);
+            double value = atof(buff + 70);
+            if (sat_bias->nb >= sat_bias->nmax) {
+                sat_bias->nmax += 1024;
+                if (!(bias_temp=(bias_t *)realloc(sat_bias->data,sizeof(bias_t) * (sat_bias->nmax)))) {
+                    free(sat_bias->data);
+                    sat_bias->data = NULL;
+                    sat_bias->nb = sat_bias->nmax = 0;
+                    return -1;
+                }
+                sat_bias->data=bias_temp;
+            }
+            
+            sat_bias->nb++;
+            sat_bias->data[sat_bias->nb - 1].ts = t1;
+            sat_bias->data[sat_bias->nb - 1].te = t2;
+            sat_bias->data[sat_bias->nb - 1].sat = sat;
+            sat_bias->data[sat_bias->nb - 1].code = code;
+            sat_bias->data[sat_bias->nb - 1].type = range;
+            sat_bias->data[sat_bias->nb - 1].bia = value;
+        }
+    }
+
+    fclose(fp);
+
+    return 1;
+}
+
+extern int readosb(const char *file, nav_t *nav)
+{
+    biases_t biases = {0};
+    
+    readosbf(file, &biases);
+    
+    int nb, ii, i;
+    gtime_t tmin = {0}, tmax = {0};
+    double dt = 0.0;
+    
+    if (biases.nb == 0) {
+        nav->osbs = NULL;
+        return 0;
+    }
+    
+    tmin = biases.data[0].ts;
+    tmax = biases.data[0].te;
+    dt = timediff(tmax, tmin);
+    
+    for (i = 1; i < biases.nb; i++) {
+        if (timediff(biases.data[i].ts, tmin) < 0.0) tmin = biases.data[i].ts;
+        if (timediff(biases.data[i].te, tmax) > 0.0) tmax = biases.data[i].te;
+        double current_dt = timediff(biases.data[i].te, biases.data[i].ts);
+        if (current_dt < dt) dt = current_dt;
+    }
+    
+    nav->osbs = (osbs_t *)malloc(sizeof(osbs_t));
+    if (nav->osbs == NULL) {
+        free(biases.data);
+        return 0;
+    }
+    
+    nav->osbs->dt = dt;
+    nav->osbs->tmin = tmin;
+    nav->osbs->tmax = tmax;
+    
+    if (dt == 0.0) {
+        nav->osbs->dt = 30.0; 
+        dt = 30.0;
+    }
+    
+    nb = (int)(timediff(tmax, tmin) / dt) + 1;
+    nav->osbs->sat_osb = (osb_t *)calloc(nb, sizeof(osb_t));
+    if (nav->osbs->sat_osb == NULL) {
+        free(nav->osbs);
+        free(biases.data);
+        return 0;
+    }
+    
+    int sat, code;
+    for (i = 0; i < biases.nb; i++) {
+        sat = biases.data[i].sat - 1;
+        code = biases.data[i].code;
+        int i1 = (int)(timediff(biases.data[i].ts, tmin) / dt);
+        int i2 = (int)(timediff(biases.data[i].te, tmin) / dt);
+        
+        
+        for (ii = i1; ii <= i2; ii++) {
+            if (biases.data[i].type) {
+                nav->osbs->sat_osb[ii].code[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+            } else {
+                nav->osbs->sat_osb[ii].phase[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+            }
+        }
+    }
+    
+    free(biases.data);
+    biases.data = NULL;
+    biases.nmax = biases.nb = 0;
+    return 1;
 }
 /* read satellite antenna parameters -------------------------------------------
 * read satellite antenna parameters

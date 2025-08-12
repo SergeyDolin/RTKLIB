@@ -354,6 +354,45 @@ extern "C" {
 #define CODE_L4X    68                  /* obs code: G1al1OCd+p (GLO) */
 #define MAXCODE     68                  /* max number of obs code */
 
+#define G1W2W       0
+#define G1C1W       1
+#define G2C2W       2
+#define G1C5Q       3
+#define G1C2W       4
+#define G1C5X       5
+#define G2W2S       6
+#define G2W2L       7
+#define G2W2X       8
+#define R1P2P       0
+#define R1C1P       1
+#define R2C2P       2
+#define R1C2P       3
+#define R1C2C       4
+#define E1C5Q       0
+#define E1C6C       1
+#define E1C7Q       2
+#define E1C8Q       3
+#define E1X5X       4
+#define E1X7X       5
+#define E1X8X       6
+#define B2I7I       0
+#define B2I6I       1
+#define C1X5X       2
+#define C1P5P       3
+#define C1D5D       4
+#define C1X6I       5
+#define C1P6I       6
+#define C1D6I       7
+#define C2I6I       8
+#define C1X7Z       9
+#define C1X8X       10
+#define J1C2L       0
+#define J1C5X       1
+#define J1C5Q       2
+#define J1X2X       3
+#define J1X5X       4
+#define J1C1X       5
+
 #define PMODE_SINGLE 0                  /* positioning mode: single */
 #define PMODE_DGPS   1                  /* positioning mode: DGPS/DGNSS */
 #define PMODE_KINEMA 2                  /* positioning mode: kinematic */
@@ -389,7 +428,6 @@ extern "C" {
 #define IONOOPT_BRDC 1                  /* ionosphere option: broadcast model */
 #define IONOOPT_SBAS 2                  /* ionosphere option: SBAS model */
 #define IONOOPT_IFLC 3                  /* ionosphere option: L1/L2 iono-free LC */
-#define IONOOPT_IF2 5                   /* ionosphere option: two dual-frequency IF */
 #define IONOOPT_EST 4                   /* ionosphere option: estimation */
 #define IONOOPT_TEC 5                   /* ionosphere option: IONEX TEC model */
 #define IONOOPT_QZS 6                   /* ionosphere option: QZSS broadcast model */
@@ -408,15 +446,16 @@ extern "C" {
 #define EPHOPT_SSRAPC 3                 /* ephemeris option: broadcast + SSR_APC */
 #define EPHOPT_SSRCOM 4                 /* ephemeris option: broadcast + SSR_COM */
 
-#define WEIGHTOPT_ELEVATION 0           /* weighting option: elevation */
-#define WEIGHTOPT_SNR 1                 /* weighting option: snr */  
-
 #define ARMODE_OFF  0                   /* AR mode: off */
 #define ARMODE_CONT 1                   /* AR mode: continuous */
 #define ARMODE_INST 2                   /* AR mode: instantaneous */
 #define ARMODE_FIXHOLD 3                /* AR mode: fix and hold */
 #define ARMODE_WLNL 4                   /* AR mode: wide lane/narrow lane */
 #define ARMODE_TCAR 5                   /* AR mode: triple carrier ar */
+
+#define AR_PROD_FCB 1
+#define AR_PROD_UPD 2
+#define AR_PROD_OSB_COD 3
 
 #define SBSOPT_LCORR 1                  /* SBAS option: long term correction */
 #define SBSOPT_FCORR 2                  /* SBAS option: fast correction */
@@ -531,6 +570,16 @@ extern "C" {
 
 /* type definitions ----------------------------------------------------------*/
 
+typedef struct {
+    long sn;
+    double tos;
+}sod_t;
+
+typedef struct{
+    long day;
+    sod_t ds;
+}mjd_t;
+
 typedef struct {        /* time struct */
     time_t time;        /* time (s) expressed by standard time_t */
     double sec;         /* fraction of second under 1 s */
@@ -545,9 +594,6 @@ typedef struct {        /* observation data record */
     double L[NFREQ+NEXOBS]; /* observation data carrier-phase (cycle) */
     double P[NFREQ+NEXOBS]; /* observation data pseudorange (m) */
     float  D[NFREQ+NEXOBS]; /* observation data doppler frequency (Hz) */
-
-    uint8_t Lstd[NFREQ+NEXOBS]; /* stdev of carrier phase (0.004 cycles)  */
-    uint8_t Pstd[NFREQ+NEXOBS]; /* stdev of pseudorange (0.01*2^(n+5) meters) */
 } obsd_t;
 
 typedef struct {        /* observation data */
@@ -800,6 +846,67 @@ typedef struct {        /* SSR correction type */
     uint8_t update;     /* update flag (0:no update,1:update) */
 } ssr_t;
 
+typedef struct {        /* satellite fcb data type */
+    gtime_t ts,te;      /* start/end time (GPST) */
+    double bias[MAXSAT]; /* fcb value   (cyc) */
+    double std [MAXSAT]; /* fcb std-dev (cyc) */
+} fcbd_t;
+
+typedef struct {
+    int n,nmax;
+    fcbd_t *data;
+}fcbs_t;
+
+typedef struct {
+    gtime_t ts,te;
+    double nl[MAXSAT];
+    double std[MAXSAT];
+}nl_upd_t;
+
+typedef struct {
+    int n,nmax;
+    nl_upd_t *data;
+}nl_upds_t;
+
+typedef struct {
+    double ewl[MAXSAT];
+    double wl[MAXSAT];
+}wl_upds_t;
+
+typedef struct {
+    nl_upds_t nls;
+    wl_upds_t wls;
+}upds_t;
+
+typedef struct {
+    double code[MAXSAT][MAXCODE];
+    double phase[MAXSAT][MAXCODE];
+}osb_t;
+
+typedef struct {
+    gtime_t tmin,tmax;
+    double dt;
+    osb_t *sat_osb;
+}osbs_t;
+
+typedef union {
+    struct {
+        double x,y,z;
+    };
+    double v[3];
+}v3_t;
+
+typedef struct {
+    double q0,q1,q2,q3;
+}quat_t;
+
+typedef union {
+    struct{
+        double m11,m12,m13,m21,m22,m23,m31,m32,m33;
+    };
+    double v[9];
+}m3_t;
+
 typedef struct {        /* navigation data type */
     int n,nmax;         /* number of broadcast ephemeris */
     int ng,ngmax;       /* number of glonass ephemeris */
@@ -831,11 +938,15 @@ typedef struct {        /* navigation data type */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][MAXCODE][MAXCODE]; /* satellite DCB observation codes (m) */
     float rbias[MAXRCV][2][3]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
+    double wlbias[MAXSAT]; /* wide-lane bias (cycle) */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
     sbssat_t sbssat;    /* SBAS satellite corrections */
     sbsion_t sbsion[MAXBAND+1]; /* SBAS ionosphere corrections */
     dgps_t dgps[MAXSAT]; /* DGPS corrections */
     ssr_t ssr[MAXSAT];  /* SSR corrections */
+    upds_t *upds;
+    fcbs_t *fcbs;
+    osbs_t *osbs;
 } nav_t;
 
 typedef struct {        /* station parameter type */
@@ -870,6 +981,8 @@ typedef struct {        /* solution type */
     uint8_t ns;         /* number of valid satellites */
     float age;          /* age of differential (s) */
     float ratio;        /* AR ratio factor for valiation */
+    float prev_ratio;   /* previous initial AR ratio factor for validation */
+    float prevf_ratio;  /* previous final AR ratio factor for validation */
     float thres;        /* AR ratio threshold for valiation */
 } sol_t;
 
@@ -973,18 +1086,25 @@ typedef struct {        /* SNR mask type */
 typedef struct {        /* processing options type */
     int mode;           /* positioning mode (PMODE_???) */
     int soltype;        /* solution type (0:forward,1:backward,2:combined) */
+    int kalman;         /* kalman filter type (0: base, 1: vbbra) */
     int nf;             /* number of frequencies (1:L1,2:L1+L2,3:L1+L2+L5) */
     int navsys;         /* navigation system */
+    int arprod;         /* products of correction for AR */
     double elmin;       /* elevation mask angle (rad) */
     snrmask_t snrmask;  /* SNR mask */
     int sateph;         /* satellite ephemeris/clock (EPHOPT_???) */
     int modear;         /* AR mode (0:off,1:continuous,2:instantaneous,3:fix and hold,4:ppp-ar) */
     int glomodear;      /* GLONASS AR mode (0:off,1:on,2:auto cal,3:ext cal) */
+    int gpsmodear;      /* GPS AR mode, debug/learning only (0:off,1:on) */
     int bdsmodear;      /* BeiDou AR mode (0:off,1:on) */
+    int arfilter;       /* AR filtering to reject bad sats (0:off,1:on) */
     int maxout;         /* obs outage count to reset bias */
     int minlock;        /* min lock count to fix ambiguity */
     int minfix;         /* min fix count to hold ambiguity */
     int armaxiter;      /* max iteration to resolve ambiguity */
+    int mindropsats;    /* min sats to drop sats in AR */
+    int minfixsats;     /* min sats to fix integer ambiguities */
+    int minholdsats;    /* min sats to hold integer ambiguities */
     int ionoopt;        /* ionosphere option (IONOOPT_???) */
     int tropopt;        /* troposphere option (TROPOPT_???) */
     int dynamics;       /* dynamics model (0:none,1:velociy,2:accel) */
@@ -998,7 +1118,6 @@ typedef struct {        /* processing options type */
     int refpos;         /* base position for relative mode */
                         /* (0:pos in prcopt,  1:average of single pos, */
                         /*  2:read from file, 3:rinex header, 4:rtcm pos) */
-    int weightmode;     /* weighting option (WEIGHTOPT_??) */
     double eratio[NFREQ]; /* code/phase error ratio */
     double err[5];      /* measurement error factor */
                         /* [0]:reserved */
@@ -1011,6 +1130,7 @@ typedef struct {        /* processing options type */
     double elmaskar;    /* elevation mask of AR for rising satellite (deg) */
     double elmaskhold;  /* elevation mask to hold ambiguity (deg) */
     double thresslip;   /* slip threshold of geometry-free phase (m) */
+    double varholdamb;  /* variance for fix-and-hold pseudo measurements (cycle^2) */
     double maxtdiff;    /* max difference of time (sec) */
     double maxinno;     /* reject threshold of innovation (m) */
     double maxgdop;     /* reject threshold of gdop */
@@ -1030,6 +1150,14 @@ typedef struct {        /* processing options type */
     double odisp[2][6*11]; /* ocean tide loading parameters {rov,base} */
     int  freqopt;       /* disable L2-AR */
     char pppopt[256];   /* ppp option */
+    int gnss_frq_idx[NSYS][NFREQ];
+    
+    int sdopt;
+
+    gtime_t ts; /* process start time */
+    gtime_t te; /* process end time */
+    double cs_mw;
+    double cs_gf;
 } prcopt_t;
 
 typedef struct {        /* solution options type */
@@ -1067,6 +1195,11 @@ typedef struct {        /* file options type */
     char geexe  [MAXSTRPATH]; /* google earth exec file */
     char solstat[MAXSTRPATH]; /* solution statistics file */
     char trace  [MAXSTRPATH]; /* debug trace file */
+    char ewl    [MAXSTRPATH]; /* ewl ambiguty data file */
+    char wl     [MAXSTRPATH]; /* wl ambiguty data file */
+    char nl     [MAXSTRPATH]; /* nl ambiguty data file */
+    char *updf[3];
+    char bia    [MAXSTRPATH];
 } filopt_t;
 
 typedef struct {        /* RINEX options type */
@@ -1116,6 +1249,7 @@ typedef struct {        /* satellite status type */
     double azel[2];     /* azimuth/elevation angles {az,el} (rad) */
     double resp[NFREQ]; /* residuals of pseudorange (m) */
     double resc[NFREQ]; /* residuals of carrier-phase (m) */
+    double icbias[NFREQ]; /* GLONASS IC bias */
     uint8_t vsat[NFREQ]; /* valid satellite flag */
     uint16_t snr[NFREQ]; /* signal strength (*SNR_UNIT dBHz) */
     uint16_t snr_rover [NFREQ]; /* rover signal strength (0.25 dBHz) */
@@ -1127,11 +1261,29 @@ typedef struct {        /* satellite status type */
     uint32_t outc [NFREQ]; /* obs outage counter of phase */
     uint32_t slipc[NFREQ]; /* cycle-slip counter */
     uint32_t rejc [NFREQ]; /* reject counter */
+    double eclipse;
     double gf[NFREQ-1]; /* geometry-free phase (m) */
-    double mw[NFREQ-1]; /* MW-LC (m) */
+    double mw[4]; /* MW-LC (m)  MW, SMW, MW_idx, MW_var */
     double phw;         /* phase windup (cycle) */
+    double delta_mw[2];
+    double delta_gf[2];
+    gtime_t ct;
     gtime_t pt[2][NFREQ]; /* previous carrier-phase time */
-    double ph[2][NFREQ]; /* previous carrier-phase observable (cycle) */
+    double ph[2][NFREQ];  /* previous carrier-phase observable (cycle) */
+    double amb[NFREQ];
+    double fix_amb[NFREQ];
+
+    double L[NFREQ];
+    double P[NFREQ];
+    double cor_L[NFREQ];
+    double cor_P[NFREQ];
+    double lam[NFREQ];
+    double norm_v[2][NFREQ];
+    double detect[NFREQ][2];
+    double var_fact[2][NFREQ];
+
+    int init_amb[NFREQ];
+    int new_sat;
 } ssat_t;
 
 typedef struct {        /* ambiguity control type */
@@ -1143,6 +1295,208 @@ typedef struct {        /* ambiguity control type */
     char flags[MAXSAT]; /* fix flags */
 } ambc_t;
 
+typedef struct {
+    gtime_t t;
+    int fix_wl_flag;
+    int wl_fail_c;
+    int fix_nl_flag;
+    int ref_sat_no;
+    int wl_fix;
+    int nl_fix;
+    double wl;
+    double nl;
+    double lc;
+    double lc_fix;
+    double lc_res;
+    double wl_res;
+    double nl_res;
+
+    double count_fix;
+}sdamb_t;
+
+typedef struct {
+    gtime_t time;   /**< current time */
+    v3_t gyro;      /**< gyro output, angular increment */
+    v3_t accel;     /**< accelermeter output, velocity increment */
+
+    unsigned int pps;
+    unsigned int imuc;
+
+    short odoc;
+} imud_t;
+
+typedef struct {
+    int strfmt;
+    unsigned int imudecfmt;
+    unsigned int imucoors;
+    unsigned int imuvalfmt;
+    unsigned int freq_imu;  /**< IMU sample rate[Hz] */
+    unsigned int freq_od;   /**< Odometer sample rate[Hz] */
+    int week;
+    double sow;
+    gtime_t tstart;     /**< first epoch */
+    v3_t gyro_noise;    /**< Gyro output noise [rad/s] */
+    v3_t accel_noise;   /**< Accelermeter output notput noise [m/s^2] */
+    v3_t gyrnd;         /**< gyroscope noise density [rad/sqrt(s)==rad/s/sqrt(Hz)] */
+    v3_t gbrw;          /**< gyroscope (bias) random walk [rad/s/sqrt(s)==rad/s^2/sqrt(Hz)] */
+    v3_t accnd;         /**< accelerometer noise density [m/s/sqrt(s)==m/s^2/sqrt(Hz)] */
+    v3_t abrw;          /**< accelerometer (bias) random walk[m/s^2/sqrt(s)==m/s^3/sqrt(Hz)] */
+    v3_t Ta;            /**< Accel bias correlation time(1st order Markov) [s] */
+    v3_t Tg;            /**< Gryo bias correlation time(1st order Markov) [s] */
+    gtime_t init_tag;
+    v3_t inita;         /**< initial attitude, Enb [rad] */
+    v3_t inita_err;
+    v3_t initv;         /**< initial velocity, veb_e [m/s] */
+    v3_t initv_err;
+    v3_t initr;         /**< initial position, reb_e [m] */
+    v3_t initr_err;
+    v3_t ba;            /**< (initial) accel bias [m/s^2] */
+    v3_t ba_err;        /**< (initial) accel bias stanadard error[m/s^2] */
+    v3_t bg;            /**< (initial) gryo bias [rad/s] */
+    v3_t bg_err;        /**< (initial) gryo bias stanadard error[m/s^2] */
+    v3_t sa;            /**< Accelermeter scalar factor(or initial value) */
+    v3_t sa_err;        /**< Standard error of accelermeter scalar factor(initial value) */
+    v3_t sg;            /**< Gyro scalar factor(or initial value) */
+    v3_t sg_err;        /**< Standard error of Gyro scalar factor(initial value) */
+    double kod;         /**< odometer scalar factor, true/output */
+    double kod_err;         /**< initial odometer scalar factor uncertainty [^2] */
+    v3_t lever_arm_gps;     /**< gnss phase center position under imu frame[m] */
+    v3_t lever_arm_gps_std; /**< gnss lever arm uncertainty [m] */
+    v3_t lever_arm_od;      /**< odometer reference center under imu frame[m]*/
+    v3_t lever_arm_od_std;  /**< odometer lever arm uncertainty [m] */
+    v3_t lever_arm_car;     /**< car tailing wheel center position under imu frame[m] */
+    v3_t lever_arm_car_std; /**< car tailing whell center uncertainty [m] */
+    v3_t err_angle_imu;     /**< IMU install error angle(car-imu, roll, pitch, yaw)[rad] */
+    v3_t err_angle_imu_std; /**< IMU install error angle uncertainty[rad] */
+    v3_t err_angle_imu_rw;  /**< IMU install error angle randon walk [rad/sqrt(s)] */
+    v3_t Terr_angle_imu;    /**< IMU install error angle  correlation time(1st order Markov)[s] */
+    v3_t err_angle_gps;     /**< GPS install error angle(gps-imu, roll, pitch, yaw)[rad] */
+    v3_t err_angle_gps_std; /**< GPS install error angle uncertainty[rad] */
+    v3_t ref_point;         /**< reference point under b-frame, use for solution output [m]*/
+    unsigned char gyro_axis[3];
+    unsigned char accel_axis[3];
+} imup_t;
+
+typedef struct {
+    unsigned int n, nmax;   /**< number of data/allocated */
+    imud_t* data;           /**< IMU observation data record */
+    imup_t *property;       /**< IMU property */
+} imu_t;
+
+
+typedef struct {
+    double wie; /**< rotation rate(rad s^-1) */
+    double R0;  /**< Equatorial radius(m) */
+    double RP;  /**< Polar radius(m) */
+    double mu;  /**< gravitational constant, GM(m^3 s^-2) */
+    double J2;  /**< 2nd-order gravitational Spherical Harmonics Function coefficient */
+    double e;   /**< Eccentricity */
+    double f;   /**< Flattening */
+    v3_t pos;
+    v3_t vel;
+    v3_t wnie;
+    v3_t wnen;
+    v3_t wnin;
+    v3_t wnien;
+    double g;
+    v3_t gn;
+    v3_t gcc;
+    double sl;
+    double cl;
+    double tl;
+    double sl2;
+    double RN;
+    double RNh;
+    double clRNh;
+    double RM;
+    double RMh;
+    m3_t Mpv;
+} earth_t;
+
+/**
+ * @brief ins solution struct
+ */
+typedef struct{
+    gtime_t time;       /**< current solution time */
+    unsigned int status;/**< solution status, see macro SOL_* */
+    m3_t dcm;           /**< attitude in DCM */
+    quat_t quat;        /**< attitude in quaternion */
+    v3_t rpy;
+    m3_t Qatt;          /**< var-covariance matrix of attitude */
+    v3_t vel;           /**< velocity */
+    m3_t Qvel;          /**< var-covariance matrix of velocity */
+    v3_t acc;
+    v3_t pos;           /**< position */
+    m3_t Qpos;          /**< var-covariance matrix of postion  */
+    v3_t ba;            /**< accelermeter bias */
+    v3_t ba_std;        /**< standard error of accelermeter bais */
+    v3_t bg;            /**< gryo bias */
+    v3_t bg_std;        /**< standard error of gyro bias */
+    v3_t sa;            /**< accelermeter scalar factor */
+    v3_t sa_std;        /**< standard error of accelermeter scalar factor */
+    v3_t sg;            /**< gyro scalar scalar factor */
+    v3_t sg_std;        /**< standard error of gyro scalar factor */
+    v3_t arm_gps;
+    v3_t arm_gps_std;
+    double t_delay;
+    v3_t delay_pos;
+    double kod;         /**< scalar factor of odometer, true/output */
+    double std_kod;     /**< standard error of odometer scalar factor */
+    m3_t Cbc;           /**< install error angle */
+    v3_t std_Cbc;       /**< standard error of install error angle */
+    double dtr[NSYS];
+    int ns;
+    int g_status;
+    v3_t wib,wnb,web;
+    v3_t fb,fn,an;
+    v3_t Mpvvn;
+    m3_t CW;
+    m3_t MpvCnb;
+    earth_t eth;
+    int zero_flag;
+} solins_t;             /**< ins solution struct */
+
+/**
+ * @brief kalman filter struct
+ */
+typedef struct{
+    gtime_t time;       /**< current imu time */
+    gtime_t last_couple_time;
+    double idt;         /**< time interval of imu */
+    double odt;         /**< time interval of od */
+    int nx;             /**< length of full state of x */
+    int ny;             /**< length of full state of y */
+    int nix;
+    int ngx;
+    int na;
+    double *x;          /**< state vector */
+    double *P;          /**< var-covariance matrix */
+    double *xa;
+    double *Pa;
+    double *F;          /**< transition matrix */
+    double *Q;          /**< System noise covariance matrix */
+    double *H;          /**< measurement matrix(transpose) */
+    solins_t  *insstate;     /**< solution of kalman fileter */
+    solins_t  *sol;
+    gtime_t itg_start;  /**< intergral start time */
+    double *itg;        /**< integral variables */
+    double *R;          /**< necessary measurement noise(not for normal) */
+    imud_t *imud;               /**< imu data list */
+    unsigned short nimud;       /**< number of imud_t struct in kf_t.imud */
+    unsigned short imudend;     /**< last imu data  */
+    unsigned int ZST_count;     /**< zero speed test count */
+
+    imud_t *imu_obs;
+    imup_t *imup;
+    int nsample;
+    int couple_epoch;
+    int ins_epoch;
+    v3_t dthetap;
+    v3_t dvp;
+    v3_t omgb, fb;
+
+} kf_t;     /**< kalman filter status struct */
+
 typedef struct {        /* RTK control/result type */
     sol_t  sol;         /* RTK solution */
     double rb[6];       /* base position/velocity (ecef) (m|m/s) */
@@ -1151,12 +1505,44 @@ typedef struct {        /* RTK control/result type */
     double *x, *P;      /* float states and their covariance */
     double *xa,*Pa;     /* fixed states and their covariance */
     int nfix;           /* number of continuous fixes of ambiguity */
+    int fix_epoch;
+    int tc;
     ambc_t ambc[MAXSAT]; /* ambibuity control */
     ssat_t ssat[MAXSAT]; /* satellite status */
     int neb;            /* bytes in error message buffer */
     char errbuf[MAXERRMSG]; /* error message buffer */
     prcopt_t opt;       /* processing options */
+    int exist_sys[NSYS+1];
+    sdamb_t sdamb[MAXSAT];
+    char holdamb;       /* set if fix-and-hold has occurred at least once */
+    int nb_ar;          /* number of ambiguities used for AR last epoch */
+    int excsats;         /* index of next satellite to be excluded for partial ambiguity resolution */
+    kf_t *ins_kf;
 } rtk_t;
+
+typedef struct {
+    int nv;            /* number of observation             */
+    int npr;           /* number of pseudorange residual    */
+    int ncp;           /* number of carrier phase residual  */
+
+    double *pri_v;     /* priori residual include pseudorange and phase */
+    double *post_v;    /* post residual include pseudorange and phase   */
+    int   *vflag;      /* observation vaild flag              */
+    int *pr_idx;       /* priori pseudorange residual index   */
+    int *cp_idx;       /* priori carrier phase residual index */
+
+    double sigma0;
+    double *R;         /* covariance using for residual normalize */
+    double *Qvv;       /* post covariance get from filter fun     */
+
+    double *pri_pr;    /* priori pseudorange residual index   */
+    double *pri_cp;    /* priori carrier phase residual       */
+    double *post_pr;   /* post pseudorange residual           */
+    double *post_cp;   /* post carrier phase residual         */
+
+    double *norm_pr;   /* normalized post pseudorange residual    */
+    double *norm_cp;   /* normalized post carrier phase residual  */
+}res_t;
 
 typedef struct {        /* receiver raw data control type */
     gtime_t time;       /* message time */
@@ -1322,12 +1708,14 @@ extern opt_t sysopts[];              /* system options table */
 /* satellites, systems, codes functions --------------------------------------*/
 EXPORT int  satno   (int sys, int prn);
 EXPORT int  satsys  (int sat, int *prn);
+EXPORT int satsysidx (int sat);
 EXPORT int  satid2no(const char *id);
 EXPORT void satno2id(int sat, char *id);
 EXPORT uint8_t obs2code(const char *obs);
 EXPORT char *code2obs(uint8_t code);
 EXPORT double code2freq(int sys, uint8_t code, int fcn);
 EXPORT double sat2freq(int sat, uint8_t code, const nav_t *nav);
+EXPORT void getobsfrqidx(char* frq_str,int sys,int nf,int *idxs);
 EXPORT int  code2idx(int sys, uint8_t code);
 EXPORT int  satexclude(int sat, double var, int svh, const prcopt_t *opt);
 EXPORT int  testsnr(int base, int freq, double el, double snr,
@@ -1336,6 +1724,7 @@ EXPORT void setcodepri(int sys, int idx, const char *pri);
 EXPORT int  getcodepri(int sys, uint8_t code, const char *opt);
 
 /* matrix and vector functions -----------------------------------------------*/
+EXPORT int newround(double d);
 EXPORT double *mat  (int n, int m);
 EXPORT int    *imat (int n, int m);
 EXPORT double *zeros(int n, int m);
@@ -1353,6 +1742,8 @@ EXPORT int  solve (const char *tr, const double *A, const double *Y, int n,
 EXPORT int  lsq   (const double *A, const double *y, int n, int m, double *x,
                    double *Q);
 EXPORT int  filter(double *x, double *P, const double *H, const double *v,
+                   const double *R, int n, int m);
+EXPORT int  filter_vbakf(double *x, double *P, const double *H, const double *v,
                    const double *R, int n, int m);
 EXPORT int  smoother(const double *xf, const double *Qf, const double *xb,
                      const double *Qb, int n, double *xs, double *Qs);
@@ -1374,6 +1765,7 @@ EXPORT double  time2gst(gtime_t t, int *week);
 EXPORT gtime_t bdt2time(int week, double sec);
 EXPORT double  time2bdt(gtime_t t, int *week);
 EXPORT char    *time_str(gtime_t t, int n);
+EXPORT void mjd2time(const mjd_t *mjd,gtime_t *t);
 
 EXPORT gtime_t timeadd  (gtime_t t, double sec);
 EXPORT double  timediff (gtime_t t1, gtime_t t2);
@@ -1446,6 +1838,10 @@ EXPORT void createdir(const char *path);
 EXPORT double satazel(const double *pos, const double *e, double *azel);
 EXPORT double geodist(const double *rs, const double *rr, double *e);
 EXPORT void dops(int ns, const double *azel, double elmin, double *dop);
+
+EXPORT double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int sat);
+EXPORT double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias,uint8_t code,int frq,int sat);
+EXPORT double corr_code_bias(const prcopt_t *popt,const nav_t *nav,const obsd_t *obs,int frq);
 
 /* atmosphere models ---------------------------------------------------------*/
 EXPORT double ionmodel(gtime_t t, const double *ion, const double *pos,
@@ -1541,6 +1937,8 @@ EXPORT void readsp3(const char *file, nav_t *nav, int opt);
 EXPORT int  readsap(const char *file, gtime_t time, nav_t *nav);
 EXPORT int  readdcb(const char *file, nav_t *nav, const sta_t *sta);
 EXPORT int  readfcb(const char *file, nav_t *nav);
+EXPORT int  readupd(const prcopt_t *opt, char *file_ewl, char *file_wl, char *file_nl, nav_t *nav);
+EXPORT int  readosb(const char *file, nav_t *nav);
 EXPORT void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts);
 
 EXPORT int tle_read(const char *file, tle_t *tle);
@@ -1720,6 +2118,12 @@ EXPORT int lambda_reduction(int n, const double *Q, double *Z);
 EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
                          double *F, double *s);
 
+
+/* observation model */
+EXPORT void matchcposb(int type,const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
+                         const double *dantr,const double *dants, double phw, double *L, double *P,
+                         double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);
 /* standard positioning ------------------------------------------------------*/
 EXPORT int pntpos(const obsd_t *obs, int n, const nav_t *nav,
                   const prcopt_t *opt, sol_t *sol, double *azel,
@@ -1734,12 +2138,20 @@ EXPORT void rtkclosestat(void);
 EXPORT int  rtkoutstat(rtk_t *rtk, char *buff);
 
 /* precise point positioning -------------------------------------------------*/
+EXPORT int seliflc(int optnf, int sys);
+EXPORT int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vflag,int nv,int *exc);
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 EXPORT int pppnx(const prcopt_t *opt);
 EXPORT int pppoutstat(rtk_t *rtk, char *buff);
-
-EXPORT int ppp_ar(rtk_t *rtk, const obsd_t *obs, int n, int *exc,
-                  const nav_t *nav, const double *azel, double *x, double *P);
+EXPORT int pppna(const prcopt_t *opt);
+EXPORT int iamb_ppp(const prcopt_t *opt,int sat,int f);
+EXPORT int pppoutstat(rtk_t *rtk, char *buff);
+EXPORT int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,const obsd_t *obs,int ns,const nav_t *nav,int *exc);
+EXPORT void holdamb_ppp(rtk_t *rtk,const double *xa);
+EXPORT void freeres(res_t *res);
+EXPORT void init_prires(const double *v,const int *vflag,int nv,res_t *res);
+EXPORT void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const double *R, int nv);
+EXPORT int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc);
 
 /* post-processing positioning -----------------------------------------------*/
 EXPORT int postpos(gtime_t ts, gtime_t te, double ti, double tu,

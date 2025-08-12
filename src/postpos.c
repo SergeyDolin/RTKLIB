@@ -521,11 +521,11 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
     }
 }
 /* read prec ephemeris, sbas data, tec grid and open rtcm --------------------*/
-static void readpreceph(char **infile, int n, const prcopt_t *prcopt,
+static void readpreceph(char **infile, int n, const prcopt_t *prcopt, const filopt_t *fopt,
                         nav_t *nav, sbs_t *sbs)
 {
     seph_t seph0={0};
-    int i;
+    int i,ppp=0;
     char *ext;
     
     trace(2,"readpreceph: n=%d\n",n);
@@ -543,6 +543,14 @@ static void readpreceph(char **infile, int n, const prcopt_t *prcopt,
     for (i=0;i<n;i++) {
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
         readrnxc(infile[i],nav);
+    }
+
+    ppp=(prcopt->mode>=PMODE_PPP_KINEMA&&prcopt->mode<=PMODE_PPP_FIXED)?1:0;
+    /* read satellite upd/fcb files */
+    if(ppp&&prcopt->arprod == AR_PROD_UPD){
+        readupd(prcopt,fopt->ewl,fopt->wl,fopt->nl,nav);
+    } else if(ppp&&prcopt->arprod>=AR_PROD_OSB_COD){
+        readosb(fopt->bia,nav);
     }
     /* read sbas message files */
     for (i=0;i<n;i++) {
@@ -1087,7 +1095,7 @@ static int execses_b(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     trace(3,"execses_b: n=%d outfile=%s\n",n,outfile);
     
     /* read prec ephemeris and sbas data */
-    readpreceph(infile,n,popt,&navs,&sbss);
+    readpreceph(infile,n,popt,fopt,&navs,&sbss);
     
     for (i=0;i<n;i++) if (strstr(infile[i],"%b")) break;
     

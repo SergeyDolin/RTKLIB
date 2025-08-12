@@ -39,11 +39,19 @@ static double elmask_,elmaskar_,elmaskhold_;
 static double antpos_[2][3];
 static char exsats_[1024];
 static char snrmask_[NFREQ][1024];
+static char prc_ts_[100];
+static char prc_te_[100];
+static char GPS_frq_[20];
+static char GLO_frq_[20];
+static char GAL_frq_[20];
+static char BD2_frq_[20];
+static char BD3_frq_[20];
+static char QZS_frq_[20];
 
 /* system options table ------------------------------------------------------*/
 #define SWTOPT  "0:off,1:on"
 #define MODOPT  "0:single,1:dgps,2:kinematic,3:static,4:movingbase,5:fixed,6:ppp-kine,7:ppp-static,8:ppp-fixed"
-#define FRQOPT  "1:l1,2:l1+2,3:l1+2+3,4:l1+2+3+4,5:l1+2+3+4+5"
+#define FRQOPT  "1:l1,2:l1+l2,3:l1+l2+l5,4:l1+l2+l5+l6"
 #define TYPOPT  "0:forward,1:backward,2:combined"
 #define IONOPT  "0:off,1:brdc,2:sbas,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
 #define TRPOPT  "0:off,1:saas,2:sbas,3:est-ztd,4:est-ztdgrad"
@@ -62,9 +70,12 @@ static char snrmask_[NFREQ][1024];
 #define POSOPT  "0:llh,1:xyz,2:single,3:posfile,4:rinexhead,5:rtcm,6:raw"
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
+#define KALMAN  "0:base,1:vbbra"
+#define ARPROD  "0:off,1:fcb,2:upd,3:osb_cod"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
+    {"pos1-kalman",     3,  (void *)&prcopt_.kalman,     KALMAN },
     {"pos1-frequency",  3,  (void *)&prcopt_.nf,         FRQOPT },
     {"pos1-soltype",    3,  (void *)&prcopt_.soltype,    TYPOPT },
     {"pos1-elmask",     1,  (void *)&elmask_,            "deg"  },
@@ -86,10 +97,13 @@ EXPORT opt_t sysopts[]={
     {"pos1-posopt6",    3,  (void *)&prcopt_.posopt[5],  SWTOPT },
     {"pos1-exclsats",   2,  (void *)exsats_,             "prn ..."},
     {"pos1-navsys",     0,  (void *)&prcopt_.navsys,     NAVOPT },
+    {"pos1-arprod",     3,  (void *)&prcopt_.arprod,     ARPROD },
     
     {"pos2-armode",     3,  (void *)&prcopt_.modear,     ARMOPT },
     {"pos2-gloarmode",  3,  (void *)&prcopt_.glomodear,  GAROPT },
+    {"pos2-gpsarmode",  3,  (void *)&prcopt_.gpsmodear,  ARMOPT },
     {"pos2-bdsarmode",  3,  (void *)&prcopt_.bdsmodear,  SWTOPT },
+    {"pos2-arfilter",   3,  (void *)&prcopt_.arfilter,   SWTOPT },
     {"pos2-arthres",    1,  (void *)&prcopt_.thresar[0], ""     },
     {"pos2-arthres1",   1,  (void *)&prcopt_.thresar[1], ""     },
     {"pos2-arthres2",   1,  (void *)&prcopt_.thresar[2], ""     },
@@ -99,6 +113,9 @@ EXPORT opt_t sysopts[]={
     {"pos2-arelmask",   1,  (void *)&elmaskar_,          "deg"  },
     {"pos2-arminfix",   0,  (void *)&prcopt_.minfix,     ""     },
     {"pos2-armaxiter",  0,  (void *)&prcopt_.armaxiter,  ""     },
+    {"pos2-mindropsats",0,  (void *)&prcopt_.mindropsats,""     },
+    {"pos2-minholdsats",0,  (void *)&prcopt_.minholdsats,""     },
+    {"pos2-minfixsats", 0,  (void *)&prcopt_.minfixsats, ""     },
     {"pos2-elmaskhold", 1,  (void *)&elmaskhold_,        "deg"  },
     {"pos2-aroutcnt",   0,  (void *)&prcopt_.maxout,     ""     },
     {"pos2-maxage",     1,  (void *)&prcopt_.maxtdiff,   "s"    },
@@ -177,6 +194,10 @@ EXPORT opt_t sysopts[]={
     {"file-geoidfile",  2,  (void *)&filopt_.geoid,      ""     },
     {"file-ionofile",   2,  (void *)&filopt_.iono,       ""     },
     {"file-dcbfile",    2,  (void *)&filopt_.dcb,        ""     },
+    {"file-osbfile",    2,  (void *)&filopt_.bia,        ""     },
+    {"file-ewlamb",     2,  (void *)&filopt_.ewl,        ""     },
+    {"file-wlamb",      2,  (void *)&filopt_.wl,         ""     },
+    {"file-nlamb",      2,  (void *)&filopt_.nl,         ""     },
     {"file-eopfile",    2,  (void *)&filopt_.eop,        ""     },
     {"file-blqfile",    2,  (void *)&filopt_.blq,        ""     },
     {"file-tempdir",    2,  (void *)&filopt_.tempdir,    ""     },
