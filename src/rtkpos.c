@@ -1336,7 +1336,7 @@ static void holdamb(rtk_t *rtk, const double *xa)
         for (i=0;i<nv;i++) R[i+i*nv]=VAR_HOLDAMB;
         
         /* update states with constraints */
-        if ((info=filter(rtk->x,rtk->P,H,v,R,rtk->nx,nv))) {
+        if ((info=filter_vbakf(rtk->x,rtk->P,H,v,R,rtk->nx,nv))) {
             errmsg(rtk,"filter error (info=%d)\n",info);
         }
         free(R);
@@ -1534,7 +1534,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         }
         /* Kalman filter measurement update */
         matcpy(Pp,rtk->P,rtk->nx,rtk->nx);
-        if ((info=filter(xp,Pp,H,v,R,rtk->nx,nv))) {
+        if ((info=filter_vbakf(xp,Pp,H,v,R,rtk->nx,nv))) {
             errmsg(rtk,"filter error (info=%d)\n",info);
             stat=SOLQ_NONE;
             break;

@@ -327,6 +327,7 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     return 1;
 }
 /* measurement error variance ------------------------------------------------*/
+
 static double varerr(int sat, int sys, double el, double snr_rover,
                      int f, const prcopt_t *opt) {
     double a,b;
@@ -352,7 +353,7 @@ static double varerr(int sat, int sys, double el, double snr_rover,
 
     if (sys==SYS_GPS||sys==SYS_QZS) {
         if (code==1) {
-            fact*=3;
+            fact*=2;
         }
     }
     
@@ -541,12 +542,12 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                 P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];  
             }
             
-            if (codes[2] == CODE_L5X) {
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];
+            if (codes[2] == CODE_L5X || codes[2] == CODE_L5Q) {
+                P[2]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
             } 
-            if (codes[2] == CODE_L7X) {  /* E5a */
+            if (codes[2] == CODE_L7X || codes[2] == CODE_L7Q) {  /* E5a */
 
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
+                P[2]+=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
             }
         }
     }
@@ -1332,8 +1333,10 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
 
             if (j%2==0) rtk->ssat[sat-1].resc[j/2]=v[nv];
             else        rtk->ssat[sat-1].resp[j/2]=v[nv];
-            /* variance */
-            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt)+vart+SQR(C)*vari+var_rs[i];
+            /* variance 
+            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],0.25*rtk->ssat[sat-1].snr_rover[j/2],j/2,j%2,opt)+vart+SQR(C)*vari+var_rs[i];*/
+            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt)+
+                    vart+SQR(C)*vari+var_rs[i];
             var[nv]*=rtk->ssat[sat-1].var_fact[j%2][j/2];
 
             if (sys==SYS_GLO&&j%2==1) var[nv]+=VAR_GLO_IFB;
@@ -1556,6 +1559,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         /*stat=SOLQ_PPP;
         stat_ar=SOLQ_PPP;
         break;*/
+
         
         
     }
@@ -1573,6 +1577,64 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         stat=SOLQ_PPP;
     }
 
+    /* Output IF and WL ambiguities in ARUC-like format */
+    if (rtk->opt.ionoopt == IONOOPT_IFLC && rtk->opt.nf >= 2) {
+        int week;
+        double tow = time2gpst(rtk->sol.time, &week);
+        char satid[8];
+        int sat, i, idx1, idx2;
+        double N1, N2, f1, f2, N_if, N_wl, sigma_if, sigma_wl, sigma;
+        const obsd_t *pobs;
+
+        for (sat = 1; sat <= MAXSAT; sat++) {
+            if (!rtk->ssat[sat-1].vs) continue;
+
+            idx1 = IB(sat, 0, &rtk->opt);
+            idx2 = IB(sat, 2, &rtk->opt);
+
+            N1 = rtk->x[idx1];
+            N2 = rtk->x[idx2];
+            if (N1 == 0.0 || N2 == 0.0) continue;
+
+            /* Find observation for this satellite */
+            pobs = NULL;
+            for (i = 0; i < n; i++) {
+                if (obs[i].sat == sat) {
+                    pobs = &obs[i];
+                    break;
+                }
+            }
+            if (!pobs) continue;
+
+            /* Get carrier frequencies */
+            f1 = sat2freq(sat, pobs->code[0], nav);
+            f2 = sat2freq(sat, pobs->code[2], nav);
+            if (f1 == 0.0 || f2 == 0.0) continue;
+
+            /* Compute IF and WL ambiguities (in meters) */
+            N_if = (SQR(f1) * N1 - SQR(f2) * N2) / (SQR(f1) - SQR(f2));
+            N_wl = ((N1 / (CLIGHT / sat2freq(sat, obs[i].code[0], nav))) - (N2/ (CLIGHT / sat2freq(sat, obs[i].code[2], nav))));
+
+            /* Compute approximate standard deviation */
+            double var1 = rtk->P[idx1 + idx1 * rtk->nx];
+            double var2 = rtk->P[idx2 + idx2 * rtk->nx];
+            double cov12 = rtk->P[idx1 + idx2 * rtk->nx];  // off-diagonal
+
+            /* Var(IF) = a^2*var1 + b^2*var2 - 2ab*cov12 */
+            double a = SQR(f1) / (SQR(f1) - SQR(f2));
+            double b = SQR(f2) / (SQR(f1) - SQR(f2));
+            sigma_if = SQRT(a*a*var1 + b*b*var2 - 2.0*a*b*cov12);
+
+            /* Var(WL) = var1 + var2 - 2*cov12 */
+            sigma_wl = SQRT(MAX(0.0, var1 + var2 - 2.0 * cov12));
+
+            sigma = MAX(sigma_if, sigma_wl);  // or use sqrt(sigma_if^2 + sigma_wl^2)
+
+            satno2id(sat, satid);
+            trace(0, "%5d %7.1f ARUC %s %8.3f %8.3f %6.3f\n",
+                week, tow, satid, N_if, N_wl, sigma);
+        }
+    }
 
     if (opt->modear==ARMODE_CONT) {
         matcpy(xa,xp,rtk->nx,1);
