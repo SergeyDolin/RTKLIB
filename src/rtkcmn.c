@@ -3721,6 +3721,17 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
 }
+
+extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
+    double ep[6]={0};
+    int i,j,sat=obs->sat,code=obs->code[f];
+    if(nav->osbs->dt==0.0) return;
+
+    i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
+    time2epoch(obs->time,ep);
+    *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
+    *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+}
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
 extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,

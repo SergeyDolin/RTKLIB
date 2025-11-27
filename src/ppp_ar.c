@@ -150,7 +150,7 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
     elmask=rtk->opt.elmin;
 
     for(i=0;sat_sys[i];i++){
-        /*if((sat_sys[i]&SYS_GPS)&&rtk->opt.gpsmodear==ARMODE_OFF) continue;*/
+        if((sat_sys[i]&SYS_GPS)&&rtk->opt.gpsmodear==ARMODE_OFF) continue;
 
         for(j=0;j<n;j++){
             sys=satsys(obs[j].sat,&prn);
@@ -215,7 +215,7 @@ static void resetamb(rtk_t *rtk, double *xa, const double *Bc, const int *sat1, 
 static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_nl,double *H_if,int *sat1,
         int *sat2,int *iu,int *ir,double *el,double *Nw,double *Bw,double *Nl,double *Nc,double *sd_nl_fcb){
     prcopt_t opt=rtk->opt;
-    int i,j,sat,ref_sat,prn,sys_idx=-1,iamb,jamb,nb=0;
+    int i,j,f2,sat,ref_sat,prn,sys_idx=-1,iamb,jamb,nb=0;
     double frq1,frq2,lam1,lam2,lam_nl,lam_wl,gamma;
 
     /* clear fix flag for all sats (1=float, 2=fix) */
@@ -231,8 +231,10 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
         if(sys_idx==-1) continue;
         if(rtk->sdamb[sat-1].fix_nl_flag!=1) continue;
 
-        frq1=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][0]-1],nav);
-        frq1=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][1]-1],nav);
+        f2=obs->code[1]==0.0?2:1;
+
+        frq1=sat2freq(obs->sat,obs->code[0],nav);
+        frq2=sat2freq(obs->sat,obs->code[f2],nav);
 
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
@@ -299,7 +301,7 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl){
 static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *sd_nl_fcb,double *H_if,
                    const double *Bl,const double *Bw,int nb,const int *sat1,const int *sat2,const int *iu,double *xa){
     prcopt_t opt=rtk->opt;
-    int i,j,ny,na=rtk->na,sat,sys,sys_idx=-1,prn,stat=1;
+    int i,j,f2,ny,na=rtk->na,sat,sys,sys_idx=-1,prn,stat=1;
     double *y,*db,*Qb_if,*Qab,*QQ,*Qy,*DP,*Bc,*dx;
     double frq1=0.0,frq2=0.0,lam1,lam2,lam_nl,gamma;
 
@@ -329,8 +331,10 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         sys=satsys(sat,&prn);
         sys_idx=satsysidx(sat);
         if(sys_idx==-1) continue;
-        frq1=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][0]-1],nav);
-        frq2=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][1]-1],nav);
+        f2=obs->code[1]==0.0?2:1;
+
+        frq1=sat2freq(obs->sat,obs->code[0],nav);
+        frq2=sat2freq(obs->sat,obs->code[f2],nav);
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
         lam_nl=lam1*lam2/(lam2+lam1);
@@ -384,7 +388,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
                         int n, const int *exc,const nav_t *nav){
     prcopt_t opt = rtk->opt;
     int ns=0,nb=0;
-    int i,j,sat,prn,ref_sat,sys,sys_idx=-1,sat1[MAXOBS]={0},sat2[MAXOBS]={0},iu[MAXOBS]={0},ir[MAXOBS]={0},na=rtk->na,stat=0;
+    int i,j,f2,sat,prn,ref_sat,sys,sys_idx=-1,sat1[MAXOBS]={0},sat2[MAXOBS]={0},iu[MAXOBS]={0},ir[MAXOBS]={0},na=rtk->na,stat=0;
     double frq1=0.0,frq2=0.0,lam1,lam2,lam_nl,gamma,el[MAXOBS]={0};
     double *H_nl,*H_if;
     double *Nw,*Nl,*Nc; /* float ambiguity */
@@ -402,7 +406,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         rtk->sdamb[i].wl_fix=0;
         rtk->sdamb[i].ref_sat_no=0;
     }
-
+    
     H_nl=zeros(rtk->nx,ns);
     H_if=zeros(rtk->nx,rtk->nx);
 
@@ -427,8 +431,10 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
         rtk->sdamb[ref_sat-1].ref_sat_no=0;
 
-        frq1=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][0]-1],nav);
-        frq2=sat2freq(sat,obs[iu[i]].code[opt.gnss_frq_idx[sys_idx][1]-1],nav);
+        f2=obs->code[1]==0.0?2:1;
+
+        frq1=sat2freq(obs->sat,obs->code[0],nav);
+        frq2=sat2freq(obs->sat,obs->code[f2],nav);
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
         lam_nl=lam1*lam2/(lam2+lam1);
@@ -451,7 +457,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         } else if(opt.arprod == AR_PROD_OSB_COD){
             wl_amb = sd_wl;
         }
-
+        trace(2,"SAT: %d; SD WL: %f\n\r", i, sd_wl);
         rtk->sdamb[sat-1].wl=wl_amb;
         rtk->sdamb[sat-1].wl_fix=newround(wl_amb);
         rtk->sdamb[sat-1].wl_res=wl_amb-newround(wl_amb);
@@ -507,13 +513,22 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     return stat?nb:0;
 }
 
-static int arfilter(rtk_t *rtk, const obsd_t *obs, int ns, int nf){
-    int rerun=0,i,f;
-    int dly=2;
+static int arfilter(rtk_t *rtk,const obsd_t *obs,int ns,int nf)
+{
+    int rerun=0,dly=0,i,f;
+    dly=2;
 
-    for(i=0;i<ns;i++) for(f=0;f<nf;f++) {
-        
+    for(i=0;i<ns;i++){
+        for(f=0;f<nf;f++){
+            if (rtk->ssat[obs[i].sat-1].fix[f]!=2) continue;
+            if(rtk->ssat[obs[i].sat-1].lock[f]==0){
+                rtk->ssat[obs[i].sat-1].lock[f]=-rtk->opt.minlock-dly;
+                dly+=2;
+                rerun=1;
+            }
+        }
     }
+    return rerun;
 }
 /* ambiguity resolution in ppp -----------------------------------------------*/
 extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc)
@@ -534,6 +549,7 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     for(i=ipos;i<ipos+npos;i++) var+=SQRT(rtk->P[i+i*rtk->nx]);
     var=var/3.0; /* maintain compatibility with previous code */
     if(var>opt.thresar[2]){
+        trace(2,"position variance too large, var=%7.3f thres=%7.3f\n", var,opt.thresar[2]);
         return 0;
     }
 
@@ -541,13 +557,13 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
         nb=pppar_IF_ILS(rtk,xa,bias,obs,ns,exc,nav);
     }
 
-    if(rtk->opt.arfilter){
+    /*if(rtk->opt.arfilter){
         ratio_post=rtk->sol.ratio;
         if(nb>=0&&rtk->sol.prevf_ratio>=rtk->sol.thres&&((rtk->sol.ratio<rtk->sol.thres)||
             (rtk->sol.ratio<rtk->opt.thresar[0]*1.1&&rtk->sol.ratio<rtk->sol.prev_ratio/2))){
             if(arfilter(rtk,obs,ns,nf)) nb=pppar_IF_ILS(rtk,xa,bias,obs,ns,exc,nav);
         }
-    }
+    }*/
     rtk->sol.prev_ratio=ratio_post>0?ratio_post:rtk->sol.ratio;
     rtk->sol.prevf_ratio=rtk->sol.ratio;
 
@@ -576,10 +592,9 @@ extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,co
         }
         else rtk->excsats=0; /* exclude none and reset to beginning of list */
     }
-    if(rtk->holdamb){
-        nb=ppp_ar(rtk,bias,xa,Pa,nf,obs,ns,nav,exc);
-    }
-    else nb=0;
+    
+    nb=ppp_ar(rtk,bias,xa,Pa,nf,obs,ns,nav,exc);
+
 
     /* restore exclude sat if still no fix or significant increase in ar ration */
     if(excflag&&(rtk->sol.ratio<rtk->sol.thres)&&(rtk->sol.ratio<(1.5*rtk->sol.prevf_ratio))){

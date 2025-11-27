@@ -79,7 +79,7 @@
 #define VAR_VEL     SQR(60.0)       /* init variance of receiver vel ((m/s)^2) */
 #define VAR_ACC     SQR(60.0)       /* init variance of receiver acc ((m/ss)^2) */
 #define VAR_CLK     SQR(60.0)       /* init variance receiver clock (m^2) */
-#define VAR_ZTD     SQR(0.3)       /* init variance ztd (m^2) */
+#define VAR_ZTD     SQR(0.6)       /* init variance ztd (m^2) */
 #define VAR_GRA     SQR(0.01)       /* init variance gradient (m^2) */
 #define VAR_DCB     SQR(60.0)       /* init variance dcb (m^2) */
 #define VAR_BIAS    SQR(60.0)       /* init variance phase-bias (m^2) */
@@ -328,7 +328,7 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
 }
 /* measurement error variance ------------------------------------------------*/
 static double varerr(int sat, int sys, double el, double snr_rover,
-                     int f, const prcopt_t *opt) {
+                     int f, const prcopt_t *opt, const obsd_t *obs) {
     double a,b;
     double fact=1;
     double sinel=sin(el), var;
@@ -352,7 +352,7 @@ static double varerr(int sat, int sys, double el, double snr_rover,
 
     if (sys==SYS_GPS||sys==SYS_QZS) {
         if (code==1) {
-            fact*=3;
+            fact*=2;
         }
     }
     
@@ -362,6 +362,9 @@ static double varerr(int sat, int sys, double el, double snr_rover,
     var=fact * (SQR(a) + SQR(b / sinel));
 
     var*=(opt->ionoopt==IONOOPT_IFLC)?SQR(3.0):1.0;
+
+    if(code) var+=SQR(opt->err[1]*0.01*0.0025);
+    else var+=SQR(opt->err[1]*0.0025*0.004*0.2);
 
     return var;
 }
@@ -382,16 +385,20 @@ static void initx(rtk_t *rtk, double xi, double var, int i)
 static double gfmeas(const obsd_t *obs, const nav_t *nav)
 {
     double freq1,freq2;
+    int f2;
+
+    f2=obs->code[1]==0.0?2:1;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
-    freq2=sat2freq(obs->sat,obs->code[1],nav);
+    freq2=sat2freq(obs->sat,obs->code[f2],nav);
+
     if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[1]==0.0) return 0.0;
     return (obs->L[0]/freq1-obs->L[1]/freq2)*CLIGHT;
 }
 /* Melbourne-Wubbena linear combination --------------------------------------*/
 static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, double *var, double el)
 {
-    int sys,prn;
+    int sys,prn,f2;
     double freq1,freq2,freq5,lam_wl,lam1,lam2,P1C1=0.0,P2C2=0.0,cbias[NFREQ]={0};
     double osb_L1=0.0,osb_L2=0.0,osb_P1=0.0,osb_P2=0.0;
     double mea_L1=0.0,mea_L2=0.0,mea_P1=0.0,mea_P2=0.0;
@@ -399,14 +406,22 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
 
     sys=satsys(obs->sat,&prn);
 
-    freq1=sat2freq(obs->sat,obs->code[0],nav);
-    freq2=sat2freq(obs->sat,obs->code[2],nav);
-   
-    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[2]==0.0||
-        obs->P[0]==0.0||obs->P[2]==0.0) return 0.0;
+    
+    f2=obs->code[1]==0.0?2:1;
 
-    mea_L1=obs->L[0];mea_L2=obs->L[2];
-    mea_P1=obs->P[0];mea_P2=obs->P[2];
+    freq1=sat2freq(obs->sat,obs->code[0],nav);
+    freq2=sat2freq(obs->sat,obs->code[f2],nav);
+   
+    if (freq1==0.0||freq2==0.0||obs->L[0]==0.0||obs->L[f2]==0.0||
+        obs->P[0]==0.0||obs->P[f2]==0.0) return 0.0;
+
+    mea_L1=obs->L[0];mea_L2=obs->L[f2];
+    mea_P1=obs->P[0];mea_P2=obs->P[f2];
+
+    matchcposb(obs,nav,freq1,&osb_P1,&osb_L1);
+    matchcposb(obs,nav,freq2,&osb_P2,&osb_L2);
+    trace(2, "OSB P1: %f || OSB L1: %f\n\r", osb_P1, osb_L1);
+    trace(2, "OSB P2: %f || OSB L2: %f\n\r", osb_P2, osb_L2);
     
     lam_wl=CLIGHT/(freq1-freq2);
     lam1=CLIGHT/freq1;
@@ -760,6 +775,8 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 
         w0=rtk->ssat[sat-1].mw[1];
         rtk->ssat[sat-1].mw[0]=w1;
+
+        trace(0,"W0: %f || W1: %f\n\r", w0, w1);
 
         if (rtk->ssat[sat-1].mw[2]>0){
             double K=0.0;
@@ -1333,7 +1350,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             if (j%2==0) rtk->ssat[sat-1].resc[j/2]=v[nv];
             else        rtk->ssat[sat-1].resp[j/2]=v[nv];
             /* variance */
-            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt)+vart+SQR(C)*vari+var_rs[i];
+            var[nv]=varerr(obs[i].sat,sys,azel[1+i*2],j/2,j%2,opt,obs+i)+vart+SQR(C)*vari+var_rs[i];
             var[nv]*=rtk->ssat[sat-1].var_fact[j%2][j/2];
 
             if (sys==SYS_GLO&&j%2==1) var[nv]+=VAR_GLO_IFB;
@@ -1578,6 +1595,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         matcpy(xa,xp,rtk->nx,1);
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
+            trace(0,"HERE2\n\r");
             for(k=0;k<3;k++) rr[k]=xa[k];
             if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
             

@@ -518,6 +518,7 @@ extern void resetsysopts(void)
     filopt_.stapos [0]='\0';
     filopt_.geoid  [0]='\0';
     filopt_.dcb    [0]='\0';
+    filopt_.bia    [0]='\0';
     filopt_.blq    [0]='\0';
     filopt_.solstat[0]='\0';
     filopt_.trace  [0]='\0';

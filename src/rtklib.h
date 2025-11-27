@@ -2120,7 +2120,7 @@ EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
 
 
 /* observation model */
-EXPORT void matchcposb(int type,const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT void matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
 EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);

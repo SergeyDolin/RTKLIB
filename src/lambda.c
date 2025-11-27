@@ -19,10 +19,13 @@
 /* constants/macros ----------------------------------------------------------*/
 
 #define LOOPMAX     10000           /* maximum count of search loop */
+#define MIN_AMB_RES 3         /* min number of ambiguities for ILS-AR */
 
 #define SGN(x)      ((x)<=0.0?-1.0:1.0)
 #define ROUND(x)    (floor((x)+0.5))
 #define SWAP(x,y)   do {double tmp_; tmp_=x; x=y; y=tmp_;} while (0)
+
+#define PAR_EL 1
 
 /* LD factorization (Q=L'*diag(D)*L) -----------------------------------------*/
 static int LD(int n, const double *Q, double *L, double *D)
@@ -39,7 +42,7 @@ static int LD(int n, const double *Q, double *L, double *D)
         for (j=0;j<=i;j++) L[i+j*n]/=L[i+i*n];
     }
     free(A);
-    if (info) fprintf(stderr,"%s : LD factorization error\n",__FILE__);
+    /*if (info) fprintf(stderr,"%s : LD factorization error\n",__FILE__);*/
     return info;
 }
 /* integer gauss transformation ----------------------------------------------*/
@@ -161,28 +164,29 @@ static int search(int n, int m, const double *L, const double *D,
 * notes  : matrix stored by column-major order (fortran convension)
 *-----------------------------------------------------------------------------*/
 extern int lambda(int n, int m, const double *a, const double *Q, double *F,
-                  double *s)
-{
+                  double *s) {
     int info;
-    double *L,*D,*Z,*z,*E;
-    
-    if (n<=0||m<=0) return -1;
-    L=zeros(n,n); D=mat(n,1); Z=eye(n); z=mat(n,1); E=mat(n,m);
-    
-    /* LD factorization */
-    if (!(info=LD(n,Q,L,D))) {
-        
-        /* lambda reduction */
-        reduction(n,L,D,Z);
-        matmul("TN",n,1,n,1.0,Z,a,0.0,z); /* z=Z'*a */
-        
-        /* mlambda search */
-        if (!(info=search(n,m,L,D,z,E,s))) {
-            
-            info=solve("T",Z,E,n,m,F); /* F=Z'\E */
+    double *L, *D, *Z, *z, *E,*ZL,*W,*ZQ;
+
+    if (n <= 0 || m <= 0) return -1;
+    L = zeros(n, n);D = mat(n, 1);Z = eye(n);
+    z = mat(n, 1);E = mat(n, m); W = mat(n,n);ZQ=mat(n,n);
+    /* LD (lower diaganol) factorization (Q=L'*diag(D)*L) */
+    if (!(info = LD(n, Q, L, D))) {
+        /* lambda reduction (z=Z'*a, Qz=Z'*Q*Z=L'*diag(D)*L) */
+        reduction(n, L, D, Z);
+        matmul("TN", n, 1, n, 1.0, Z, a, 0.0, z); /* z=Z'*a */
+        matmul("TN",n,n,n,1.0,Z,Q,0.0,W);
+        matmul("NN",n,n,n,1.0,W,Z,0.0,ZQ);
+
+        /* mlambda search
+            z = transformed double-diff phase biases
+            L,D = transformed covariance matrix */
+        if (!(info = search(n, m, L, D, z, E, s))) {  /* returns 0 if no error */
+            info = solve("T", Z, E, n, m, F); /* F=Z'\E */
         }
     }
-    free(L); free(D); free(Z); free(z); free(E);
+    free(L);free(D);free(Z);free(z);free(E);
     return info;
 }
 /* lambda reduction ------------------------------------------------------------
