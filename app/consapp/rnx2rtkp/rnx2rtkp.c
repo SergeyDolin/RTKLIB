@@ -47,6 +47,7 @@ static const char *help[]={
 " -ts ds ts start day/time (ds=y/m/d ts=h:m:s) [obs start time]",
 " -te de te end day/time   (de=y/m/d te=h:m:s) [obs end time]",
 " -ti tint  time interval (sec) [all]",
+" -sta name station name for output files [UNKNOWN]",
 " -p mode   mode (0:single,1:dgps,2:kinematic,3:static,4:moving-base,",
 "                 5:fixed,6:ppp-kinematic,7:ppp-static) [2]",
 " -m mask   elevation mask angle (deg) [15]",
@@ -90,6 +91,9 @@ static void printhelp(void)
     for (i=0;i<(int)(sizeof(help)/sizeof(*help));i++) fprintf(stderr,"%s\n",help[i]);
     exit(0);
 }
+
+static char station_name[32] = "";  /* Default empty */
+
 /* rnx2rtkp main -------------------------------------------------------------*/
 int main(int argc, char **argv)
 {
@@ -100,7 +104,6 @@ int main(int argc, char **argv)
     double tint=0.0,es[]={2000,1,1,0,0,0},ee[]={2000,12,31,23,59,59},pos[3];
     int i,j,n,ret;
     char *infile[MAXFILE],*outfile="",*p;
-    
     prcopt.mode  =PMODE_KINEMA;
     prcopt.navsys=0;
     prcopt.refpos=1;
@@ -174,6 +177,7 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i],"-y")&&i+1<argc) solopt.sstat=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-x")&&i+1<argc) solopt.trace=atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(prcopt.station_name,argv[++i]);
         else if (*argv[i]=='-') printhelp();
         else if (n<MAXFILE) infile[n++]=argv[i];
     }

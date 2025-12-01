@@ -268,7 +268,8 @@ const prcopt_t prcopt_default={ /* defaults processing options */
     30.0,30.0,30.0,             /* maxtdif,maxinno,maxgdop */
     {0},{0},{0},                /* baseline,ru,rb */
     {"",""},                    /* anttype */
-    {{0}},{{0}},{0}             /* antdel,pcv,exsats */
+    {{0}},{{0}},{0},            /* antdel,pcv,exsats */
+    {0}                          /* station_name */
 };
 const solopt_t solopt_default={ /* defaults solution output options */
     SOLF_LLH,TIMES_GPST,1,3,    /* posf,times,timef,timeu */
@@ -571,10 +572,11 @@ extern int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vfl
 
 extern void init_prires(const double *v,const int *vflag,int nv,res_t *res)
 {
+    int i;
     res->pri_v=mat(nv,1);
     res->vflag=imat(nv,1);
     matcpy(res->pri_v,v,nv,1);
-    for(int i=0;i<nv;i++){
+    for( i=0;i<nv;i++){
         res->vflag[i]=vflag[i];
     }
     res->nv=nv;
@@ -603,8 +605,8 @@ extern void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const dou
     res_class(res, 0);
 
     if (res->ncp > 0 && res->cp_idx && res->vflag) {
-        int sat, frq;
-        for (int i = 0; i < res->ncp; i++) {
+        int sat, frq, i;
+        for (i = 0; i < res->ncp; i++) {
             sat = (res->vflag[res->cp_idx[i]] >> 8) & 0xFF;
             frq = (res->vflag[res->cp_idx[i]] & 0xF);
             if (sat >= 1 && sat <= MAXSAT && frq >= 0 && frq < NFREQ) {
@@ -2308,8 +2310,8 @@ extern uint32_t tickget(void)
     
 #ifdef CLOCK_MONOTONIC_RAW
     /* linux kernel > 2.6.28 */
-    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tp)) {
-        return tp.tv_sec*1000u+tp.tv_nsec/1000000u;
+    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tv)) {
+        return tv.tv_sec*1000u+tv.tv_sec/1000000u;
     }
     else {
         gettimeofday(&tv,NULL);
@@ -3139,7 +3141,7 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
             }
             dcb=-(beta_13*cbias[G1W2W]-dcb_13);
         }
-        trace(0,"%f\n\r",dcb);
+        trace(3,"%f\n\r",dcb);
         return dcb;
     }
     else if(sys==SYS_GLO){ /*broadcast and precise clock base on G1/G2 ionospheric-free combination*/
@@ -3727,12 +3729,12 @@ extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,c
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info)
 {
-    int sat,prn,f;
+    int i,sat,prn,f;
     double cbias[NFREQ+NEXOBS]={0},frqs[NFREQ+NEXOBS]={0},alpha=0.0,beta=0.0;
     double corr_P[NFREQ+NEXOBS]={0},corr_L[NFREQ+NEXOBS]={0};
     int ppp = ((popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED));
 
-    for(int i=0;i<NFREQ;i++){
+    for(i=0;i<NFREQ;i++){
         P[i]=0.0;
         if(L) L[i]=0.0;
         if(Lc) Lc[i]=0.0;
