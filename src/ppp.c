@@ -387,7 +387,7 @@ static double gfmeas(const obsd_t *obs, const nav_t *nav)
     double freq1,freq2;
     int f2;
 
-    f2=obs->code[1]==0.0?2:1;
+    f2=obs->L[1]==0.0?2:1;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
     freq2=sat2freq(obs->sat,obs->code[f2],nav);
@@ -407,7 +407,7 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     sys=satsys(obs->sat,&prn);
 
     
-    f2=obs->code[1]==0.0?2:1;
+    f2=obs->L[1]==0.0?2:1;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
     freq2=sat2freq(obs->sat,obs->code[f2],nav);
@@ -769,14 +769,14 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
         if ((gf=gfmeas(obs+i,nav))!=0.0)
             rtk->ssat[sat-1].gf[0]=gf;
 
-        if ((w1=mwmeas(&rtk->opt,obs+i,nav,&var1,rtk->ssat[sat-1].azel[1]))==0.0) {
+        if ((w1=mwmeas(obs+i,nav,&rtk->opt,&var1,rtk->ssat[sat-1].azel[1]))==0.0) {
             continue;
         }
 
         w0=rtk->ssat[sat-1].mw[1];
         rtk->ssat[sat-1].mw[0]=w1;
 
-        trace(0,"W0: %f || W1: %f\n\r", w0, w1);
+        trace(2,"W0: %f || W1: %f\n\r", w0, w1);
 
         if (rtk->ssat[sat-1].mw[2]>0){
             double K=0.0;
@@ -807,11 +807,9 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
     }
 
     detslp_ll(rtk,obs,n);
-    if(rtk->opt.nf>=2){
-        detslp_mw(rtk,obs,n,nav);
-        detslp_gf(rtk,obs,n,nav);
-        saveinfo(obs,rtk,n,nav);
-    }
+    detslp_mw(rtk,obs,n,nav);
+    detslp_gf(rtk,obs,n,nav);
+    saveinfo(obs,rtk,n,nav);
 }
 
 /* temporal update of position -----------------------------------------------*/
