@@ -233,8 +233,8 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
 
         f2=obs->L[1]==0.0?2:1;
 
-        frq1=sat2freq(obs->sat,obs->code[0],nav);
-        frq2=sat2freq(obs->sat,obs->code[f2],nav);
+        frq1 = sat2freq(sat, obs[iu[i]].code[0], nav);
+        frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav);
 
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
@@ -265,7 +265,7 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
 
             sd_nl_fcb[nb]=nl_fcb1-nl_fcb2;
         }
-        
+        trace(2, "SAT: %d | IF: %f, WL: %f, NL: %f\n\r",sat-1, sd_if, rtk->sdamb[sat-1].wl, rtk->sdamb[sat-1].nl);
 
         rtk->ssat[sat1[nb]-1].fix[0]=2;
         rtk->ssat[sat2[nb]-1].fix[0]=2;
@@ -275,7 +275,8 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
 }
 
 /* Narrow-lane ambiguity resolution */
-static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl){
+static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
+{
     int nb=num_nl,stat=0;
     double *Qnl,*HP,s[2]={0},*b,*pb;
 
@@ -284,17 +285,24 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl){
     matmul("NN",nb,nb,rtk->nx,1.0,HP,H_nl,0.0,Qnl);
 
     if(!lambda(nb,2,nl_amb,Qnl,b,s)){
+
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
-        if(rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
-        rtk->sol.thres=(float)rtk->opt.thresar[0];
+        if (rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
+        rtk->sol.thres=(float)rtk->opt.thresar[1];
 
         if(rtk->sol.ratio<rtk->sol.thres&&nb>MIN_AMB_RES){
             stat=0;
-        } else if(rtk->sol.ratio>rtk->sol.thres){
+        }
+        else if(rtk->sol.ratio>rtk->sol.thres){
             matcpy(nl_amb,b,nb,1);
-        } else stat=0;
-    } else stat=0;
+            stat=1;
+        }
+        else stat=0;
+    }
+    else stat=0;
+
     free(Qnl);free(HP);free(b);free(pb);
+
     return stat?nb:0;
 }
 
@@ -333,8 +341,8 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         if(sys_idx==-1) continue;
         f2=obs->L[1]==0.0?2:1;
 
-        frq1=sat2freq(obs->sat,obs->code[0],nav);
-        frq2=sat2freq(obs->sat,obs->code[f2],nav);
+        frq1 = sat2freq(sat, obs[iu[i]].code[0], nav);
+        frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav); 
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
         lam_nl=lam1*lam2/(lam2+lam1);
@@ -350,35 +358,35 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
             Bc[i]=lam_nl*(Bl[i]+sd_nl_fcb[i])+gamma*Bw[i];
         }
     }
-        /* y=differences between float and fixed ionospheric-free bias */
-        for(i=0;i<nb;i++){
-            y[na+i]-=Bc[i];
+    /* y=differences between float and fixed ionospheric-free bias */
+    for(i=0;i<nb;i++){
+        y[na+i]-=Bc[i];
+    }
+
+    /* adjuset non phase-bias states and covariance using fixed slution */
+    if(!matinv(Qb_if,nb)){
+        /* rtk->Pa=rtk->P-Qab*Qb^-1*Qab') */
+        matmul("NN",na,nb,nb, 1.0,Qab,Qb_if ,0.0,QQ);  /* QQ = Qab*Qb^-1 */
+        matmul("NT",na,na,nb,-1.0,QQ ,Qab,1.0,rtk->Pa); /* rtk->Pa = rtk->P-QQ*Qab' */
+
+        /* rtk->xa = rtk->x-Qab*Qb^-1*(b0-b) */
+        matmul("NN",nb,1,nb, 1.0,Qb_if ,y+na,0.0,db); /* db = Qb^-1*(b0-b) */
+        matmul("NN",na,1,nb,-1.0,Qab,db  ,0.0,dx); /* rtk->xa = rtk->x-Qab*db */
+
+        for(i=0;i<na;i++){
+            rtk->xa[i]+=dx[i];
+        }
+        for(i=0;i<na;i++){
+            xa[i]=rtk->xa[i];
         }
 
-        /* adjuset non phase-bias states and covariance using fixed slution */
-        if(!matinv(Qb_if,nb)){
-            /* rtk->Pa=rtk->P-Qab*Qb^-1*Qab') */
-            matmul("NN",na,nb,nb, 1.0,Qab,Qb_if ,0.0,QQ);  /* QQ = Qab*Qb^-1 */
-            matmul("NT",na,na,nb,-1.0,QQ ,Qab,1.0,rtk->Pa); /* rtk->Pa = rtk->P-QQ*Qab' */
+        /* reset ambiguity */
+        resetamb(rtk,xa,Bc,sat1,sat2,nb);
 
-            /* rtk->xa = rtk->x-Qab*Qb^-1*(b0-b) */
-            matmul("NN",nb,1,nb, 1.0,Qb_if ,y+na,0.0,db); /* db = Qb^-1*(b0-b) */
-            matmul("NN",na,1,nb,-1.0,Qab,db  ,0.0,dx); /* rtk->xa = rtk->x-Qab*db */
-
-            for(i=0;i<na;i++){
-                rtk->xa[i]+=dx[i];
-            }
-            for(i=0;i<na;i++){
-                xa[i]=rtk->xa[i];
-            }
-
-            /* reset ambiguity */
-            resetamb(rtk,xa,Bc,sat1,sat2,nb);
-
-            if(nb>=rtk->opt.minholdsats){
-                rtk->holdamb=1;
-            }
-        } else stat=0;
+        if(nb>=4){
+            rtk->holdamb=1;
+        }
+    } else stat=0;
     free(y);free(db);free(Qb_if);free(Qab);free(QQ);free(Qy);free(DP);free(Bc);free(dx);
 
     return stat;
@@ -433,8 +441,9 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
         f2=obs->L[1]==0.0?2:1;
 
-        frq1=sat2freq(obs->sat,obs->code[0],nav);
-        frq2=sat2freq(obs->sat,obs->code[f2],nav);
+
+        frq1 = sat2freq(sat, obs[iu[i]].code[0], nav); 
+        frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav);
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
         lam_nl=lam1*lam2/(lam2+lam1);
@@ -482,6 +491,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
         if(opt.arprod == AR_PROD_OSB_COD){
             nl_amb = (sd_if-gamma*ROUND(wl_amb))/lam_nl;
+            trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
         } else if(opt.arprod == AR_PROD_UPD&&!matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
         }
@@ -494,20 +504,21 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         rtk->sdamb[sat-1].nl_res=nl_amb-newround(nl_amb);
         rtk->sdamb[sat-1].lc=sd_if;
         rtk->sdamb[sat-1].fix_nl_flag=1;
-        trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
+        
     }
 
     nb=SDmat(rtk,obs,ns,nav,H_nl,H_if,sat1,sat2,iu,ir,el,Nw,Bw,Nl,Nc,sd_nl_fcb);
     rtk->nb_ar=nb;
 
     if(nb >= MIN_AMB_RES){
-        nb=resamb_nl(rtk,H_nl,Nl,nb);
-
+        trace(2, "NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
+        /*nb=resamb_nl(rtk,H_nl,Nl,nb);*/
+        trace(2, "POST NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
         if(nb&&fix_sol(rtk,obs,nav,sd_nl_fcb,H_if,Nl,Bw,nb,sat1,sat2,iu,xa)){
             stat=1;
         }
     }
-    
+    trace(2,"STAT: %d\n\r", stat);
     free(H_nl);free(H_if);
     free(Nw);free(Nl);free(Nc);
     free(Bw);free(Bl);free(Bc);
@@ -568,7 +579,7 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     rtk->sol.prev_ratio=ratio_post>0?ratio_post:rtk->sol.ratio;
     rtk->sol.prevf_ratio=rtk->sol.ratio;
 
-    return 0;
+    return nb;
 }
 
 extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,const obsd_t *obs,int ns,const nav_t *nav,int *exc){
@@ -594,7 +605,7 @@ extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,co
         else rtk->excsats=0; /* exclude none and reset to beginning of list */
     }
     
-    nb=ppp_ar(rtk,bias,xa,Pa,nf,obs,ns,nav,exc);
+    /*nb=ppp_ar(rtk,bias,xa,Pa,nf,obs,ns,nav,exc);*/
 
 
     /* restore exclude sat if still no fix or significant increase in ar ration */

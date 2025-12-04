@@ -594,6 +594,8 @@ typedef struct {        /* observation data record */
     double L[NFREQ+NEXOBS]; /* observation data carrier-phase (cycle) */
     double P[NFREQ+NEXOBS]; /* observation data pseudorange (m) */
     float  D[NFREQ+NEXOBS]; /* observation data doppler frequency (Hz) */
+    float Lstd[NFREQ+NEXOBS]; /* stdev of carrier phase (cycles) */ 
+    float Pstd[NFREQ+NEXOBS]; /* stdev of carrier phase (cycles) */ 
 } obsd_t;
 
 typedef struct {        /* observation data */

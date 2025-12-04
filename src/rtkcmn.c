@@ -1637,19 +1637,19 @@ static int vbakf_(const double *x,const double *P,const double *H,const double *
     for (j=0; j<m; j++) {
         if (j%2==0) { /*phase*/
             T[j]=fabs(v_N[j]-v_all1/(m/2))/SQRT(V_all1/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j])); /*down weight*/
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0001[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0001[m/2]-tdistb_0250[m/2])/(tdistb_0001[m/2]-T[j])); /*down weight*/
             }
-            if (T[j]>tdistb_0010[m/2]) {
+            if (T[j]>tdistb_0001[m/2]) {
                 RI[j*m+j]=RI[j*m+j]*10000000.0; 
             }
         }
         if (j%2==1) { /*pseudorange*/
             T[j]=fabs(v_N[j]-v_all2/(m/2))/SQRT(V_all2/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j]));
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0001[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0001[m/2]-tdistb_0250[m/2])/(tdistb_0001[m/2]-T[j]));
             }
-            if (T[j]>tdistb_0010[m/2-1]) {
+            if (T[j]>tdistb_0001[m/2-1]) {
                 RI[j*m+j]=RI[j*m+j]*100000000.0;
             }
         }

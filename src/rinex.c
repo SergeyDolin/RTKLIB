@@ -749,8 +749,9 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
     sigind_t *ind;
     double val[MAXOBSTYPE]={0};
     uint8_t lli[MAXOBSTYPE]={0};
+    double std[MAXOBSTYPE]={0};
     char satid[8]="";
-    int i,j,n,m,stat=1,p[MAXOBSTYPE],k[16],l[16];
+    int i,j,n,m,q,stat=1,p[MAXOBSTYPE],k[16],l[16],r[16];
     
     trace(4,"decode_obsdata: ver=%.2f\n",ver);
     
@@ -784,6 +785,7 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
         if (stat) {
             val[i]=str2num(buff,j,14)+ind->shift[i];
             lli[i]=(uint8_t)str2num(buff,j+14,1)&3;
+            std[i]=str2num(buff,j+15,1);
         }
     }
     if (!stat) return 0;
@@ -791,14 +793,16 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
     for (i=0;i<NFREQ+NEXOBS;i++) {
         obs->P[i]=obs->L[i]=0.0; obs->D[i]=0.0f;
         obs->SNR[i]=obs->LLI[i]=obs->code[i]=0;
+        obs->Lstd[i]=obs->Pstd[i]=0.0;
     }
     /* assign position in observation data */
-    for (i=n=m=0;i<ind->n;i++) {
+    for (i=n=m=q=0;i<ind->n;i++) {
         
         p[i]=(ver<=2.11)?ind->idx[i]:ind->pos[i];
         
         if (ind->type[i]==0&&p[i]==0) k[n++]=i; /* C1? index */
         if (ind->type[i]==0&&p[i]==1) l[m++]=i; /* C2? index */
+        if (ind->type[i]==0&&p[i]==2) r[q++]=i; /* C3? index */
     }
     if (ver<=2.11) {
         
@@ -837,13 +841,30 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
                 p[l[0]]=1; p[l[1]]=NEXOBS<2?-1:NFREQ+1;
             }
         }
+        if (q>=2) {
+            if (val[r[0]]==0.0&&val[r[1]]==0.0) {
+                p[r[0]]=-1; p[r[1]]=-1;
+            }
+            else if (val[r[0]]!=0.0&&val[r[1]]==0.0) {
+                p[r[0]]=1; p[r[1]]=-1;
+            }
+            else if (val[r[0]]==0.0&&val[r[1]]!=0.0) {
+                p[r[0]]=-1; p[r[1]]=1; 
+            }
+            else if (ind->pri[r[1]]>ind->pri[r[0]]) {
+                p[r[1]]=1; p[r[0]]=NEXOBS<2?-1:NFREQ+1;
+            }
+            else {
+                p[r[0]]=1; p[r[1]]=NEXOBS<2?-1:NFREQ+1;
+            }
+        }
     }
     /* save observation data */
     for (i=0;i<ind->n;i++) {
-        if (p[i]<0||val[i]==0.0) continue;
+        if (p[i]<0||(val[i]==0.0&&lli[i]==0.0)) continue;
         switch (ind->type[i]) {
-            case 0: obs->P[p[i]]=val[i]; obs->code[p[i]]=ind->code[i]; break;
-            case 1: obs->L[p[i]]=val[i]; obs->LLI [p[i]]=lli[i];    break;
+            case 0: obs->P[p[i]]=val[i]; obs->code[p[i]]=ind->code[i]; obs->Pstd[p[i]]=std[i]>0?0.01*pow(2, std[i]+5):0; break;
+            case 1: obs->L[p[i]]=val[i]; obs->LLI [p[i]]=lli[i]; obs->Lstd[p[i]]=std[i]>0?std[i]*0.004:0; break;
             case 2: obs->D[p[i]]=(float)val[i];                     break;
             case 3: obs->SNR[p[i]]=(uint16_t)(val[i]/SNR_UNIT+0.5); break;
         }

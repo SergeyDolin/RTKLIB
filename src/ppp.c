@@ -399,7 +399,7 @@ static double gfmeas(const obsd_t *obs, const nav_t *nav)
 static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, double *var, double el)
 {
     int sys,prn,f2;
-    double freq1,freq2,freq5,lam_wl,lam1,lam2,P1C1=0.0,P2C2=0.0,cbias[NFREQ]={0};
+    double freq1,freq2,lam_wl,lam1,lam2;
     double osb_L1=0.0,osb_L2=0.0,osb_P1=0.0,osb_P2=0.0;
     double mea_L1=0.0,mea_L2=0.0,mea_P1=0.0,mea_P2=0.0;
     double MW=0.0;
@@ -1463,9 +1463,6 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
         if (vv>chisqr[nv-NP(opt)-1]) {
             stat=0;
         }
-        else {
-            stat=1;
-        }
     }
     return stat;
 }
@@ -1590,23 +1587,21 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
 
     if (opt->modear==ARMODE_CONT) {
-        matcpy(xa,xp,rtk->nx,1);
+        matcpy(rtk->x,xp,rtk->nx,1);
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
-            trace(0,"HERE2\n\r");
             for(k=0;k<3;k++) rr[k]=xa[k];
             if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
             
                 stat=SOLQ_FIX;
                 rtk->fix_epoch++;
                 rtk->nfix++;
-                trace(0,"FIX SOL\n\r");
             }
             else {
                 rtk->nfix=0;
             }
         }
-        /*update_stat(rtk,obs,n,stat);*/
+        update_stat(rtk,obs,n,stat);
        
     }
 
