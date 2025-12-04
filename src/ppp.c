@@ -1588,6 +1588,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
     if (opt->modear==ARMODE_CONT) {
         matcpy(rtk->x,xp,rtk->nx,1);
+        matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
             for(k=0;k<3;k++) rr[k]=xa[k];
