@@ -58,7 +58,7 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
-#define MAXCODE 128
+#define MAXCODE 136
 
 typedef struct {
     int sat;
@@ -88,7 +88,7 @@ static int code2sys(char code)
 /*convert observation code CHAR to NUM*/
 int codeconv(char *obscode)
 {
-    int i;
+    int k;
     
     int codeL[] = {CODE_L1C,CODE_L1P,CODE_L1W,CODE_L1Y,CODE_L1M,CODE_L1N,CODE_L1S,CODE_L1L,CODE_L1E,CODE_L1A
     ,CODE_L1B,CODE_L1X,CODE_L1Z,CODE_L2C,CODE_L2D,CODE_L2S,CODE_L2L,CODE_L2X,CODE_L2P,CODE_L2W,CODE_L2Y,CODE_L2M
@@ -101,7 +101,7 @@ int codeconv(char *obscode)
     ,"C6L","C8I","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q","C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B"
     ,"C9C","C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z","C8D","C8P","C4A","C4B","C4X"};
       
-    for (i = 0; i < 68; i++) if(!strcmp(codeC[i], obscode)) return codeL[i];
+    for (k = 0; k < 68; k++) if(!strcmp(codeC[k], obscode)) return codeL[k];
 
     return 0;
 }
@@ -739,7 +739,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
     while (fgets(buff,sizeof(buff),fp)) {
         if (strstr(buff, "*BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ BIAS_END______ UNIT __ESTIMATED_VALUE____ _STD_DEV___")) start=1;
         if (strstr(buff,"POINTS")) start=0;
-        if (strstr(buff,"DSB  G    G   ABMF")) start=3;
+        if (strstr(buff,"DSB  G    G")) start=3;
         if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12)<0) continue;
         trace(3,"%s %s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12);
         if(start == 3) {
@@ -756,7 +756,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
                 sat=satid2no(str3);
                 nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=(cbias*1E-9*CLIGHT);
             }   
-            trace(3, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
+            trace(2, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
         }
         start=2;
     }
