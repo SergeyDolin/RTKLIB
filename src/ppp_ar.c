@@ -504,7 +504,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         rtk->sdamb[sat-1].nl_res=nl_amb-newround(nl_amb);
         rtk->sdamb[sat-1].lc=sd_if;
         rtk->sdamb[sat-1].fix_nl_flag=1;
-        trace(0, "SAT: %d; NL: %f; NL_FIX: %d; NL_RES: %f; SD_IF: %f\n\r", i, nl_amb, newround(nl_amb), nl_amb-newround(nl_amb), sd_if);
+        /*trace(0, "SAT: %d; NL: %f; NL_FIX: %d; NL_RES: %f; SD_IF: %f\n\r", i, nl_amb, newround(nl_amb), nl_amb-newround(nl_amb), sd_if); */
         
     }
 

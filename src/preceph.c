@@ -524,7 +524,7 @@ static int readosbf(const char *file, biases_t *sat_bias) {
     content[size] = '\0';
     fclose(fp);
 
-    // --- Найти начало секции с заголовком *BIAS SVN_ ---
+    /* --- Найти начало секции с заголовком *BIAS SVN_ --- */
     char *header = strstr(content, "*BIAS SVN_ PRN");
     if (!header) {
         trace(0, "section '*BIAS SVN_' not found\n");
@@ -532,7 +532,7 @@ static int readosbf(const char *file, biases_t *sat_bias) {
         return 0;
     }
 
-    // Найти начало первой строки после заголовка
+    /* Найти начало первой строки после заголовка */
     char *p = strstr(header, "OSB ");
     if (!p) {
         trace(0, "no OSB records found after header\n");
@@ -540,7 +540,7 @@ static int readosbf(const char *file, biases_t *sat_bias) {
         return 0;
     }
 
-    // --- Найти конец секции ---
+    /* --- Найти конец секции --- */
     char *end = strstr(p, "-BIAS/SOLUTION");
     if (!end) {
         end = content + size;
@@ -561,7 +561,7 @@ static int readosbf(const char *file, biases_t *sat_bias) {
             continue;
         }
 
-        // Убедимся, что svn и prn — спутниковые (второй символ — цифра)
+        /* Убедимся, что svn и prn — спутниковые (второй символ — цифра) */
         if (strlen(svn) < 2 || strlen(prn) < 2 || !isdigit(svn[1]) || !isdigit(prn[1])) {
             p += 4;
             continue;
@@ -582,7 +582,7 @@ static int readosbf(const char *file, biases_t *sat_bias) {
             continue;
         }
 
-        // Увеличиваем буфер
+        /* Увеличиваем буфер */
         if (sat_bias->nb >= sat_bias->nmax) {
             sat_bias->nmax += 1024;
             bias_t *tmp = (bias_t *)realloc(sat_bias->data, sizeof(bias_t) * sat_bias->nmax);

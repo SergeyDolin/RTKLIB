@@ -7,9 +7,16 @@ OPTS    = -DTRACE -DENAGLO -DENAQZS -DENAGAL -DENACMP -DENAIRN -DNFREQ=5
 #OPTS    = -DENAGLO -DENAQZS -DENAGAL -DENACMP -DNFREQ=2
 
 # for no lapack
-CFLAGS  = -Wall -O0 -ansi -pedantic -Wno-unused-but-set-variable -I$(SRC) $(OPTS) -g
+# main
+CFLAGS  = -Wall -O3 -ansi -pedantic -Wno-unused-but-set-variable -I$(SRC) $(OPTS) -g
+CFLAGS_DEBUG  = -Wall -O0 -ansi -pedantic -Wno-unused-but-set-variable -I$(SRC) $(OPTS) -g
+
+ifeq ($(MAKECMDGOALS), debug)
+    CFLAGS = $(CFLAGS_DEBUG)
+endif
+
 #LDLIBS  = -lm -lrt
-LDLIBS  = ../../../../lib/iers/gcc/iers.a -lm
+LDLIBS  = ../../../../lib/iers/gcc/iers.a -lgfortran -lm -lrt
 
 #CFLAGS  = -Wall -O3 -ansi -pedantic -Wno-unused-but-set-variable -I$(SRC) -DLAPACK $(OPTS)
 #LDLIBS  = -lm -lrt -llapack -lblas
@@ -25,6 +32,7 @@ LDLIBS  = ../../../../lib/iers/gcc/iers.a -lm
 #LDLIBS  = -L$(MKLDIR)/intel64 -lmkl_intel_lp64 -lmkl_core -lmkl_gnu_thread -lpthread -lgomp -lm -lrt
 
 all        : rnx2rtkp
+debug	   : rnx2rtkp
 rnx2rtkp   : rnx2rtkp.o rtkcmn.o rinex.o rtkpos.o postpos.o solution.o
 rnx2rtkp   : lambda.o geoid.o sbas.o preceph.o pntpos.o ephemeris.o options.o
 rnx2rtkp   : ppp.o ppp_ar.o rtcm.o rtcm2.o rtcm3.o rtcm3e.o ionex.o tides.o
@@ -162,3 +170,4 @@ prof :
 
 install :
 	cp rnx2rtkp $(BINDIR)
+

@@ -418,8 +418,8 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     mea_L1=obs->L[0];mea_L2=obs->L[f2];
     mea_P1=obs->P[0];mea_P2=obs->P[f2];
 
-    matchcposb(obs,nav,freq1,&osb_P1,&osb_L1);
-    matchcposb(obs,nav,freq2,&osb_P2,&osb_L2);
+    matchcposb(obs,nav,0,&osb_P1,&osb_L1);
+    matchcposb(obs,nav,f2,&osb_P2,&osb_L2);
     trace(2, "OSB P1: %f || OSB L1: %f\n\r", osb_P1, osb_L1);
     trace(2, "OSB P2: %f || OSB L2: %f\n\r", osb_P2, osb_L2);
     

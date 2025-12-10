@@ -584,7 +584,6 @@ extern void init_prires(const double *v,const int *vflag,int nv,res_t *res)
 
 extern void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const double *R, int nv)
 {
-    int i;
     if (!res || !post_v || !R || nv <= 0) {
         trace(2, "init_postres: invalid input\n");
         return;
@@ -605,7 +604,7 @@ extern void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const dou
     res_class(res, 0);
 
     if (res->ncp > 0 && res->cp_idx && res->vflag) {
-        int sat, frq;
+        int sat, frq, i;
         for (i = 0; i < res->ncp; i++) {
             sat = (res->vflag[res->cp_idx[i]] >> 8) & 0xFF;
             frq = (res->vflag[res->cp_idx[i]] & 0xF);
@@ -1639,19 +1638,19 @@ static int vbakf_(const double *x,const double *P,const double *H,const double *
     for (j=0; j<m; j++) {
         if (j%2==0) { /*phase*/
             T[j]=fabs(v_N[j]-v_all1/(m/2))/SQRT(V_all1/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0001[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0001[m/2]-tdistb_0250[m/2])/(tdistb_0001[m/2]-T[j])); /*down weight*/
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j])); /*down weight*/
             }
-            if (T[j]>tdistb_0001[m/2]) {
+            if (T[j]>tdistb_0010[m/2]) {
                 RI[j*m+j]=RI[j*m+j]*10000000.0; 
             }
         }
         if (j%2==1) { /*pseudorange*/
             T[j]=fabs(v_N[j]-v_all2/(m/2))/SQRT(V_all2/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0001[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0001[m/2]-tdistb_0250[m/2])/(tdistb_0001[m/2]-T[j]));
+            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
+                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j]));
             }
-            if (T[j]>tdistb_0001[m/2-1]) {
+            if (T[j]>tdistb_0010[m/2-1]) {
                 RI[j*m+j]=RI[j*m+j]*100000000.0;
             }
         }
@@ -2310,8 +2309,8 @@ extern uint32_t tickget(void)
     
 #ifdef CLOCK_MONOTONIC_RAW
     /* linux kernel > 2.6.28 */
-    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tp)) {
-        return tv.tv_sec*1000u+tv.tv_usec/1000u;
+    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tv)) {
+        return tv.tv_sec*1000u+tv.tv_sec/1000000u;
     }
     else {
         gettimeofday(&tv,NULL);
@@ -3726,7 +3725,9 @@ extern void freenav(nav_t *nav, int opt)
 
 extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
     double ep[6]={0};
-    int i,j,sat=obs->sat,code=obs->code[f];
+    int i,j;
+    int sat=obs->sat;
+    int code=obs->code[f];
     if(nav->osbs->dt==0.0) return;
 
     i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
@@ -3744,7 +3745,6 @@ extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,c
     double cbias[NFREQ+NEXOBS]={0},frqs[NFREQ+NEXOBS]={0},alpha=0.0,beta=0.0;
     double corr_P[NFREQ+NEXOBS]={0},corr_L[NFREQ+NEXOBS]={0};
     int ppp = ((popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED));
-
     for(i=0;i<NFREQ;i++){
         P[i]=0.0;
         if(L) L[i]=0.0;

@@ -244,10 +244,11 @@ static int str2enum(const char *str, const char *comment, int *val)
        return sscanf(p+1,"%d",val)==1;
     }
     sprintf(s,"%.30s:",str);
-    if ((p=strstr(comment,s))) { /* number */
+    if ((p=strstr(comment,s))) { /* number  */
         return sscanf(p,"%d",val)==1;
     }
-    return 0;
+    return 0; 
+
 }
 /* search option ---------------------------------------------------------------
 * search option record
