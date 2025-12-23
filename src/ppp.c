@@ -1400,49 +1400,62 @@ extern int pppnx(const prcopt_t *opt)
 static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
 {
     const prcopt_t *opt=&rtk->opt;
-    int i,j;
+    int i,j,irc;
     
     /* test # of valid satellites */
     rtk->sol.ns=0;
-    for (i=0;i<n&&i<MAXOBS;i++) {
+    for (i=0;i<MAXSAT;i++) {
         for (j=0;j<opt->nf;j++) {
-            if (!rtk->ssat[obs[i].sat-1].vsat[j]) continue;
-            rtk->ssat[obs[i].sat-1].lock[j]++;
-            rtk->ssat[obs[i].sat-1].outc[j]=0;
+            if (!rtk->ssat[i].vsat[j]){
+                rtk->ssat[i].resc[j]=rtk->ssat[i].resp[j]=0;
+                continue;
+            }
+            rtk->ssat[i].outc[j]=0;
+
+            if(rtk->ssat[i].lock[j]<0||(rtk->nfix>0&&rtk->ssat[i].fix[j]==2)){
+                rtk->ssat[i].lock[j]++;
+            }
             if (j==0) rtk->sol.ns++;
         }
     }
     rtk->sol.stat=rtk->sol.ns<MIN_NSAT_SOL?SOLQ_NONE:stat;
     
-    if (!rtk->tc&&rtk->sol.stat==SOLQ_FIX) {
-        for (i=0;i<3;i++) {
-            rtk->sol.rr[i]=rtk->xa[i];
-            rtk->sol.qr[i]=(float)rtk->Pa[i+i*rtk->na];
+    if (rtk->sol.stat==SOLQ_FIX) {
+        if(!rtk->tc){
+            for (i=0;i<3;i++) {
+                rtk->sol.rr[i]=rtk->xa[i];
+                rtk->sol.qr[i]=(float)rtk->Pa[i+i*rtk->na];
+            }
+            rtk->sol.qr[3]=(float)rtk->Pa[1];
+            rtk->sol.qr[4]=(float)rtk->Pa[1+2*rtk->na];
+            rtk->sol.qr[5]=(float)rtk->Pa[2];
         }
-        rtk->sol.qr[3]=(float)rtk->Pa[1];
-        rtk->sol.qr[4]=(float)rtk->Pa[1+2*rtk->na];
-        rtk->sol.qr[5]=(float)rtk->Pa[2];
     }
     else {
-        for (i=0;i<3;i++) {
-            rtk->sol.rr[i]=rtk->x[i];
-            rtk->sol.qr[i]=(float)rtk->P[i+i*rtk->nx];
+        if(!rtk->tc&&stat!=SOLQ_SINGLE){
+            for (i=0;i<3;i++) {
+                rtk->sol.rr[i]=rtk->x[i];
+                rtk->sol.qr[i]=(float)rtk->P[i+i*rtk->nx];
+            }
+            rtk->sol.qr[3]=(float)rtk->P[1];
+            rtk->sol.qr[4]=(float)rtk->P[2+rtk->nx];
+            rtk->sol.qr[5]=(float)rtk->P[2];
         }
-        rtk->sol.qr[3]=(float)rtk->P[1];
-        rtk->sol.qr[4]=(float)rtk->P[2+rtk->nx];
-        rtk->sol.qr[5]=(float)rtk->P[2];
     }
 
-    rtk->sol.dtr[0]=rtk->x[IC(0,opt)]/CLIGHT;
-    rtk->sol.dtr[1]=rtk->x[IC(1,opt)]-rtk->x[IC(0,opt)]/CLIGHT;
-    rtk->sol.dtr[2]=rtk->x[IC(2,opt)]-rtk->x[IC(0,opt)]/CLIGHT;
-    rtk->sol.dtr[3]=rtk->x[IC(3,opt)]-rtk->x[IC(0,opt)]/CLIGHT;
+    for(i=0;i<6;i++){
+        irc=IC(i,opt);
+        rtk->sol.dtr[i]=rtk->x[irc]/CLIGHT;
+    }
     
     for (i=0;i<n&&i<MAXOBS;i++) for (j=0;j<opt->nf;j++) {
-        rtk->ssat[obs[i].sat-1].snr[j]=obs[i].SNR[j];
+        rtk->ssat[obs[i].sat-1].snr_rover[j]=obs[i].SNR[j];
+        rtk->ssat[obs[i].sat-1].snr_base[j] =0;
     }
     for (i=0;i<MAXSAT;i++) for (j=0;j<opt->nf;j++) {
         if (rtk->ssat[i].slip[j]&3) rtk->ssat[i].slipc[j]++;
+        else rtk->ssat[i].slipc[j]=0;
+
         if (rtk->ssat[i].fix[j]==2&&stat!=SOLQ_FIX) rtk->ssat[i].fix[j]=1;
     }
 }
@@ -1467,13 +1480,36 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
     return stat;
 }
 
+static int test_hold_amb(rtk_t *rtk)
+{
+    int i,j,stat=0;
+    
+    /* no fix-and-hold mode */
+    
+    /* reset # of continuous fixed if new ambiguity introduced */
+    for (i=0;i<MAXSAT;i++) {
+        if (rtk->ssat[i].fix[0]!=2&&rtk->ssat[i].fix[1]!=2) continue;
+        for (j=0;j<MAXSAT;j++) {
+            if (rtk->ssat[j].fix[0]!=2&&rtk->ssat[j].fix[1]!=2) continue;
+            if (!rtk->ambc[j].flags[i]||!rtk->ambc[i].flags[j]) stat=1;
+            rtk->ambc[j].flags[i]=rtk->ambc[i].flags[j]=1;
+        }
+    }
+    if (stat) {
+        rtk->nfix=0;
+        return 0;
+    }
+    /* test # of continuous fixed */
+    return ++rtk->nfix>=rtk->opt.minfix;
+}
+
 /* precise point positioning -------------------------------------------------*/
 extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
     const prcopt_t *opt=&rtk->opt;
     double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,*xa,*Pa,*norm_v,*post_v,*bias,dr[3]={0},rr[3];
     char str[32];
-    int i,j,k,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_SINGLE,vflg[MAXOBS*NFREQ*2+1];
+    int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_SINGLE,vflg[MAXOBS*NFREQ*2+1];
     res_t res={0};
     
     time2str(obs[0].time,str,2);
@@ -1586,30 +1622,30 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
 
 
-    if (opt->modear==ARMODE_CONT) {
-        matcpy(rtk->x,xp,rtk->nx,1);
-        matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
+    if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
-            for(k=0;k<3;k++) rr[k]=xa[k];
             if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
             
                 stat=SOLQ_FIX;
                 rtk->fix_epoch++;
                 rtk->nfix++;
+                matcpy(rtk->xa,xp,rtk->nx,1);
+                matcpy(rtk->Pa,Pp,rtk->nx,rtk->nx);
             }
             else {
                 rtk->nfix=0;
             }
         }
         update_stat(rtk,obs,n,stat);
-       
-    }
 
-    if (stat==SOLQ_PPP) {
-        rtk->nfix=0;
-        update_stat(rtk,obs,n,stat);
-        
+        if (stat==SOLQ_FIX) {
+            matcpy(rtk->x,xp,rtk->nx,1);
+            matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
+            trace(2,"%s hold ambiguity\n",str);
+            rtk->nfix=0;
+        }
+       
     }
     trace(2, "SOL X: %f, Y: %f, Z: %f\n\r", rtk->x[0],rtk->x[1],rtk->x[2]);
     /* update solution status */

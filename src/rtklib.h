@@ -1160,6 +1160,7 @@ typedef struct {        /* processing options type */
     gtime_t te; /* process end time */
     double cs_mw;
     double cs_gf;
+    char station_name[32]; 
 } prcopt_t;
 
 typedef struct {        /* solution options type */
