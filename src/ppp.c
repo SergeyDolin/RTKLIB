@@ -418,8 +418,11 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     mea_L1=obs->L[0];mea_L2=obs->L[f2];
     mea_P1=obs->P[0];mea_P2=obs->P[f2];
 
-    matchcposb(obs,nav,0,&osb_P1,&osb_L1);
-    matchcposb(obs,nav,f2,&osb_P2,&osb_L2);
+    if (opt->arprod == AR_PROD_OSB_COD) {
+        matchcposb(obs,nav,0,&osb_P1,&osb_L1);
+        matchcposb(obs,nav,f2,&osb_P2,&osb_L2);
+    }
+    
     trace(2, "OSB P1: %f || OSB L1: %f\n\r", osb_P1, osb_L1);
     trace(2, "OSB P2: %f || OSB L2: %f\n\r", osb_P2, osb_L2);
     
@@ -605,14 +608,24 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 
     if (sys == SYS_CMP)
     {
-        if (obs->code[0]==CODE_L2I)
-        {
-            P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L2I]-nav->ssr[obs->sat-1].cbias[CODE_L6I];
+        if (nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I] == 0.0) {
+            if (obs->code[0]==CODE_L2I)
+            {
+                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L2I-1]-nav->ssr[obs->sat-1].cbias[CODE_L6I-1];
+                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L2I-1];
+            }
+            if (obs->code[1]==CODE_L7I)
+            {
+                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L7I-1];
+                L[1]+=nav->ssr[obs->sat-1].pbias[CODE_L7I-1];
+            }
+        } else {
+            if (codes[0]==CODE_L2I)
+            {   
+                P[0]+=nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I];   
+            }
         }
-        if (obs->code[1]==CODE_L7I)
-        {
-            P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L7I];
-        }
+
     }
     
     /* iono-free LC */
