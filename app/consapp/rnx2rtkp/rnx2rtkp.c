@@ -180,6 +180,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(prcopt.station_name,argv[++i]);
         else if (*argv[i]=='-') printhelp();
         else if (n<MAXFILE) infile[n++]=argv[i];
+        
     }
     if (!prcopt.navsys) {
         prcopt.navsys=SYS_GPS|SYS_GLO;

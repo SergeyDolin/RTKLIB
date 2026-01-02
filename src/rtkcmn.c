@@ -576,7 +576,7 @@ extern void init_prires(const double *v,const int *vflag,int nv,res_t *res)
     res->pri_v=mat(nv,1);
     res->vflag=imat(nv,1);
     matcpy(res->pri_v,v,nv,1);
-    for( i=0;i<nv;i++){
+    for(i=0;i<nv;i++){
         res->vflag[i]=vflag[i];
     }
     res->nv=nv;
@@ -3723,17 +3723,29 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
 }
+
+extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
+    double ep[6]={0};
+    int i,j;
+    int sat=obs->sat;
+    int code=obs->code[f];
+    if(nav->osbs->dt==0.0) return;
+
+    i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
+    time2epoch(obs->time,ep);
+    *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
+    *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+}
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
 extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info)
 {
-    int i,sat,prn,f;
+    int sat,prn,f,i;
     double cbias[NFREQ+NEXOBS]={0},frqs[NFREQ+NEXOBS]={0},alpha=0.0,beta=0.0;
     double corr_P[NFREQ+NEXOBS]={0},corr_L[NFREQ+NEXOBS]={0};
     int ppp = ((popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED));
-
     for(i=0;i<NFREQ;i++){
         P[i]=0.0;
         if(L) L[i]=0.0;

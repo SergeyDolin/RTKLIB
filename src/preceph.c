@@ -58,6 +58,8 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
+#define MAXCODE 136
+
 typedef struct {
     int sat;
     gtime_t ts,te;
@@ -86,7 +88,7 @@ static int code2sys(char code)
 /*convert observation code CHAR to NUM*/
 int codeconv(char *obscode)
 {
-    int i;
+    int k;
     
     int codeL[] = {CODE_L1C,CODE_L1P,CODE_L1W,CODE_L1Y,CODE_L1M,CODE_L1N,CODE_L1S,CODE_L1L,CODE_L1E,CODE_L1A
     ,CODE_L1B,CODE_L1X,CODE_L1Z,CODE_L2C,CODE_L2D,CODE_L2S,CODE_L2L,CODE_L2X,CODE_L2P,CODE_L2W,CODE_L2Y,CODE_L2M
@@ -99,7 +101,7 @@ int codeconv(char *obscode)
     ,"C6L","C8I","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q","C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B"
     ,"C9C","C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z","C8D","C8P","C4A","C4B","C4X"};
       
-    for (i = 0; i < 68; i++) if(!strcmp(codeC[i], obscode)) return codeL[i];
+    for (k = 0; k < 68; k++) if(!strcmp(codeC[k], obscode)) return codeL[k];
 
     return 0;
 }
@@ -463,70 +465,150 @@ static int biasstr2time(const char *s, int i, int n, gtime_t *t) {
     return 0;
 }
 
-static int readosbf(const char *file,biases_t *sat_bias)
+static int code2idx_obs(const char *obs)
 {
-    FILE *fp;
-    bias_t *bias_temp;
-    char buff[200];
-    int i,code,sat,sys;
-    const char *obscodes[]={       /* observation code strings */
-            ""  ,"1C","1P","1W","1Y", "1M","1N","1S","1L","1E", /*  0- 9 */
-            "1A","1B","1X","1Z","2C", "2D","2S","2L","2X","2P", /* 10-19 */
-            "2W","2Y","2M","2N","5I", "5Q","5X","7I","7Q","7X", /* 20-29 */
-            "6A","6B","6C","6X","6Z", "6S","6L","8L","8Q","8X", /* 30-39 */
-            "2I","2Q","6I","6Q","3I", "3Q","3X","1I","1Q","5A", /* 40-49 */
-            "5B","5C","9A","9B","9C", "9X","1D","5D","5P","5Z", /* 50-59 */
-            "6E","7D","7P","7Z","8D", "8P","4A","4B","4X",""    /* 60-69 */
-    };
+    const char *codes[] = {
+        "",
+        "C1C","C1P","C1W","C1Y","C1M","C1N","C1S","C1L","C1E",
+        "C1A","C1B","C1X","C1Z","C2C","C2D","C2S","C2L","C2X",
+        "C2P","C2W","C2Y","C2M","C2N","C5I","C5Q","C5X","C7I",
+        "C7Q","C7X","C6A","C6B","C6C","C6X","C6Z","C6S","C6L",
+        "C8L","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q",
+        "C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B","C9C",
+        "C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z",
+        "C8D","C8P","C4A","C4B","C4X",
 
-    if (!(fp=fopen(file,"r"))) {
-        trace(0,"fcb parameters file open error: %s\n",file);
+        "L1C","L1P","L1W","L1Y","L1M","L1N","L1S","L1L","L1E",
+        "L1A","L1B","L1X","L1Z","L2C","L2D","L2S","L2L","L2X",
+        "L2P","L2W","L2Y","L2M","L2N","L5I","L5Q","L5X","L7I",
+        "L7Q","L7X","L6A","L6B","L6C","L6X","L6Z","L6S","L6L",
+        "L8L","L8Q","L8X","L2I","L2Q","L6I","L6Q","L3I","L3Q",
+        "L3X","L1I","L1Q","L5A","L5B","L5C","L9A","L9B","L9C",
+        "L9X","L1D","L5D","L5P","L5Z","L6E","L7D","L7P","L7Z",
+        "L8D","L8P","L4A","L4B","L4X"
+    };
+    int i;
+    for (i = 1; i < (int)(sizeof(codes)/sizeof(codes[0])); i++) {
+        if (strcmp(codes[i], obs) == 0) return i;
+    }
+    return 0;
+}
+
+static int biasstr2time_str(const char *s, gtime_t *time)
+{
+    int year, doy, sec;
+    if (sscanf(s, "%d:%d:%d", &year, &doy, &sec) != 3) return -1;
+    *time = timeadd(epoch2time((double[]){year, 1, 0, 0, 0, 0}), (doy - 1) * 86400.0 + sec);
+    return 0;
+}
+
+static int readosbf(const char *file, biases_t *sat_bias) {
+    FILE *fp;
+    if (!(fp = fopen(file, "rb"))) {
+        trace(0, "OSB file open error: %s\n", file);
         return 0;
     }
-    
 
-    memset(sat_bias,0, sizeof(biases_t));
-    while(fgets(buff, sizeof(buff),fp)){
-        if ((!strncmp(buff + 1, "OSB", 3)) && (!strncmp(buff + 65, "ns", 2))) {
-            sat = satid2no(buff + 11);
-            if(sat<=0) continue;
-            int range = (buff[25] == 'C' ? 1 : 0);
-            for (i = 0; i < MAXCODE; i++){
-                if (!strncmp(obscodes[i], buff + 26, 2)){
-                    code=i;
-                    break;
-                }
-            }
-            gtime_t t1, t2;
-            char st1[20], st2[20];
-            if (biasstr2time(buff, 35, 14, &t1)) continue;
-            if (biasstr2time(buff, 50, 14, &t2)) continue;
-            time2str(t1, st1, 0);
-            time2str(t2, st2, 0);
-            double value = atof(buff + 70);
-            if (sat_bias->nb >= sat_bias->nmax) {
-                sat_bias->nmax += 1024;
-                if (!(bias_temp=(bias_t *)realloc(sat_bias->data,sizeof(bias_t) * (sat_bias->nmax)))) {
-                    free(sat_bias->data);
-                    sat_bias->data = NULL;
-                    sat_bias->nb = sat_bias->nmax = 0;
-                    return -1;
-                }
-                sat_bias->data=bias_temp;
-            }
-            
-            sat_bias->nb++;
-            sat_bias->data[sat_bias->nb - 1].ts = t1;
-            sat_bias->data[sat_bias->nb - 1].te = t2;
-            sat_bias->data[sat_bias->nb - 1].sat = sat;
-            sat_bias->data[sat_bias->nb - 1].code = code;
-            sat_bias->data[sat_bias->nb - 1].type = range;
-            sat_bias->data[sat_bias->nb - 1].bia = value;
-        }
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    if (size <= 0 || size > 100 * 1024 * 1024) {
+        fclose(fp);
+        trace(0, "invalid file size\n");
+        return 0;
     }
+    fseek(fp, 0, SEEK_SET);
 
+    char *content = (char *)malloc(size + 1);
+    if (!content) { fclose(fp); return 0; }
+    if (fread(content, 1, size, fp) != (size_t)size) { free(content); fclose(fp); return 0; }
+    content[size] = '\0';
     fclose(fp);
 
+    /* --- Найти начало секции с заголовком *BIAS SVN_ --- */
+    char *header = strstr(content, "*BIAS SVN_ PRN");
+    if (!header) {
+        trace(0, "section '*BIAS SVN_' not found\n");
+        free(content);
+        return 0;
+    }
+
+    /* Найти начало первой строки после заголовка */
+    char *p = strstr(header, "OSB ");
+    if (!p) {
+        trace(0, "no OSB records found after header\n");
+        free(content);
+        return 0;
+    }
+
+    /* --- Найти конец секции --- */
+    char *end = strstr(p, "-BIAS/SOLUTION");
+    if (!end) {
+        end = content + size;
+    }
+
+    char svn[16], prn[16], obs[16];
+    char t1s[20], t2s[20], unit[8];
+    double val, std;
+    int n;
+
+    memset(sat_bias, 0, sizeof(biases_t));
+    while (p < end && (p = strstr(p, "OSB ")) != NULL && p < end) {
+        n = sscanf(p, "OSB %15s %15s %15s %19s %19s %7s %lf %lf",
+                   svn, prn, obs, t1s, t2s, unit, &val, &std);
+
+        if (n != 8 || strcmp(unit, "ns") != 0) {
+            p += 4;
+            continue;
+        }
+
+        /* Убедимся, что svn и prn — спутниковые (второй символ — цифра) */
+        if (strlen(svn) < 2 || strlen(prn) < 2 || !isdigit(svn[1]) || !isdigit(prn[1])) {
+            p += 4;
+            continue;
+        }
+
+        int sat = satid2no(prn);
+        if (sat <= 0 || sat > MAXSAT) { p += 4; continue; }
+
+        int code = code2idx_obs(obs);
+        if (code <= 0 || code >= MAXCODE) { p += 4; continue; }
+
+        int range = (obs[0] == 'C') ? 1 : (obs[0] == 'L') ? 0 : -1;
+        if (range < 0) { p += 4; continue; }
+
+        gtime_t t1, t2;
+        if (biasstr2time_str(t1s, &t1) || biasstr2time_str(t2s, &t2)) {
+            p += 4;
+            continue;
+        }
+
+        /* Увеличиваем буфер */
+        if (sat_bias->nb >= sat_bias->nmax) {
+            sat_bias->nmax += 1024;
+            bias_t *tmp = (bias_t *)realloc(sat_bias->data, sizeof(bias_t) * sat_bias->nmax);
+            if (!tmp) {
+                free(content);
+                trace(0, "mem error\n");
+                return -1;
+            }
+            sat_bias->data = tmp;
+        }
+
+        bias_t *b = &sat_bias->data[sat_bias->nb++];
+        b->ts = t1;
+        b->te = t2;
+        b->sat = sat;
+        b->code = code;
+        b->type = range;
+        b->bia = val;
+
+        trace(2, "OSB PARSED: PRN=%s CODE=%s TYPE=%s BIAS=%.6f\n",
+              prn, obs, range ? "CODE" : "PHASE", val);
+
+        p += 4;
+    }
+
+    free(content);
     return 1;
 }
 
@@ -590,8 +672,10 @@ extern int readosb(const char *file, nav_t *nav)
         for (ii = i1; ii <= i2; ii++) {
             if (biases.data[i].type) {
                 nav->osbs->sat_osb[ii].code[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+                trace(2, "CODE OSB: %f\n\r", nav->osbs->sat_osb[ii].code[sat][code]);
             } else {
                 nav->osbs->sat_osb[ii].phase[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+                trace(2, "PHASE OSB: %f\n\r", nav->osbs->sat_osb[ii].phase[sat][code]);
             }
         }
     }
@@ -655,7 +739,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
     while (fgets(buff,sizeof(buff),fp)) {
         if (strstr(buff, "*BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ BIAS_END______ UNIT __ESTIMATED_VALUE____ _STD_DEV___")) start=1;
         if (strstr(buff,"POINTS")) start=0;
-        if (strstr(buff,"DSB  G    G   ABMF")) start=3;
+        if (strstr(buff,"DSB  G    G")) start=3;
         if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12)<0) continue;
         trace(3,"%s %s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12);
         if(start == 3) {
@@ -672,7 +756,7 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
                 sat=satid2no(str3);
                 nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=(cbias*1E-9*CLIGHT);
             }   
-            trace(3, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
+            trace(2, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
         }
         start=2;
     }
