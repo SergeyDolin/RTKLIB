@@ -120,6 +120,9 @@
 #define IRDCB(s,opt) (NP(opt)+NC(opt)+(s))
 #define IIFCB(s,opt) (NP(opt)+NC(opt)+(s))
 
+/* write ambupd file from the PPP state -----------------------------------*/
+extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
+
 /* standard deviation of state -----------------------------------------------*/
 static double STD(rtk_t *rtk, int i)
 {
@@ -1636,135 +1639,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         stat=SOLQ_PPP;
     }
 
-    /* Output IF and WL ambiguities */
-    if (rtk->opt.ionoopt == IONOOPT_IFLC && rtk->opt.nf >= 2) {
-        int week;
-        double tow = time2gpst(rtk->sol.time, &week);
-        char satid[8];
-        int sat, i, idx1, idx2;
-        double N1, N2, f1, f2, N_if, N_wl, sigma_if, sigma_wl, sigma;
-        const obsd_t *pobs;
-
-        static FILE *fp_amb = NULL;
-        static char amb_file[1024] = "";
-        static double last_tow = -1.0;
-        double ep[6];
-        double mjd;
-        char *p;
-
-        /* Use station name from options if provided, otherwise default to "UNKNOWN" */
-        const char *station_name = rtk->opt.station_name[0] ? rtk->opt.station_name : "UNKNOWN";
-        /* Uppercase */
-        p = (char*)station_name;
-        while (*p) {
-            *p = toupper(*p);
-            p++;
-        }
-        /* Threshold for extreme/incorrect values */
-        const double threshold = 1000000.0; 
-
-        /* Create filename with date if not already created */
-        if (fp_amb == NULL) {
-            /* Extract date */
-            int year, doy;
-            time2epoch(rtk->sol.time, ep);
-            year = (int)ep[0];
-            doy = time2doy(rtk->sol.time);
-
-            sprintf(amb_file, "%s_ambupd_%4d%03d", station_name, year, doy);
-            
-            fp_amb = fopen(amb_file, "w");
-            if (fp_amb == NULL) {
-                trace(1, "Cannot create ambiguity file: %s\n", amb_file);
-            } else {
-                trace(1, "Creating ambiguity file: %s\n", amb_file);
-            }
-        }
-        
-        /* Convert GPS time to Modified Julian Day */
-        mjd = 44244.0 + (week * 7.0) + (tow / 86400.0);
-        
-        /* Extract time of day from epoch */
-        time2epoch(rtk->sol.time, ep);
-        double time_of_day = ep[3] * 3600.0 + ep[4] * 60.0 + ep[5];
-        
-        /* Output all satellites for this epoch */
-        for (sat = 1; sat <= MAXSAT; sat++) {
-            if (!rtk->ssat[sat-1].vs) continue;
-
-            idx1 = IB(sat, 0, &rtk->opt); /* 0 = L1 */
-            idx2 = IB(sat, 2, &rtk->opt); /* 2 = L5 */
-
-            N1 = rtk->x[idx1];
-            N2 = rtk->x[idx2];
-
-            /* if (N1 == 0.0 || N2 == 0.0) continue; */
-            if (fabs(N1) < 1e-12 && fabs(N2) < 1e-12) continue;
-
-            /* Find observation for this satellite */
-            pobs = NULL;
-            for (i = 0; i < n; i++) {
-                if (obs[i].sat == sat) {
-                    pobs = &obs[i];
-                    break;
-                }
-            }
-            if (!pobs) continue;
-
-            /* Get carrier frequencies */
-            f1 = sat2freq(sat, pobs->code[0], nav);
-            f2 = sat2freq(sat, pobs->code[2], nav);
-
-            /* if (f1 == 0.0 || f2 == 0.0) continue; */
-
-            /* Calculate IF */
-            double denom_if = SQR(f1) - SQR(f2);
-            N_if = CLIGHT * (f1 * N1 - f2 * N2) / denom_if;
-            
-            /* Calculate WL */
-            double denom_wl = f1 - f2;
-            N_wl = (N1 - N2) * CLIGHT / denom_wl;
-
-            /* Check if values are reasonable*/
-            /*if (fabs(N_if) > threshold || fabs(N_wl) > threshold) {
-                continue;
-            } */
-
-            /* Compute approximate standard deviation */
-            double var1 = rtk->P[idx1 + idx1 * rtk->nx];
-            double var2 = rtk->P[idx2 + idx2 * rtk->nx];
-            double cov12 = rtk->P[idx1 + idx2 * rtk->nx];  /* off-diagonal */
-
-            double factor_if = SQR(CLIGHT) / SQR(denom_if);
-            sigma_if = SQRT(MAX(0.0, factor_if * (SQR(f1)*var1 + SQR(f2)*var2 - 2.0*f1*f2*cov12)));
-
-            double factor_wl = SQR(CLIGHT) / SQR(denom_wl);
-            sigma_wl = SQRT(MAX(0.0, factor_wl * (var1 + var2 - 2.0 * cov12)));
-
-            sigma = SQRT(SQR(sigma_if) + SQR(sigma_wl));
-
-            satno2id(sat, satid);
-            /* trace(0, "%5d %7.1f %s %s %8.3f %8.3f %6.3f\n",
-                week, tow, station_name, satid, N_if, N_wl, sigma); */
-
-            /* Output to file */
-            if (fp_amb != NULL) {
-                fprintf(fp_amb, "%8.0f%10.1f%5s%4s%19.3f%19.3f%10.3f\n",
-                    floor(mjd), time_of_day, station_name, satid, N_if, N_wl, sigma);
-
-                /* old format 
-                fprintf(fp_amb, "%5d %9.1f %s %s %17.3f %17.3f %9.3f\n",
-                    week, tow, station_name, satid, N_if, N_wl, sigma); */
-            }
-        }
-
-        /* Flush file to ensure data is written */
-        if (fp_amb != NULL) {
-            fflush(fp_amb);
-        }
-    }
-    
-    
+    ambupd_write_epoch(rtk, obs, n, nav);
 
     if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */

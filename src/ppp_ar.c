@@ -554,6 +554,8 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     rtk->sol.ratio=0.0;
     float ratio_post=0.0;
 
+    if (opt.modear==ARMODE_OFF) return 0;
+
     if(opt.thresar[0]<1.0){
         rtk->nb_ar=0;
         return 0;
