@@ -11,10 +11,9 @@
 ## Возможности / Features
  
 ### Multi-System GNSS Processing in PPP
-- Обработка измерений нескольких систем GNSS в режиме PPP с учётом дифференциальных задержек кода
-- Support for multi-system GNSS measurements in PPP mode with differential code delay correction
+- Обработка измерений нескольких систем ГНСС в режиме PPP с учётом дифференциальных задержек кода / Support for multi-system GNSS measurements in PPP mode with differential code delay correction
 - L1/L5 комбинация поддерживается / L1/L5 combination supported
-- Поддержка GPS, GLONASS, Galileo, BDS (COMP система) / Support for GPS, GLONASS, Galileo, BDS
+- Поддержка GPS, ГЛОНАСС, Galileo, BDS / Support for GPS, GLONASS, Galileo, BDS
  
 ### Differential Code Bias (DCB)
 - **Post-processing:** используйте BSX файлы от CAS (https://cddis.nasa.gov/Data_and_Derived_Products/GNSS/gnss_differential_code_bias_product.html)
