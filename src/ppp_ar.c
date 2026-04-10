@@ -152,6 +152,8 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
     for(i=0;sat_sys[i];i++){
         if((sat_sys[i]&SYS_GPS)&&rtk->opt.gpsmodear==ARMODE_OFF) continue;
 
+        m=0; /* reset per-system satellite count */
+
         for(j=0;j<n;j++){
             sys=satsys(obs[j].sat,&prn);
             if(!rtk->ssat[obs[j].sat-1].vs) continue;
