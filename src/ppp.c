@@ -449,7 +449,7 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
 }
 
 /* antenna corrected measurements --------------------------------------------*/
-static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
+extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const prcopt_t *opt, const double *dantr,
                       const double *dants, double phw, double *L, double *P,
                       double *Lc, double *Pc)
