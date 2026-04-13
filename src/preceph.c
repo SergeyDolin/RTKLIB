@@ -616,6 +616,10 @@ extern int readosb(const char *file, nav_t *nav)
 {
     biases_t biases = {0};
     
+    if (!file||!*file) {
+        nav->osbs=NULL;
+        return 0;
+    }
     readosbf(file, &biases);
     
     int nb, ii, i;

@@ -152,6 +152,8 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
     for(i=0;sat_sys[i];i++){
         if((sat_sys[i]&SYS_GPS)&&rtk->opt.gpsmodear==ARMODE_OFF) continue;
 
+        m=0; /* reset per-system satellite count */
+
         for(j=0;j<n;j++){
             sys=satsys(obs[j].sat,&prn);
             if(!rtk->ssat[obs[j].sat-1].vs) continue;
@@ -513,7 +515,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
     if(nb >= MIN_AMB_RES){
         trace(2, "NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
-        nb=resamb_nl(rtk,H_nl,Nl,nb);
+        /*nb=resamb_nl(rtk,H_nl,Nl,nb);*/
         trace(2, "POST NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
         if(nb&&fix_sol(rtk,obs,nav,sd_nl_fcb,H_if,Nl,Bw,nb,sat1,sat2,iu,xa)){
             stat=1;

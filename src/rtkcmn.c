@@ -3725,16 +3725,19 @@ extern void freenav(nav_t *nav, int opt)
 }
 
 extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
-    double ep[6]={0};
-    int i,j;
+    int i;
     int sat=obs->sat;
     int code=obs->code[f];
-    if(nav->osbs->dt==0.0) return;
+     
+    if(cbias) *cbias=0.0;
+    if(pbias) *pbias=0.0;
+    if(!nav->osbs||!nav->osbs->sat_osb||nav->osbs->dt==0.0) return;
+    if(!nav->osbs||nav->osbs->dt==0.0) return;
 
     i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
-    time2epoch(obs->time,ep);
-    *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
-    *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+    if(i<0) return;
+    if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
+    if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
 }
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */

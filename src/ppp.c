@@ -470,6 +470,16 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         /* antenna phase center and phase windup correction */
         L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
         P[i]=obs->P[i]-dants[i]-dantr[i];
+
+         
+        /* apply OSB corrections for PPP-AR */
+        if (opt->modear==ARMODE_CONT&&opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
+            double cosb=0.0,posb=0.0;
+            matchcposb(obs,nav,i,&cosb,&posb);
+            L[i]-=posb;
+            P[i]-=cosb;
+        }
+
         codes[i] = obs->code[i];
         if (sys == SYS_GAL) {
             trace(2,"%d CODE: %f, P[%f]: %f\n\r",i,obs->code[i], freq[i], obs->P[i]-dants[i]-dantr[i]);
@@ -741,7 +751,7 @@ static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
     for (i=0;i<n&&i<MAXOBS;i++) {
         sat=obs[i].sat;
-        if (fabs(timediff(rtk->sol.time, rtk->ssat[sat-1].ct)) > 1.0) {
+        if (fabs(timediff(rtk->sol.time, rtk->ssat[sat-1].ct)) > 2.0*fabs(rtk->tt)+DTTOL) {
             rtk->ssat[sat-1].mw[1] = 0.0;
             rtk->ssat[sat-1].mw[2] = 0.0;
             rtk->ssat[sat-1].delta_mw[0]=rtk->ssat[sat-1].delta_mw[1]=0.0;
