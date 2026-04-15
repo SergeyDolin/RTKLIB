@@ -3302,19 +3302,34 @@ extern int readerp(const char *file, erp_t *erp)
     FILE *fp;
     erpd_t *erp_data;
     double v[14]={0};
+    int iv[3]={0};
     char buff[256];
-    
-    trace(3,"readerp: file=%s\n",file);
+    int n;
     
     if (!(fp=fopen(file,"r"))) {
+        fprintf(stderr, "DEBUG readerp: fopen FAILED\n");
         trace(2,"erp file open error: file=%s\n",file);
         return 0;
     }
+    
     while (fgets(buff,sizeof(buff),fp)) {
-        if (sscanf(buff,"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
-                   v,v+1,v+2,v+3,v+4,v+5,v+6,v+7,v+8,v+9,v+10,v+11,v+12,v+13)<5) {
-            continue;
+        
+        n=sscanf(buff,
+            "%lf %lf %lf %lf %lf %lf %lf %lf %lf %d %d %d %lf %lf %lf %lf",
+            v,v+1,v+2,v+3,v+4,v+5,v+6,v+7,v+8,
+            iv,iv+1,iv+2,
+            v+9,v+10,v+11,v+12);
+        
+        if (n==16) {
+            /* version 2: v[9]=Xrt, v[10]=Yrt */
+        } else {
+            /* version 1: пробуем старый формат без Nr,Nf,Nt */
+            n=sscanf(buff,"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+                     v,v+1,v+2,v+3,v+4,v+5,v+6,v+7,v+8,v+9,v+10);
+            if (n<5) continue;
+            v[9]=v[10]=0.0; /* нет данных о скоростях */
         }
+        
         if (erp->n>=erp->nmax) {
             erp->nmax=erp->nmax<=0?128:erp->nmax*2;
             erp_data=(erpd_t *)realloc(erp->data,sizeof(erpd_t)*erp->nmax);
@@ -3325,13 +3340,13 @@ extern int readerp(const char *file, erp_t *erp)
             }
             erp->data=erp_data;
         }
-        erp->data[erp->n].mjd=v[0];
-        erp->data[erp->n].xp=v[1]*1E-6*AS2R;
-        erp->data[erp->n].yp=v[2]*1E-6*AS2R;
-        erp->data[erp->n].ut1_utc=v[3]*1E-7;
-        erp->data[erp->n].lod=v[4]*1E-7;
-        erp->data[erp->n].xpr=v[12]*1E-6*AS2R;
-        erp->data[erp->n++].ypr=v[13]*1E-6*AS2R;
+        erp->data[erp->n].mjd     = v[0];
+        erp->data[erp->n].xp      = v[1]*1E-6*AS2R;
+        erp->data[erp->n].yp      = v[2]*1E-6*AS2R;
+        erp->data[erp->n].ut1_utc = v[3]*1E-7;
+        erp->data[erp->n].lod     = v[4]*1E-7;
+        erp->data[erp->n].xpr     = v[9] *1E-6*AS2R/86400.0;
+        erp->data[erp->n++].ypr   = v[10]*1E-6*AS2R/86400.0;
     }
     fclose(fp);
     return 1;
