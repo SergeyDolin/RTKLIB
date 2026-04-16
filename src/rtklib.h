@@ -2218,6 +2218,8 @@ EXPORT void gis_free(gis_t *gis);
 extern int showmsg(const char *format,...);
 extern void settspan(gtime_t ts, gtime_t te);
 extern void settime(gtime_t time);
+extern void ambupd_reset(void);
+extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 
 #ifdef __cplusplus
 }

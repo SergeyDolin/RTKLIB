@@ -48,6 +48,7 @@ static const char *help[]={
 " -te de te end day/time   (de=y/m/d te=h:m:s) [obs end time]",
 " -ti tint  time interval (sec) [all]",
 " -sta name station name for output files [UNKNOWN]",
+" -pppopt opt ppp option string (e.g. -AMBFLAG=/path/to/file) []",
 " -p mode   mode (0:single,1:dgps,2:kinematic,3:static,4:moving-base,",
 "                 5:fixed,6:ppp-kinematic,7:ppp-static) [2]",
 " -m mask   elevation mask angle (deg) [15]",
@@ -178,6 +179,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i],"-y")&&i+1<argc) solopt.sstat=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-x")&&i+1<argc) solopt.trace=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(prcopt.station_name,argv[++i]);
+        else if (!strcmp(argv[i],"-pppopt")&&i+1<argc) strncpy(prcopt.pppopt,argv[++i],sizeof(prcopt.pppopt)-1);
         else if (*argv[i]=='-') printhelp();
         else if (n<MAXFILE) infile[n++]=argv[i];
         

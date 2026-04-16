@@ -122,6 +122,8 @@
 
 /* write ambupd file from the PPP state -----------------------------------*/
 extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
+extern void ambupd_reset(void);
+extern void ambflag_load_from_opt(const prcopt_t *opt);
 
 /* standard deviation of state -----------------------------------------------*/
 static double STD(rtk_t *rtk, int i)
@@ -1541,6 +1543,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     
     time2str(obs[0].time,str,2);
     trace(3,"pppos   : time=%s nx=%d n=%d\n",str,rtk->nx,n);
+
+    ambflag_load_from_opt(&rtk->opt);
     
     rs=mat(6,n); dts=mat(2,n); var=mat(1,n); azel=zeros(2,n);
     
@@ -1648,7 +1652,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     else{
         stat=SOLQ_PPP;
     }
-
+    
     ambupd_write_epoch(rtk, obs, n, nav);
 
     if (stat==SOLQ_PPP) {
