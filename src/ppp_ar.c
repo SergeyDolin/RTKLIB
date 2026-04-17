@@ -358,6 +358,7 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
             rtk->sdamb[sat1[i]-1].lc_res=Bc[i]-rtk->sdamb[sat1[i]-1].lc;
         } else if(opt.arprod == AR_PROD_UPD || opt.arprod == AR_PROD_FCB){
             Bc[i]=lam_nl*(Bl[i]+sd_nl_fcb[i])+gamma*Bw[i];
+            rtk->sdamb[sat1[i]-1].lc_fix=Bc[i];
         }
     }
     /* y=differences between float and fixed ionospheric-free bias */
@@ -515,7 +516,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
     if(nb >= MIN_AMB_RES){
         trace(2, "NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
-        /*nb=resamb_nl(rtk,H_nl,Nl,nb);*/
+        nb=resamb_nl(rtk,H_nl,Nl,nb);
         trace(2, "POST NB: %d || MIN_AMB %d\n\r", nb, MIN_AMB_RES);
         if(nb&&fix_sol(rtk,obs,nav,sd_nl_fcb,H_if,Nl,Bw,nb,sat1,sat2,iu,xa)){
             stat=1;
@@ -547,6 +548,55 @@ static int arfilter(rtk_t *rtk,const obsd_t *obs,int ns,int nf)
     }
     return rerun;
 }
+
+/* hold integer ambiguity (fix-and-hold for PPP) -------------------------------
+ * Applies SD-IF ambiguity pseudo-measurements to the float Kalman filter.
+ * For each fixed satellite pair (sat, ref), the constraint forces the float
+ * SD-IF ambiguity to stay near the previously resolved integer value.
+ * Variance is taken from opt.varholdamb (cycle^2).
+ *-----------------------------------------------------------------------------*/
+extern void holdamb_ppp(rtk_t *rtk, const double *xa)
+{
+    double *v, *H, *R;
+    int i, iamb, jamb, nv=0, nb=rtk->nx-rtk->na, ref, info;
+    double var_hold;
+
+    trace(3,"holdamb_ppp: na=%d nx=%d\n",rtk->na,rtk->nx);
+
+    var_hold = rtk->opt.varholdamb>0.0 ? rtk->opt.varholdamb : 0.001;
+
+    v=mat(nb,1);
+    H=zeros(nb,rtk->nx);
+
+    for (i=0;i<MAXSAT;i++) {
+        if (rtk->ssat[i].fix[0]!=2) continue;
+        if (rtk->sdamb[i].ref_sat_no<=0) continue;
+        if (rtk->ssat[i].azel[1]<rtk->opt.elmaskhold) continue;
+
+        ref=rtk->sdamb[i].ref_sat_no-1;
+        iamb=IB(i+1,0,&rtk->opt);
+        jamb=IB(ref+1,0,&rtk->opt);
+
+        /* residual: fixed SD minus float SD */
+        v[nv] = rtk->sdamb[i].lc_fix - (rtk->x[iamb] - rtk->x[jamb]);
+        H[iamb+nv*rtk->nx]= 1.0;
+        H[jamb+nv*rtk->nx]=-1.0;
+        rtk->ssat[i].fix[0]=3; /* mark as held */
+        nv++;
+    }
+    if (nv>0) {
+        R=zeros(nv,nv);
+        for (i=0;i<nv;i++) R[i+i*nv]=var_hold;
+
+        if ((info=filter(rtk->x,rtk->P,H,v,R,rtk->nx,nv))) {
+            trace(2,"holdamb_ppp: filter error info=%d\n",info);
+        }
+        rtk->holdamb=1;
+        free(R);
+    }
+    free(v); free(H);
+}
+
 /* ambiguity resolution in ppp -----------------------------------------------*/
 extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc)
 {

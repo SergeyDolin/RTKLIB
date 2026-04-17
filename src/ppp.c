@@ -1665,8 +1665,15 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         if (stat==SOLQ_FIX) {
             matcpy(rtk->x,xp,rtk->nx,1);
             matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
-            trace(2,"%s hold ambiguity\n",str);
-            rtk->nfix=0;
+             /* fix-and-hold: constrain float filter after minfix consecutive fixes */
+            if (rtk->opt.modear==ARMODE_FIXHOLD&&rtk->nfix>=rtk->opt.minfix) {
+                holdamb_ppp(rtk,xa);
+                trace(2,"%s ppp fix-and-hold applied nfix=%d\n",str,rtk->nfix);
+                /* keep nfix >= minfix so hold is applied every subsequent epoch */
+            } else {
+                trace(2,"%s hold ambiguity\n",str);
+                if (rtk->opt.modear!=ARMODE_FIXHOLD) rtk->nfix=0;
+            }
         }
        
     }
