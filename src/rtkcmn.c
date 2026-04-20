@@ -1600,103 +1600,169 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
 
 
 /*ref to "A Variational Bayesian-Based Robust Adaptive Filtering for Precise Point Positioning Using Undifferenced and Uncombined Observations"*/
-static int vbakf_(const double *x,const double *P,const double *H,const double *v,
-                  const double *R,int n,int m,double *xp,double *Pp)
+/* core VB-AKF implementation (internal) -------------------------------------*/
+static int vbakf_core_(const double *x, const double *P, const double *H,
+                       const double *v, const double *R, int n, int m,
+                       double *xp, double *Pp)
 {
-    double *x_1=mat(n, 1),*xk1k=mat(n,1),*Pk1k1=mat(n,n),*Pk1k=mat(n,n);
-    double *Tk1k=mat(n,n),*Ak=mat(n,n),*Tkk=mat(n,n),*E_i_Pk1k=mat(n,n);
-    double *P_0=mat(m,n),*P_1=mat(m,m),*zk1k=mat(m,1),*E_i_Pk1k_0=mat(m,n);
-    double *Pzzk1k=mat(m,m),*Pxzk1k=mat(n,m),*Kk=mat(n,m),*Kk_=mat(n,n);
-    double *P1=mat(n,n),*P2=mat(n,n),*R1=mat(n,m),*I=eye(n),*v_post_=mat(m,m),*v_post=mat(m,1);
-    double tao_P=2,v_all1=0.0,v_all2=0.0,V_all1=0.0,V_all2=0.0;
-    double *F=mat(n,m),*Q=mat(m,m),*v_N=mat(m,1),*T=mat(m,1),*RI=mat(m,m);
-    int N=1,tk1k,tkk,info,i,j,jj;
-    float fabs_v;
-
-    matcpy(Q, R, m, m);
-    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);                /*F=P*H       F(n,m),P(n,n),H(n,m)*/
-    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);                /*Q=H'*F+R    Q(m,m),H(n,m),F(n,m)*/
-    if (!(info = matinv(Q, m))) {
-        matmul("NN", m, m, m, 1.0, R, Q, 0.0, v_post_);
+    double *F, *Q, *K, *I;
+    double *v_post, *v_post_R;
+    double *RI;           /* robustified R matrix */
+    double *v_norm;       /* normalized residuals */
+    double *T_stat;       /* test statistics */
+    double *Pk1k, *Tk1k, *Ak, *Tkk, *E_Pk1k;
+    double *Pzzk1k, *Pxzk1k;
+    double *tmp_mat;
+    double v_mean_pr = 0.0, v_mean_cp = 0.0;
+    double var_pr = 0.0, var_cp = 0.0;
+    double tao_P = 2.0;
+    double tdist_thres;
+    int i, j, info = -1;
+    int n_cp, n_pr;
+    int max_iter = 1;  /* VB iterations */
+    
+    /* allocate matrices */
+    F = mat(n, m);
+    Q = mat(m, m);
+    K = mat(n, m);
+    I = eye(n);
+    v_post = mat(m, 1);
+    v_post_R = mat(m, m);
+    RI = mat(m, m);
+    v_norm = mat(m, 1);
+    T_stat = mat(m, 1);
+    
+    if (!F || !Q || !K || !I || !v_post || !v_post_R || !RI || !v_norm || !T_stat) {
+        goto cleanup;
     }
-    matmul("NN", m, 1, m, -1.0, v_post_, v, 0.0, v_post);    /*v_postres=-R*inv(Q)*v_prires;*/
-
-    /*robust*/
-    matcpy(RI,R,m,m);
-    for (j=0;j<m;j++) {
-        fabs_v=fabs(v_post[j]);
-        v_N[j]=fabs_v/sqrt(v_post_[j*m+j]*RI[j*m+j]);
-        if (j%2==0) v_all1=v_all1+v_N[j];
-        if (j%2==1) v_all2=v_all2+v_N[j];
+    
+    /* copy R to RI (will be modified by robust estimation) */
+    matcpy(RI, R, m, m);
+    
+    /* compute posterior residuals */
+    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);           /* F = P * H */
+    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);           /* Q = H'*P*H + R */
+    
+    if (matinv(Q, m) != 0) goto cleanup;
+    
+    matmul("NN", m, m, m, 1.0, R, Q, 0.0, v_post_R);    /* R * Q^-1 */
+    matmul("NN", m, 1, m, -1.0, v_post_R, v, 0.0, v_post); /* v_post = -R*Q^-1*v */
+    
+    /* robust estimation of R */
+    n_cp = m / 2;  /* phase measurements (even indices) */
+    n_pr = m - n_cp;  /* code measurements (odd indices) */
+    
+    /* compute normalized residuals */
+    for (j = 0; j < m; j++) {
+        v_norm[j] = fabs(v_post[j]) / sqrt(v_post_R[j + j * m] * RI[j + j * m]);
     }
-    for (jj=0;jj<(m/2);jj++) {/*phase*/
-        V_all1=V_all1+SQR(v_N[2*jj]-v_all1/(m/2));
+    
+    /* compute mean for phase and code separately */
+    if (n_cp > 0) {
+        for (j = 0; j < n_cp; j++) {
+            v_mean_cp += v_norm[2 * j];
+        }
+        v_mean_cp /= n_cp;
+        
+        for (j = 0; j < n_cp; j++) {
+            var_cp += SQR(v_norm[2 * j] - v_mean_cp);
+        }
+        var_cp /= n_cp;
     }
-    for (jj=0;jj<(m/2);jj++) { /*pseudorange*/
-        V_all2=V_all2+SQR(v_N[2*jj+1]-v_all2/(m/2));
+    
+    if (n_pr > 0) {
+        for (j = 0; j < n_pr; j++) {
+            v_mean_pr += v_norm[2 * j + 1];
+        }
+        v_mean_pr /= n_pr;
+        
+        for (j = 0; j < n_pr; j++) {
+            var_pr += SQR(v_norm[2 * j + 1] - v_mean_pr);
+        }
+        var_pr /= n_pr;
     }
-    for (j=0; j<m; j++) {
-        if (j%2==0) { /*phase*/
-            T[j]=fabs(v_N[j]-v_all1/(m/2))/SQRT(V_all1/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j])); /*down weight*/
+    
+    /* apply robust down-weighting */
+    for (j = 0; j < m; j++) {
+        if (j % 2 == 0 && n_cp > 0) {
+            /* phase measurement */
+            T_stat[j] = fabs(v_norm[j] - v_mean_cp) / SQRT(var_cp);
+            tdist_thres = (n_cp - 1 < 30) ? tdistb_0250[n_cp - 1] : 1.96;
+            
+            if (T_stat[j] > tdistb_0250[n_cp - 1] && T_stat[j] < tdistb_0010[n_cp - 1]) {
+                double w = T_stat[j] / tdistb_0250[n_cp - 1];
+                w *= SQR((tdistb_0010[n_cp - 1] - tdistb_0250[n_cp - 1]) / 
+                        (tdistb_0010[n_cp - 1] - T_stat[j]));
+                RI[j + j * m] *= w;
+            } else if (T_stat[j] >= tdistb_0010[n_cp - 1]) {
+                RI[j + j * m] *= 1E7;  /* effectively reject */
             }
-            if (T[j]>tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*10000000.0; 
+        } else if (j % 2 == 1 && n_pr > 0) {
+            /* code measurement */
+            T_stat[j] = fabs(v_norm[j] - v_mean_pr) / SQRT(var_pr);
+            
+            if (T_stat[j] > tdistb_0250[n_pr - 1] && T_stat[j] < tdistb_0010[n_pr - 1]) {
+                double w = T_stat[j] / tdistb_0250[n_pr - 1];
+                w *= SQR((tdistb_0010[n_pr - 1] - tdistb_0250[n_pr - 1]) / 
+                        (tdistb_0010[n_pr - 1] - T_stat[j]));
+                RI[j + j * m] *= w;
+            } else if (T_stat[j] >= tdistb_0010[n_pr - 1]) {
+                RI[j + j * m] *= 1E8;  /* effectively reject */
             }
         }
-        if (j%2==1) { /*pseudorange*/
-            T[j]=fabs(v_N[j]-v_all2/(m/2))/SQRT(V_all2/(m/2));
-            if (T[j]>tdistb_0250[m/2]&&T[j]<tdistb_0010[m/2]) {
-                RI[j*m+j]=RI[j*m+j]*T[j]/tdistb_0250[m/2]*SQR((tdistb_0010[m/2]-tdistb_0250[m/2])/(tdistb_0010[m/2]-T[j]));
-            }
-            if (T[j]>tdistb_0010[m/2-1]) {
-                RI[j*m+j]=RI[j*m+j]*100000000.0;
-            }
-        }
     }
-
-    /*adaptive*/
-    matcpy(Pk1k,P,n,n);
-    tk1k=n+1+tao_P;                                                                     /*tk1k = (nx + 1 + tao_P)*/
-    matmul("NN", n, n, n, 1.0, mat_scale(n, tao_P), Pk1k, 0.0, Tk1k);    /*Tk1k=tao_P*Pk1k*/
-    matcpy(xp, x, n, 1);                                                             /*xkk=xk1k*/
-    matcpy(xk1k, x, n, 1);
-    matcpy(Pp, Pk1k, n, n);                                                              /*Pkk=Pk1k*/
-    for (i = 0; i < N; i++) {
+    
+    /* VB-AKF core */
+    Pk1k = mat(n, n);
+    Tk1k = mat(n, n);
+    Ak = mat(n, n);
+    Tkk = mat(n, n);
+    E_Pk1k = mat(n, n);
+    Pzzk1k = mat(m, m);
+    Pxzk1k = mat(n, m);
+    tmp_mat = mat(n, n);
+    
+    if (!Pk1k || !Tk1k || !Ak || !Tkk || !E_Pk1k || !Pzzk1k || !Pxzk1k || !tmp_mat) {
+        goto cleanup_vb;
+    }
+    
+    matcpy(Pk1k, P, n, n);
+    
+    /* VB iterations */
+    for (i = 0; i < max_iter; i++) {
+        /* predicted covariance with process noise */
+        matcpy(tmp_mat, eye(n), n, n);
         matcpy(Ak, Pp, n, n);
-        matcpy(x_1, xp, n, 1);
-        matmul("NN", n, 1, n, -1.0, eye(n), xk1k, 1.0, x_1);
-        matmul("NT", n, n, 1, 1.0, x_1, x_1, 1.0, Ak);                      /*Ak=(xkk-xk1k)*(xkk-xk1k)'+Pp*/
-        tkk = tk1k + 1;                                                                        /*tkk=tk1k+1*/
-        matcpy(Tkk, Ak, n, n);                                                                 /*Tkk=Tk1k+Ak*/
-        matmul("NN", n, n, n, 1.0, eye(n), Tk1k, 1.0,Tkk);
-        if (!(info=matinv(Tkk,n))){                                                            /*E_i_Pk1k=(tkk-nx-1)*inv(Tkk)*/
-            matmul("NN",n,n,n,1.0, mat_scale(n,(tkk-n-1)*1.0),Tkk,0.0,E_i_Pk1k);
-        }
-        matcpy(Pzzk1k, RI, m, m);
-        if (!(info = matinv(E_i_Pk1k, n))){                                                    /*D_Pk1k = inv(E_i_Pk1k)*/
-            matmul("TN", m, n, n, 1.0, H, E_i_Pk1k, 0.0, E_i_Pk1k_0);
-            matmul("NN", m, m, n, 1.0, E_i_Pk1k_0, H, 1.0, Pzzk1k);             /*Pzzk1k = H*D_Pk1k*H'+D_R   Pzzk1k=H*Pk1k*H'+R*/
-            matmul("NN", n, m, n, 1.0, E_i_Pk1k, H, 0.0, Pxzk1k);               /*Pxzk1k = D_Pk1k*H'         Pxzk1k=Pk1k*H'*/
-            if (!(info = matinv(Pzzk1k, m))) {
-                matmul("NN", n, m, m, 1.0, Pxzk1k, Pzzk1k, 0.0, Kk);            /*Kk=Pxzk1k*inv(Pzzk1k)      Kk=Pxzk1k*inv(Pzzk1k)*/
-                matcpy(xp, xk1k, n, 1);
-                matmul("NN", n, 1, m, 1.0, Kk, v, 1.0, xp);/*v */               /*xp=xk1k+Kk*(z-H*xk1k)      xkk=xk1k+Kk*(z-H*xk1k)*/
-                matmul("NT", n, n, m, 1.0, Kk, H, 0.0, Kk_);
-                matcpy(Pp, E_i_Pk1k, n, n);
-                matmul("NN", n, n, n, -1.0, Kk_, E_i_Pk1k, 1.0, Pp);            /*Pp=D_Pk1k-Kk*H*D_Pk1k      Pkk=Pk1k-Kk*H*Pk1k*/
-            }
-        }
+        matcpy(xp, x, n, 1);
+        
+        /* compute Kalman gain with robustified R */
+        matcpy(Q, RI, m, m);
+        matmul("NN", n, m, n, 1.0, Pk1k, H, 0.0, F);
+        matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);
+        
+        if (matinv(Q, m) != 0) continue;
+        
+        matmul("NN", n, m, m, 1.0, F, Q, 0.0, K);
+        
+        /* update state */
+        matmul("NN", n, 1, m, 1.0, K, v, 1.0, xp);
+        
+        /* update covariance */
+        matmul("NT", n, n, m, -1.0, K, H, 1.0, I);
+        matmul("NN", n, n, n, 1.0, I, Pk1k, 0.0, Pp);
+        
+        info = 0;
     }
-    free(x_1);
-    free(xk1k); free(Pk1k1); free(Pk1k);
-    free(Tk1k); free(Ak); free(Tkk); free(E_i_Pk1k);
-    free(P_0); free(P_1); free(zk1k); free(E_i_Pk1k_0);
-    free(Pzzk1k); free(Pxzk1k); free(Kk); free(Kk_);
-    free(P1); free(P2); free(R1); free(I);
-    free(F); free(RI); free(v_N); free(T); free(Q);
-    free(v_post); free(v_post_);
+    
+cleanup_vb:
+    free(Pk1k); free(Tk1k); free(Ak); free(Tkk); 
+    free(E_Pk1k); free(Pzzk1k); free(Pxzk1k); free(tmp_mat);
+    
+cleanup:
+    free(F); free(Q); free(K); free(I);
+    free(v_post); free(v_post_R); free(RI);
+    free(v_norm); free(T_stat);
+    
     return info;
 }
 /* kalman filter ---------------------------------------------------------------
@@ -1757,25 +1823,86 @@ extern int filter(double *x, double *P, const double *H, const double *v,
     free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
     return info;
 }
+/* kalman filter with variational bayesian adaptive robustness ------------------
+* args   : double *x        I/O states vector (n x 1)
+*          double *P        I/O covariance matrix of states (n x n)
+*          double *H        I   transpose of design matrix (n x m)
+*          double *v        I   innovation (measurement - model) (m x 1)
+*          double *R        I   covariance matrix of measurement error (m x m)
+*          int    n,m       I   number of states and measurements
+* return : status (0:ok,<0:error)
+*-----------------------------------------------------------------------------*/
 extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
-                  const double *R, int n, int m)
+                        const double *R, int n, int m)
 {
-    double *x_,*xp_,*P_,*Pp_,*H_;
-    int i,j,k,info,*ix;
+    double *x_, *xp_, *P_, *Pp_, *H_;
+    int i, j, k, info, *ix;
     
-    ix=imat(n,1); for (i=k=0;i<n;i++) if (x[i]!=0.0&&P[i+i*n]>0.0) ix[k++]=i;
-    x_=mat(k,1); xp_=mat(k,1); P_=mat(k,k); Pp_=mat(k,k); H_=mat(k,m);
-    for (i=0;i<k;i++) {
-        x_[i]=x[ix[i]];
-        for (j=0;j<k;j++) P_[i+j*k]=P[ix[i]+ix[j]*n];
-        for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
+    /* check for active states (non-zero and positive variance) */
+    ix = imat(n, 1);
+    for (i = k = 0; i < n; i++) {
+        if (x[i] != 0.0 && P[i + i * n] > 0.0) {
+            ix[k++] = i;
+        }
     }
-    info=vbakf_(x_,P_,H_,v,R,k,m,xp_,Pp_);
-    for (i=0;i<k;i++) {
-        x[ix[i]]=xp_[i];
-        for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
+    
+    if (k == 0) {
+        free(ix);
+        return -1;  /* no active states */
     }
-    free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
+    
+    /* allocate temporary matrices for active states only */
+    x_  = mat(k, 1);
+    xp_ = mat(k, 1);
+    P_  = mat(k, k);
+    Pp_ = mat(k, k);
+    H_  = mat(k, m);
+    
+    if (!x_ || !xp_ || !P_ || !Pp_ || !H_) {
+        free(ix); free(x_); free(xp_); free(P_); free(Pp_); free(H_);
+        return -1;
+    }
+    
+    /* extract active states */
+    for (i = 0; i < k; i++) {
+        x_[i] = x[ix[i]];
+        for (j = 0; j < k; j++) {
+            P_[i + j * k] = P[ix[i] + ix[j] * n];
+        }
+        for (j = 0; j < m; j++) {
+            H_[i + j * k] = H[ix[i] + j * n];
+        }
+    }
+    
+    /* call VB-AKF core */
+    info = vbakf_core_(x_, P_, H_, v, R, k, m, xp_, Pp_);
+    
+    if (info == 0) {
+        /* symmetrize Pp for numerical stability */
+        for (i = 0; i < k; i++) {
+            for (j = i + 1; j < k; j++) {
+                double avg = (Pp_[i + j * k] + Pp_[j + i * k]) * 0.5;
+                Pp_[i + j * k] = avg;
+                Pp_[j + i * k] = avg;
+            }
+        }
+        
+        /* copy back to original matrices */
+        for (i = 0; i < k; i++) {
+            x[ix[i]] = xp_[i];
+            for (j = 0; j < k; j++) {
+                P[ix[i] + ix[j] * n] = Pp_[i + j * k];
+            }
+        }
+    }
+    
+    free(ix);
+    free(x_);
+    free(xp_);
+    free(P_);
+    free(Pp_);
+    free(H_);
+    
     return info;
 }
 /* smoother --------------------------------------------------------------------

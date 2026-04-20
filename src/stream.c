@@ -1474,12 +1474,12 @@ static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
                         "%*s %*s %lf %lf %lf %*s %*s %lf %lf %lf",
                         &x,&y,&z,&sdx,&sdy,&sdz)==6) {
             connectCPP = 1;
-            RTK_sol[0] = (float)x;
-            RTK_sol[1] = (float)y;
-            RTK_sol[2] = (float)z;
-            RTK_sol[3] = (float)sdx;
-            RTK_sol[4] = (float)sdy;
-            RTK_sol[5] = (float)sdz;
+            RTK_sol[0] = x;
+            RTK_sol[1] = y;
+            RTK_sol[2] = z;
+            RTK_sol[3] = sdx;
+            RTK_sol[4] = sdy;
+            RTK_sol[5] = sdz;
             tracet(4,"readtcpcli CPP RTK: xyz=%.4f %.4f %.4f sd=%.4f %.4f %.4f\n",
                    x,y,z,sdx,sdy,sdz);
         }
@@ -1502,12 +1502,12 @@ static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
                         "%*s %*s %lf %lf %lf %*s %*s %lf %lf %lf",
                         &x,&y,&z,&sdx,&sdy,&sdz)==6) {
             checkMB = 1;
-            CPP_sol[0] = (float)x;
-            CPP_sol[1] = (float)y;
-            CPP_sol[2] = (float)z;
-            CPP_sol[3] = (float)sdx;
-            CPP_sol[4] = (float)sdy;
-            CPP_sol[5] = (float)sdz;
+            CPP_sol[0] = x;
+            CPP_sol[1] = y;
+            CPP_sol[2] = z;
+            CPP_sol[3] = sdx;
+            CPP_sol[4] = sdy;
+            CPP_sol[5] = sdz;
             tracet(4,"readtcpcli CPP MB: xyz=%.4f %.4f %.4f sd=%.4f %.4f %.4f\n",
                    x,y,z,sdx,sdy,sdz);
         }

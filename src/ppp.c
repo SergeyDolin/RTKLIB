@@ -893,6 +893,9 @@ static void udpos_ppp(rtk_t *rtk)
             return;
         }
 
+        /* --- FIXED: nothing to do, AR is holding --- */
+        if (stat_ar == SOLQ_FIX) return;
+
         /* --- AFTER FIX LOSS: count warmup epochs before restarting tests --- */
         cpp_epoch_cnt++;
         if (cpp_epoch_cnt < CPP_WARMUP_EPOCHS) {
@@ -911,18 +914,17 @@ static void udpos_ppp(rtk_t *rtk)
                 /* solution still actively converging — reset stable counter */
                 m = 0;
                 prior_std = posterior_std;
-                trace(0,"CPP converging: std=%.5f improve=%.1f%% (stable=%d)\n\r",
-                      posterior_std, improve*100.0, m);
+                trace(0,"CPP converging: std=%.5f improve=%.1f%% (stable=0)\n\r",
+                      posterior_std, improve*100.0);
                 return;
             }
             m++;
-            trace(0,"CPP stable: std=%.5f improve=%.1f%% (stable=%d/%d)\n\r",
-                  posterior_std, improve*100.0, m, CPP_STABLE_EPOCHS);
+            trace(0,"CPP stable: std=%.5f improve=%.1f%% (%d/%d)\n\r",
+                  posterior_std, fabs(improve)*100.0, m, CPP_STABLE_EPOCHS);
         } else {
             /* first epoch after warmup — just record, don't jump yet */
             prior_std = posterior_std;
-            trace(0,"CPP stable: std=%.5f (first, stable=%d/%d)\n\r",
-                  posterior_std, m, CPP_STABLE_EPOCHS);
+            trace(0,"CPP stable: std=%.5f (first)\n\r", posterior_std);
             return;
         }
         prior_std = posterior_std;
@@ -962,8 +964,14 @@ static void udpos_ppp(rtk_t *rtk)
                       k, RTK_sol[0],RTK_sol[1],RTK_sol[2],
                       RTK_sol[3],RTK_sol[4],RTK_sol[5]);
                 k++;
-                m = 0; /* reset stable counter: let AR run, re-check later if needed */
+                m = 0; /* reset stable counter after inject */
+            } else {
+                trace(0,"CPP stable: RTK ok but no inject (ppp_std=%.4f rtk_std=%.4f"
+                      " dXYZ=%.3f %.3f %.3f)\n\r",
+                      posterior_std, m_std_rtk, dX, dY, dZ);
             }
+        } else {
+            trace(0,"CPP stable: no RTK from partner (m=%d)\n\r", m);
         }
 
         return;

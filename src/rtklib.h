@@ -58,8 +58,8 @@ extern "C" {
 /* constants -----------------------------------------------------------------*/
 
 /* collaborative precise positioning (CPP) shared globals --------------------*/
-float RTK_sol[6];                       /* RTK solution received from partner (x,y,z,sx,sy,sz) */
-float CPP_sol[6];                       /* CPP solution received for moving-base */
+double RTK_sol[6];                      /* RTK solution received from partner (x,y,z,sx,sy,sz) */
+double CPP_sol[6];                      /* CPP solution received for moving-base */
 int check;                              /* reserved */
 int connectCPP;                         /* partner RTK connection flag */
 int checkMB;                            /* CPP moving-base availability flag */
