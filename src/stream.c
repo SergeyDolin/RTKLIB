@@ -238,6 +238,19 @@ typedef struct {            /* udp type */
     socket_t sock;          /* socket descriptor */
 } udp_t;
 
+/* CPP collaborative protocol buffer ----------------------------------------*/
+typedef struct {
+    int             sockfd, new_fd;      /* listen/connect fds (reserved) */
+    struct sockaddr_in my_addr;          /* my address */
+    struct sockaddr_in their_addr;       /* peer address */
+    int             sin_size;
+    char            string_read[4096];   /* CPP recv buffer */
+    int             n,i;
+    int             last_fd;             /* last connected fd */
+} Lighter;
+
+Lighter Comrade;
+
 typedef struct {            /* ftp download control type */
     int state;              /* state (0:close,1:download,2:complete,3:error) */
     int proto;              /* protocol (0:ftp,1:http) */
@@ -1443,11 +1456,68 @@ static int waittcpcli(tcpcli_t *tcpcli, char *msg)
 static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
 {
     int nr,err;
-    
+
     tracet(4,"readtcpcli: sock=%d\n",tcpcli->svr.sock);
-    
+
+    /* CPP: partner RTK solution stream */
+    /* format: week tow X Y Z Q NS SDX SDY SDZ ... */
+    if (tcpcli->svr.port == portTCP) {
+        double x=0,y=0,z=0,sdx=0,sdy=0,sdz=0;
+
+        nr = recv(tcpcli->svr.sock, Comrade.string_read, sizeof(Comrade.string_read)-1, 0);
+        Comrade.string_read[nr>0?nr:0] = '\0';
+
+        if (nr<=0 || Comrade.string_read[0]=='\0') {
+            connectCPP = 0;
+        }
+        else if (sscanf(Comrade.string_read,
+                        "%*s %*s %lf %lf %lf %*s %*s %lf %lf %lf",
+                        &x,&y,&z,&sdx,&sdy,&sdz)==6) {
+            connectCPP = 1;
+            RTK_sol[0] = (float)x;
+            RTK_sol[1] = (float)y;
+            RTK_sol[2] = (float)z;
+            RTK_sol[3] = (float)sdx;
+            RTK_sol[4] = (float)sdy;
+            RTK_sol[5] = (float)sdz;
+            tracet(4,"readtcpcli CPP RTK: xyz=%.4f %.4f %.4f sd=%.4f %.4f %.4f\n",
+                   x,y,z,sdx,sdy,sdz);
+        }
+        else {
+            connectCPP = 0;
+        }
+    }
+    /* CPP: moving-base (CPP_sol) stream */
+    /* format: week tow X Y Z Q NS SDX SDY SDZ ... */
+    if (tcpcli->svr.port == portMB) {
+        double x=0,y=0,z=0,sdx=0,sdy=0,sdz=0;
+
+        nr = recv(tcpcli->svr.sock, Comrade.string_read, sizeof(Comrade.string_read)-1, 0);
+        Comrade.string_read[nr>0?nr:0] = '\0';
+
+        if (nr<=0 || Comrade.string_read[0]=='\0') {
+            checkMB = 0;
+        }
+        else if (sscanf(Comrade.string_read,
+                        "%*s %*s %lf %lf %lf %*s %*s %lf %lf %lf",
+                        &x,&y,&z,&sdx,&sdy,&sdz)==6) {
+            checkMB = 1;
+            CPP_sol[0] = (float)x;
+            CPP_sol[1] = (float)y;
+            CPP_sol[2] = (float)z;
+            CPP_sol[3] = (float)sdx;
+            CPP_sol[4] = (float)sdy;
+            CPP_sol[5] = (float)sdz;
+            tracet(4,"readtcpcli CPP MB: xyz=%.4f %.4f %.4f sd=%.4f %.4f %.4f\n",
+                   x,y,z,sdx,sdy,sdz);
+        }
+        else {
+            checkMB = 0;
+        }
+    }
+
     if (!waittcpcli(tcpcli,msg)) return 0;
-    
+
     if ((nr=recv_nb(tcpcli->svr.sock,buff,n))==-1) {
         if ((err=errsock())) {
             tracet(2,"readtcpcli: recv error sock=%d err=%d\n",tcpcli->svr.sock,err);
@@ -1467,11 +1537,16 @@ static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
 static int writetcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
 {
     int ns,err;
-    
+
     tracet(3,"writetcpcli: sock=%d state=%d n=%d\n",tcpcli->svr.sock,tcpcli->svr.state,n);
-    
+
     if (!waittcpcli(tcpcli,msg)) return 0;
-    
+
+    /* CPP: control command port ("run<name>" / "stop<name>") */
+    if (tcpcli->svr.port == portSRV) {
+        ns = send(tcpcli->svr.sock, checkbuff, sizeof(checkbuff), 0);
+    }
+
     if ((ns=send_nb(tcpcli->svr.sock,buff,n))==-1) {
         if ((err=errsock())) {
             tracet(2,"writetcp: send error sock=%d err=%d\n",tcpcli->svr.sock,err);

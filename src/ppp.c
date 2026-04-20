@@ -454,7 +454,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     int *codes;
     int i,sys=satsys(obs->sat,NULL),frq2;
     
-    codes = (int *)malloc(NFREQ * sizeof(int));
+    codes = (int *)calloc(NFREQ, sizeof(int)); /* zero-init: CODE_NONE=0 prevents false matches */
     
     for (i=0;i<NFREQ;i++) {
         
@@ -546,9 +546,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     if (sys == SYS_GAL)
-    {   
-
-        if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] != 0.0)
+    {
+        /* NOTE: condition == 0.0 means no RINEX DCB loaded → use SSR biases.
+         * Original code had != 0.0 which was inverted vs GPS/QZS/GLO/BDS pattern,
+         * causing Galileo to get zero correction when using SSR-only stream. */
+        if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] == 0.0)
         {
             if (codes[0]==CODE_L1X)
             {
@@ -642,7 +644,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     *Lc=*Pc=0.0;
     frq2=L[1]==0.0?2:1;  /* if L[1]==0, try L[2] */
     
-    if (freq[0]==0.0||freq[frq2]==0.0) return;
+    if (freq[0]==0.0||freq[frq2]==0.0) { free(codes); return; }
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
     C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
     if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
@@ -835,13 +837,26 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
     saveinfo(obs,rtk,n,nav);
 }
 
+/* CPP jumpstart state (collaborative precise positioning) -------------------*/
+int k = 1;                                  /* number of accepted CPP jumps */
+int kc = 1;                                 /* number of cold-start CPP injections */
+int m = 0;                                  /* consecutive stable epochs counter */
+int stat_ar = SOLQ_FLOAT;                   /* AR stat from previous epoch */
+int coldStart = 1;                          /* CPP cold-start flag */
+int cpp_epoch_cnt = 0;                      /* epoch counter: warmup after fix loss */
+#define CPP_WARMUP_EPOCHS 30                /* epochs to let solution self-converge (1 Hz = 30 s) */
+#define CPP_STABLE_EPOCHS 3                 /* consecutive stable epochs before jumpstart */
+#define CPP_IMPROVE_THRESH 0.02             /* relative improvement threshold: >2% = still converging */
+double posterior_std, prior_std = 0.0;      /* variance geometric mean for stability check */
+
 /* temporal update of position -----------------------------------------------*/
 static void udpos_ppp(rtk_t *rtk)
 {
-    double *F,*P,*FP,*x,*xp,pos[3],Q[9]={0},Qv[9];
+    double *F,*P,*FP,*x,*xp,pos[3],Q[9]={0},Qv[9],m_std_rtk;
     int i,j,*ix,nx,restart=0;
+    int ct2=0,ct3=0;
 
-    
+
     trace(4,"udpos_ppp:\n");
 
 
@@ -857,6 +872,101 @@ static void udpos_ppp(rtk_t *rtk)
             for (i=3;i<6;i++) initx(rtk,rtk->sol.rr[i],VAR_VEL,i);
             for (i=6;i<9;i++) initx(rtk,1E-6,VAR_ACC,i);
         }
+    }
+    /* kinematic CPP mode: three-stage collaborative jumpstart -------------- */
+    if (rtk->opt.mode==PMODE_CPP_KINEMA) {
+
+        if (coldStart) {
+            /* --- COLD START: no epoch counting, request jumpstart immediately --- */
+            strcpy(checkbuff, "run");
+            strcat(checkbuff, namePoint);
+            if (RTK_sol[0] != 0.0) {
+                trace(0,"CPP cold: inject #%d xyz=%.3f %.3f %.3f sd=%.4f %.4f %.4f\n\r",
+                      kc, RTK_sol[0],RTK_sol[1],RTK_sol[2],
+                      RTK_sol[3],RTK_sol[4],RTK_sol[5]);
+                kc++;
+                for (i=0;i<3;i++) initx(rtk,RTK_sol[i],pow(RTK_sol[i+3],2.0),i);
+            } else {
+                trace(0,"CPP cold: no RTK yet, reset pos var (jump %d)\n\r",k);
+                for (i=0;i<3;i++) initx(rtk,rtk->sol.rr[i],VAR_POS,i);
+            }
+            return;
+        }
+
+        /* --- AFTER FIX LOSS: count warmup epochs before restarting tests --- */
+        cpp_epoch_cnt++;
+        if (cpp_epoch_cnt < CPP_WARMUP_EPOCHS) {
+            trace(0,"CPP warmup: %d/%d\n\r", cpp_epoch_cnt, CPP_WARMUP_EPOCHS);
+            return;
+        }
+
+        /* Warmup done — check if float solution has stopped improving.
+         * If variance still decreasing >CPP_IMPROVE_THRESH per epoch → still converging,
+         * reset stable counter and wait.  Once CPP_STABLE_EPOCHS in a row → try jumpstart. */
+        posterior_std = pow(fabs(rtk->P[0])*fabs(rtk->P[1])*fabs(rtk->P[2]), 1.0/3.0);
+
+        if (prior_std > 1e-10) {
+            double improve = (prior_std - posterior_std) / prior_std; /* >0 = improving */
+            if (improve > CPP_IMPROVE_THRESH) {
+                /* solution still actively converging — reset stable counter */
+                m = 0;
+                prior_std = posterior_std;
+                trace(0,"CPP converging: std=%.5f improve=%.1f%% (stable=%d)\n\r",
+                      posterior_std, improve*100.0, m);
+                return;
+            }
+            m++;
+            trace(0,"CPP stable: std=%.5f improve=%.1f%% (stable=%d/%d)\n\r",
+                  posterior_std, improve*100.0, m, CPP_STABLE_EPOCHS);
+        } else {
+            /* first epoch after warmup — just record, don't jump yet */
+            prior_std = posterior_std;
+            trace(0,"CPP stable: std=%.5f (first, stable=%d/%d)\n\r",
+                  posterior_std, m, CPP_STABLE_EPOCHS);
+            return;
+        }
+        prior_std = posterior_std;
+
+        if (m < CPP_STABLE_EPOCHS) {
+            return; /* not enough consecutive stable epochs yet */
+        }
+
+        /* Solution stabilized — try jumpstart */
+        strcpy(checkbuff, "run");
+        strcat(checkbuff, namePoint);
+
+        if (RTK_sol[0] != 0.0) {
+            m_std_rtk = pow(fabs(RTK_sol[3])*fabs(RTK_sol[4])*fabs(RTK_sol[5]), 1.0/3.0);
+
+            dX = fabs(rtk->sol.rr[0] - RTK_sol[0]);
+            dY = fabs(rtk->sol.rr[1] - RTK_sol[1]);
+            dZ = fabs(rtk->sol.rr[2] - RTK_sol[2]);
+
+            sx = (sqrt((pow(rtk->sol.rr[3],2.0) + pow(RTK_sol[3],2.0)))*10)*2;
+            sy = (sqrt((pow(rtk->sol.rr[4],2.0) + pow(RTK_sol[4],2.0)))*10)*2;
+            sz = (sqrt((pow(rtk->sol.rr[5],2.0) + pow(RTK_sol[5],2.0)))*10)*2;
+
+            if (posterior_std > m_std_rtk) {
+                ct2 = 1;
+                trace(0,"CPP check2: ppp_std=%.4f > rtk_std=%.4f\n\r",
+                      posterior_std, m_std_rtk);
+            }
+            if ((dX > sx) && (dY > sy) && (dZ > sz)) {
+                ct3 = 1;
+                trace(0,"CPP check3: dXYZ=%.3f %.3f %.3f > thr=%.3f %.3f %.3f\n\r",
+                      dX,dY,dZ, sx,sy,sz);
+            }
+            if (ct2 || ct3) {
+                for (i=0;i<3;i++) initx(rtk,RTK_sol[i],pow(RTK_sol[i+3],2.0),i);
+                trace(0,"CPP inject #%d: xyz=%.3f %.3f %.3f sd=%.4f %.4f %.4f\n\r",
+                      k, RTK_sol[0],RTK_sol[1],RTK_sol[2],
+                      RTK_sol[3],RTK_sol[4],RTK_sol[5]);
+                k++;
+                m = 0; /* reset stable counter: let AR run, re-check later if needed */
+            }
+        }
+
+        return;
     }
     /* static ppp mode */
     if (rtk->opt.mode==PMODE_PPP_STATIC) {
@@ -1642,6 +1752,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
     else{
         stat=SOLQ_PPP;
+        stat_ar=SOLQ_PPP;
     }
 
 
@@ -1649,15 +1760,35 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
             if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
-            
+
                 stat=SOLQ_FIX;
+                stat_ar=SOLQ_FIX;
+                coldStart = 0;
                 rtk->fix_epoch++;
                 rtk->nfix++;
                 matcpy(rtk->xa,xp,rtk->nx,1);
                 matcpy(rtk->Pa,Pp,rtk->nx,rtk->nx);
+                /* notify partner that PPP has fixed */
+                strcpy(checkbuff, "stop");
+                strcat(checkbuff, namePoint);
+                trace(0,"CPP fixed (nfix=%d)\n\r", rtk->nfix);
             }
             else {
                 rtk->nfix=0;
+                if (stat_ar==SOLQ_FIX) {
+                    stat_ar=SOLQ_PPP;
+                    m=0; prior_std=0.0;
+                    cpp_epoch_cnt=0;
+                    trace(0,"CPP fix lost (ppp_res): warmup reset\n\r");
+                }
+            }
+        }
+        else {
+            if (stat_ar==SOLQ_FIX) {
+                stat_ar=SOLQ_PPP;
+                m=0; prior_std=0.0;
+                cpp_epoch_cnt=0;
+                trace(0,"CPP fix lost (AR solver): warmup reset\n\r");
             }
         }
         update_stat(rtk,obs,n,stat);
@@ -1675,7 +1806,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 if (rtk->opt.modear!=ARMODE_FIXHOLD) rtk->nfix=0;
             }
         }
-       
+
     }
     trace(2, "SOL X: %f, Y: %f, Z: %f\n\r", rtk->x[0],rtk->x[1],rtk->x[2]);
     /* update solution status */

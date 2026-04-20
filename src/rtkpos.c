@@ -1809,20 +1809,32 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         return 1;
     }
     if (opt->mode==PMODE_MOVEB) { /*  moving baseline */
-        
+
         /* estimate position/velocity of base station */
         if (!pntpos(obs+nu,nr,nav,&rtk->opt,&solb,NULL,NULL,msg)) {
             errmsg(rtk,"base station position error (%s)\n",msg);
             return 0;
         }
         rtk->sol.age=(float)timediff(rtk->sol.time,solb.time);
-        
+
         if (fabs(rtk->sol.age)>TTOL_MOVEB) {
             errmsg(rtk,"time sync error for moving-base (age=%.1f)\n",rtk->sol.age);
             return 0;
         }
-        for (i=0;i<6;i++) rtk->rb[i]=solb.rr[i];
-        
+        /* CPP moving-base injection: prefer collaborative partner solution */
+        if (checkMB==1) {
+            for (i=0;i<6;i++) rtk->rb[i]=CPP_sol[i];
+            trace(0, "CPP-MB: %f, %f, %f, %f, %f, %f\n\r",
+                  CPP_sol[0], CPP_sol[1], CPP_sol[2],
+                  CPP_sol[3], CPP_sol[4], CPP_sol[5]);
+            for (i=0;i<6;i++) CPP_sol[i] = 0.0;
+        }
+        else {
+            for (i=0;i<6;i++) CPP_sol[i] = 0.0;
+            for (i=0;i<6;i++) rtk->rb[i]=solb.rr[i];
+            trace(0, "MB 0: %f, %f, %f\n\r",rtk->rb[0], rtk->rb[1], rtk->rb[2]);
+        }
+
         /* time-synchronized position of base station */
         for (i=0;i<3;i++) rtk->rb[i]+=rtk->rb[i+3]*rtk->sol.age;
     }

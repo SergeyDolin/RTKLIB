@@ -57,12 +57,12 @@
 #define MAXCON      32                  /* max number of consoles */
 #define MAXARG      10                  /* max number of args in a command */
 #define MAXCMD      256                 /* max length of a command */
-#define MAXSTR      1024                /* max length of a stream */
+#define MAXSTR      4096                /* max length of a stream */
 #define OPTSDIR     "."                 /* default config directory */
 #define OPTSFILE    "rtkrcv.conf"       /* default config file */
 #define NAVIFILE    "rtkrcv.nav"        /* navigation save file */
-#define STATFILE    "rtkrcv_%Y%m%d%h%M.stat"  /* solution status file */
 #define TRACEFILE   "rtkrcv_%Y%m%d%h%M.trace" /* debug trace file */
+#define STATFILE    "rtkrcv_%Y%m%d%h%M.stat"  /* solution status file */
 #define INTKEEPALIVE 1000               /* keep alive interval (ms) */
 
 #define ESC_CLEAR   "\033[H\033[2J"     /* ansi/vt100 escape: erase screen */
@@ -94,11 +94,12 @@ static int timetype     =0;             /* time format (0:gpst,1:utc,2:jst,3:tow
 static int soltype      =0;             /* sol format (0:dms,1:deg,2:xyz,3:enu,4:pyl) */
 static int solflag      =2;             /* sol flag (1:std+2:age/ratio/ns) */
 static int strtype[]={                  /* stream types */
-    STR_SERIAL,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE
+    STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE,STR_NONE
 };
-static char strpath[8][MAXSTR]={"","","","","","","",""}; /* stream paths */
+static char strpath[9][MAXSTR]={"","","","","","","","",""}; /* stream paths */
 static int strfmt[]={                   /* stream formats */
-    STRFMT_UBX,STRFMT_RTCM3,STRFMT_SP3,SOLF_LLH,SOLF_NMEA
+    /* inp1       inp2          inp3          inp4    out1      out2     */
+    STRFMT_UBX,STRFMT_RTCM3,STRFMT_SP3,STRFMT_RTCM3,SOLF_LLH,SOLF_NMEA
 };
 static int svrcycle     =10;            /* server cycle (ms) */
 static int timeout      =10000;         /* timeout time (ms) */
@@ -109,7 +110,7 @@ static int navmsgsel    =0;             /* navigation mesaage select */
 static char proxyaddr[256]="";          /* http/ntrip proxy */
 static int nmeareq      =0;             /* nmea request type (0:off,1:lat/lon,2:single) */
 static double nmeapos[] ={0,0,0};       /* nmea position (lat/lon/height) (deg,m) */
-static char rcvcmds[3][MAXSTR]={""};    /* receiver commands files */
+static char rcvcmds[4][MAXSTR]={""};    /* receiver commands files */
 static char startcmd[MAXSTR]="";        /* start command */
 static char stopcmd [MAXSTR]="";        /* stop command */
 static int modflgr[256] ={0};           /* modified flags of receiver options */
@@ -125,7 +126,7 @@ static filopt_t filopt  ={""};          /* file options */
 
 /* help text -----------------------------------------------------------------*/
 static const char *usage[]={
-    "usage: rtkrcv [-s][-p port][-d dev][-o file][-w pwd][-r level][-t level][-sta sta]",
+    "usage: rtkrcv [-s][-p port][-d dev][-o file][-w pwd][-r level][-t level][-sta sta][-port cpp-port][-server port Server]",
     "options",
     "  -s         start RTK server on program startup",
     "  -p port    port number for telnet console",
@@ -135,7 +136,9 @@ static const char *usage[]={
     "  -w pwd     login password for remote console (\"\": no password)",
     "  -r level   output solution status file (0:off,1:states,2:residuals)",
     "  -t level   debug trace level (0:off,1-5:on)",
-    "  -sta sta   station name for receiver dcb"
+    "  -sta sta   station name for receiver dcb",
+    "  -port cpp-port port for cpp<->rtk",
+    "  -server port to server"
 };
 static const char *helptxt[]={
     "start                 : start rtk server",
@@ -183,7 +186,7 @@ static const char *pathopts[]={         /* path options help */
 #define FMTOPT  "0:rtcm2,1:rtcm3,2:oem4,3:oem3,4:ubx,5:ss2,6:hemis,7:skytraq,8:gw10,9:javad,10:nvs,11:binex,12:rt17,13:sbf,14:cmr,15:tersus,18:sp3"
 #define NMEOPT  "0:off,1:latlon,2:single"
 #define SOLOPT  "0:llh,1:xyz,2:enu,3:nmea,4:stat"
-#define MSGOPT  "0:all,1:rover,2:base,3:corr"
+#define MSGOPT  "0:all,1:rover,2:base,3:corr,4:corr2"
 
 static opt_t rcvopts[]={
     {"console-passwd",  2,  (void *)passwd,              ""     },
@@ -194,28 +197,31 @@ static opt_t rcvopts[]={
     {"inpstr1-type",    3,  (void *)&strtype[0],         ISTOPT },
     {"inpstr2-type",    3,  (void *)&strtype[1],         ISTOPT },
     {"inpstr3-type",    3,  (void *)&strtype[2],         ISTOPT },
+    {"inpstr4-type",    3,  (void *)&strtype[3],         ISTOPT },
     {"inpstr1-path",    2,  (void *)strpath [0],         ""     },
     {"inpstr2-path",    2,  (void *)strpath [1],         ""     },
     {"inpstr3-path",    2,  (void *)strpath [2],         ""     },
+    {"inpstr4-path",    2,  (void *)strpath [3],         ""     },
     {"inpstr1-format",  3,  (void *)&strfmt [0],         FMTOPT },
     {"inpstr2-format",  3,  (void *)&strfmt [1],         FMTOPT },
     {"inpstr3-format",  3,  (void *)&strfmt [2],         FMTOPT },
+    {"inpstr4-format",  3,  (void *)&strfmt [3],         FMTOPT },
     {"inpstr2-nmeareq", 3,  (void *)&nmeareq,            NMEOPT },
     {"inpstr2-nmealat", 1,  (void *)&nmeapos[0],         "deg"  },
     {"inpstr2-nmealon", 1,  (void *)&nmeapos[1],         "deg"  },
     {"inpstr2-nmeahgt", 1,  (void *)&nmeapos[2],         "m"    },
-    {"outstr1-type",    3,  (void *)&strtype[3],         OSTOPT },
-    {"outstr2-type",    3,  (void *)&strtype[4],         OSTOPT },
-    {"outstr1-path",    2,  (void *)strpath [3],         ""     },
-    {"outstr2-path",    2,  (void *)strpath [4],         ""     },
-    {"outstr1-format",  3,  (void *)&strfmt [3],         SOLOPT },
-    {"outstr2-format",  3,  (void *)&strfmt [4],         SOLOPT },
-    {"logstr1-type",    3,  (void *)&strtype[5],         OSTOPT },
-    {"logstr2-type",    3,  (void *)&strtype[6],         OSTOPT },
-    {"logstr3-type",    3,  (void *)&strtype[7],         OSTOPT },
-    {"logstr1-path",    2,  (void *)strpath [5],         ""     },
-    {"logstr2-path",    2,  (void *)strpath [6],         ""     },
-    {"logstr3-path",    2,  (void *)strpath [7],         ""     },
+    {"outstr1-type",    3,  (void *)&strtype[4],         OSTOPT },
+    {"outstr2-type",    3,  (void *)&strtype[5],         OSTOPT },
+    {"outstr1-path",    2,  (void *)strpath [4],         ""     },
+    {"outstr2-path",    2,  (void *)strpath [5],         ""     },
+    {"outstr1-format",  3,  (void *)&strfmt [4],         SOLOPT },
+    {"outstr2-format",  3,  (void *)&strfmt [5],         SOLOPT },
+    {"logstr1-type",    3,  (void *)&strtype[6],         OSTOPT },
+    {"logstr2-type",    3,  (void *)&strtype[7],         OSTOPT },
+    {"logstr3-type",    3,  (void *)&strtype[8],         OSTOPT },
+    {"logstr1-path",    2,  (void *)strpath [6],         ""     },
+    {"logstr2-path",    2,  (void *)strpath [7],         ""     },
+    {"logstr3-path",    2,  (void *)strpath [8],         ""     },
     
     {"misc-svrcycle",   0,  (void *)&svrcycle,           "ms"   },
     {"misc-timeout",    0,  (void *)&timeout,            "ms"   },
@@ -306,7 +312,7 @@ static int confwrite(vt_t *vt, const char *file)
     
     strcpy(buff,file);
     if ((p=strstr(buff,"::"))) *p='\0'; /* omit options in path */
-    if (!vt->state||!(fp=fopen(buff,"r"))) return 1; /* no existing file */
+    if (!vt||!vt->state||!(fp=fopen(buff,"r"))) return 1; /* no console or no existing file */
     fclose(fp);
     vt_printf(vt,"overwrite %-16s ? (y/n): ",buff);
     if (!vt_gets(vt,buff,sizeof(buff))||vt->brk) return 0;
@@ -395,20 +401,20 @@ static int startsvr(vt_t *vt)
 {
     static sta_t sta[MAXRCV]={{""}};
     double pos[3],npos[3];
-    char s1[3][MAXRCVCMD]={"","",""},*cmds[]={NULL,NULL,NULL};
-    char s2[3][MAXRCVCMD]={"","",""},*cmds_periodic[]={NULL,NULL,NULL};
-    char *ropts[]={"","",""};
+    char s1[4][MAXRCVCMD]={"","","",""},*cmds[]={NULL,NULL,NULL,NULL};
+    char s2[4][MAXRCVCMD]={"","","",""},*cmds_periodic[]={NULL,NULL,NULL,NULL};
+    char *ropts[]={"","","",""};
     char *paths[]={
         strpath[0],strpath[1],strpath[2],strpath[3],strpath[4],strpath[5],
-        strpath[6],strpath[7]
+        strpath[6],strpath[7],strpath[8]
     };
     char errmsg[2048]="";
-    int i,ret,stropt[8]={0};
+    int i,ret,stropt[9]={0};
     
     trace(3,"startsvr:\n");
     
     /* read start commads from command files */
-    for (i=0;i<3;i++) {
+    for (i=0;i<4;i++) {
         if (!*rcvcmds[i]) continue;
         if (!readcmd(rcvcmds[i],s1[i],0)) {
             vt_printf(vt,"no command file: %s\n",rcvcmds[i]);
@@ -420,7 +426,7 @@ static int startsvr(vt_t *vt)
         else cmds_periodic[i]=s2[i];
     }
     /* confirm overwrite */
-    for (i=3;i<8;i++) {
+    for (i=4;i<9;i++) {
         if (strtype[i]==STR_FILE&&!confwrite(vt,strpath[i])) return 0;
     }
     if (prcopt.refpos==4) { /* rtcm */
@@ -466,8 +472,9 @@ static int startsvr(vt_t *vt)
         trace(2,"command exec error: %s (%d)\n",startcmd,ret);
         vt_printf(vt,"command exec error: %s (%d)\n",startcmd,ret);
     }
-    solopt[0].posf=strfmt[3];
-    solopt[1].posf=strfmt[4];
+    /* strfmt[0..3]=inp1..4, strfmt[4]=out1, strfmt[5]=out2 */
+    solopt[0].posf=strfmt[4];
+    solopt[1].posf=strfmt[5];
     
     /* start rtk server */
     if (!rtksvrstart(&svr,svrcycle,buffsize,strtype,paths,strfmt,navmsgsel,
@@ -482,15 +489,15 @@ static int startsvr(vt_t *vt)
 /* stop rtk server -----------------------------------------------------------*/
 static void stopsvr(vt_t *vt)
 {
-    char s[3][MAXRCVCMD]={"","",""},*cmds[]={NULL,NULL,NULL};
+    char s[4][MAXRCVCMD]={"","","",""},*cmds[]={NULL,NULL,NULL,NULL};
     int i,ret;
-    
+
     trace(3,"stopsvr:\n");
-    
+
     if (!svr.state) return;
-    
+
     /* read stop commads from command files */
-    for (i=0;i<3;i++) {
+    for (i=0;i<4;i++) {
         if (!*rcvcmds[i]) continue;
         if (!readcmd(rcvcmds[i],s[i],1)) {
             vt_printf(vt,"no command file: %s\n",rcvcmds[i]);
@@ -626,16 +633,16 @@ static void prsolution(vt_t *vt, const sol_t *sol, const double *rb)
 static void prstatus(vt_t *vt)
 {
     rtk_t rtk;
-    const char *svrstate[]={"stop","run"},*type[]={"rover","base","corr"};
+    const char *svrstate[]={"stop","run"},*type[]={"rover","base","corr","corr2"};
     const char *sol[]={"-","fix","float","SBAS","DGPS","single","PPP",""};
     const char *mode[]={
          "single","DGPS","kinematic","static","moving-base","fixed",
-         "PPP-kinema","PPP-static"
+         "PPP-kinema","PPP-static","CPP-kinema","CPP-static"
     };
     const char *freq[]={"-","L1","L1+L2","L1+L2+L5","","",""};
-    rtcm_t rtcm[3];
+    rtcm_t rtcm[4];
     int i,j,n,thread,cycle,state,rtkstat,nsat0,nsat1,prcout,nave;
-    int cputime,nb[3]={0},nmsg[3][10]={{0}};
+    int cputime,nb[4]={0},nmsg[4][10]={{0}};
     char tstr[64],s[1024],*p;
     double runtime,rt[3]={0},dop[4]={0},rr[3],bl1=0.0,bl2=0.0;
     double azel[MAXSAT*2],pos[3],vel[3],*del;
@@ -653,8 +660,8 @@ static void prstatus(vt_t *vt)
     cputime=svr.cputime;
     prcout=svr.prcout;
     nave=svr.nave;
-    for (i=0;i<3;i++) nb[i]=svr.nb[i];
-    for (i=0;i<3;i++) for (j=0;j<10;j++) {
+    for (i=0;i<4;i++) nb[i]=svr.nb[i];
+    for (i=0;i<4;i++) for (j=0;j<10;j++) {
         nmsg[i][j]=svr.nmsg[i][j];
     }
     if (svr.state) {
@@ -662,7 +669,7 @@ static void prstatus(vt_t *vt)
         rt[0]=floor(runtime/3600.0); runtime-=rt[0]*3600.0;
         rt[1]=floor(runtime/60.0); rt[2]=runtime-rt[1]*60.0;
     }
-    for (i=0;i<3;i++) rtcm[i]=svr.rtcm[i];
+    for (i=0;i<4;i++) rtcm[i]=svr.rtcm[i];
     rtksvrunlock(&svr);
     
     for (i=n=0;i<MAXSAT;i++) {
@@ -685,13 +692,13 @@ static void prstatus(vt_t *vt)
     vt_printf(vt,"%-28s: %d\n","cpu time for a cycle (ms)",cputime);
     vt_printf(vt,"%-28s: %d\n","missing obs data count",prcout);
     vt_printf(vt,"%-28s: %d,%d\n","bytes in input buffer",nb[0],nb[1]);
-    for (i=0;i<3;i++) {
+    for (i=0;i<4;i++) {
         sprintf(s,"# of input data %s",type[i]);
         vt_printf(vt,"%-28s: obs(%d),nav(%d),gnav(%d),ion(%d),sbs(%d),pos(%d),dgps(%d),ssr(%d),err(%d)\n",
                 s,nmsg[i][0],nmsg[i][1],nmsg[i][6],nmsg[i][2],nmsg[i][3],
                 nmsg[i][4],nmsg[i][5],nmsg[i][7],nmsg[i][9]);
     }
-    for (i=0;i<3;i++) {
+    for (i=0;i<4;i++) {
         p=s; *p='\0';
         for (j=1;j<100;j++) {
             if (rtcm[i].nmsg2[j]==0) continue;
@@ -917,7 +924,7 @@ static void prerror(vt_t *vt)
 static void prstream(vt_t *vt)
 {
     const char *ch[]={
-        "input rover","input base","input corr","output sol1","output sol2",
+        "input rover","input base","input corr", "input nav","output sol1","output sol2",
         "log rover","log base","log corr","monitor"
     };
     const char *type[]={
@@ -927,25 +934,25 @@ static void prstream(vt_t *vt)
     const char *fmt[]={"rtcm2","rtcm3","oem4","oem3","ubx","ss2","hemis","skytreq",
                        "gw10","javad","nvs","binex","rt17","sbf","cmr","","","sp3",""};
     const char *sol[]={"llh","xyz","enu","nmea","stat","-"};
-    stream_t stream[9];
-    int i,format[9]={0};
-    
+    stream_t stream[10];
+    int i,format[10]={0};
+
     trace(4,"prstream:\n");
-    
+
     rtksvrlock(&svr);
-    for (i=0;i<8;i++) stream[i]=svr.stream[i];
-    for (i=0;i<3;i++) format[i]=svr.format[i];
-    for (i=3;i<5;i++) format[i]=svr.solopt[i-3].posf;
-    stream[8]=moni;
-    format[8]=SOLF_LLH;
+    for (i=0;i<9;i++) stream[i]=svr.stream[i];
+    for (i=0;i<4;i++) format[i]=svr.format[i];
+    for (i=4;i<6;i++) format[i]=svr.solopt[i-4].posf;
+    stream[9]=moni;
+    format[9]=SOLF_LLH;
     rtksvrunlock(&svr);
     
     vt_printf(vt,"\n%s%-12s %-8s %-5s %s %10s %7s %10s %7s %-24s %s%s\n",ESC_BOLD,
               "Stream","Type","Fmt","S","In-byte","In-bps","Out-byte","Out-bps",
               "Path","Message",ESC_RESET);
-    for (i=0;i<9;i++) {
+    for (i=0;i<10;i++) {
         vt_printf(vt,"%-12s %-8s %-5s %s %10d %7d %10d %7d %-24.24s %s\n",
-            ch[i],type[stream[i].type],i<3?fmt[format[i]]:(i<5||i==8?sol[format[i]]:"-"),
+            ch[i],type[stream[i].type],i<4?fmt[format[i]]:(i<6||i==9?sol[format[i]]:"-"),
             stream[i].state<0?"E":(stream[i].state?"C":"-"),
             stream[i].inb,stream[i].inr,stream[i].outb,stream[i].outr,
             stream[i].path,stream[i].msg);
@@ -1611,9 +1618,9 @@ static void accept_sock(int ssock, con_t **con)
 int main(int argc, char **argv)
 {
     con_t *con[MAXCON]={0};
-    int i,start=0,port=0,outstat=0,trace=0,sock=0;
+    int i,start=1,port=0,outstat=0,trace=0,sock=0;
     char *dev="",file[MAXSTR]="";
-    
+
     for (i=1;i<argc;i++) {
         if      (!strcmp(argv[i],"-s")) start=1;
         else if (!strcmp(argv[i],"-p")&&i+1<argc) port=atoi(argv[++i]);
@@ -1624,6 +1631,14 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i],"-r")&&i+1<argc) outstat=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-t")&&i+1<argc) trace=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(sta_name,argv[++i]);
+        else if (!strcmp(argv[i],"-port")&&i+1<argc) 
+        {
+            int j = ++i;
+            strcpy(namePoint, argv[j]);
+            portTCP=atoi(argv[j]);
+        }
+        else if (!strcmp(argv[i],"-server")&&i+1<argc) portSRV=atoi(argv[++i]);
+        else if (!strcmp(argv[i],"-mb")&&i+1<argc) portMB=atoi(argv[++i]);
         else printusage();
     }
     if (trace>0) {

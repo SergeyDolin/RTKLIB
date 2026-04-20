@@ -56,9 +56,24 @@ extern "C" {
 #endif
 
 /* constants -----------------------------------------------------------------*/
+
+/* collaborative precise positioning (CPP) shared globals --------------------*/
+float RTK_sol[6];                       /* RTK solution received from partner (x,y,z,sx,sy,sz) */
+float CPP_sol[6];                       /* CPP solution received for moving-base */
+int check;                              /* reserved */
+int connectCPP;                         /* partner RTK connection flag */
+int checkMB;                            /* CPP moving-base availability flag */
+char namePoint[10];                     /* point name for CPP protocol */
+char checkbuff[65536];                  /* CPP command buffer ("run"/"stop" + name) */
+char *string_read;                      /* reserved */
+int portTCP;                            /* TCP port to receive RTK solutions */
+int portSRV;                            /* TCP port to send CPP commands */
+int portMB;                             /* TCP port to receive CPP moving-base solutions */
+float dX,dY,dZ,sx,sy,sz;                /* CPP stage-3 coord/std differences */
+
 #define VER_RTKLIB  "2.4.3"             /* library version */
 
-#define PATCH_LEVEL "b34"               /* patch level */
+#define PATCH_LEVEL "d5"               /* patch level */
 
 #define COPYRIGHT_RTKLIB \
             "Copyright (C) 2007-2020 T.Takasu\nAll rights reserved."
@@ -402,6 +417,8 @@ extern "C" {
 #define PMODE_PPP_KINEMA 6              /* positioning mode: PPP-kinemaric */
 #define PMODE_PPP_STATIC 7              /* positioning mode: PPP-static */
 #define PMODE_PPP_FIXED 8               /* positioning mode: PPP-fixed */
+#define PMODE_CPP_KINEMA 9              /* positioning mode: CPP-kinematic */
+#define PMODE_CPP_STATIC 10             /* positioning mode: CPP-static */
 
 #define SOLF_LLH    0                   /* solution format: lat/lon/height */
 #define SOLF_XYZ    1                   /* solution format: x/y/z-ecef */
@@ -1633,28 +1650,28 @@ typedef struct {        /* RTK server type */
     int nmeareq;        /* NMEA request (0:no,1:nmeapos,2:single sol) */
     double nmeapos[3];  /* NMEA request position (ecef) (m) */
     int buffsize;       /* input buffer size (bytes) */
-    int format[3];      /* input format {rov,base,corr} */
+    int format[4];      /* input format {rov,base,corr,corr2} */
     solopt_t solopt[2]; /* output solution options {sol1,sol2} */
-    int navsel;         /* ephemeris select (0:all,1:rover,2:base,3:corr) */
+    int navsel;         /* ephemeris select (0:all,1:rover,2:base,3:corr,4:corr2) */
     int nsbs;           /* number of sbas message */
     int nsol;           /* number of solution buffer */
     rtk_t rtk;          /* RTK control/result struct */
-    int nb [3];         /* bytes in input buffers {rov,base} */
+    int nb [4];         /* bytes in input buffers {rov,base,corr,corr2} */
     int nsb[2];         /* bytes in soulution buffers */
-    int npb[3];         /* bytes in input peek buffers */
-    uint8_t *buff[3];   /* input buffers {rov,base,corr} */
+    int npb[4];         /* bytes in input peek buffers */
+    uint8_t *buff[4];   /* input buffers {rov,base,corr,corr2} */
     uint8_t *sbuf[2];   /* output buffers {sol1,sol2} */
-    uint8_t *pbuf[3];   /* peek buffers {rov,base,corr} */
+    uint8_t *pbuf[4];   /* peek buffers {rov,base,corr,corr2} */
     sol_t solbuf[MAXSOLBUF]; /* solution buffer */
-    uint32_t nmsg[3][10]; /* input message counts */
-    raw_t  raw [3];     /* receiver raw control {rov,base,corr} */
-    rtcm_t rtcm[3];     /* RTCM control {rov,base,corr} */
-    gtime_t ftime[3];   /* download time {rov,base,corr} */
-    char files[3][MAXSTRPATH]; /* download paths {rov,base,corr} */
-    obs_t obs[3][MAXOBSBUF]; /* observation data {rov,base,corr} */
+    uint32_t nmsg[4][10]; /* input message counts */
+    raw_t  raw [4];     /* receiver raw control {rov,base,corr,corr2} */
+    rtcm_t rtcm[4];     /* RTCM control {rov,base,corr,corr2} */
+    gtime_t ftime[4];   /* download time {rov,base,corr,corr2} */
+    char files[4][MAXSTRPATH]; /* download paths {rov,base,corr,corr2} */
+    obs_t obs[4][MAXOBSBUF]; /* observation data {rov,base,corr,corr2} */
     nav_t nav;          /* navigation data */
     sbsmsg_t sbsmsg[MAXSBSMSG]; /* SBAS message buffer */
-    stream_t stream[8]; /* streams {rov,base,corr,sol1,sol2,logr,logb,logc} */
+    stream_t stream[9]; /* streams {rov,base,corr,corr2,sol1,sol2,logr,logb,logc} */
     stream_t *moni;     /* monitor stream */
     uint32_t tick;      /* start tick */
     thread_t thread;    /* server thread */
@@ -1662,7 +1679,7 @@ typedef struct {        /* RTK server type */
     int prcout;         /* missing observation data count */
     int nave;           /* number of averaging base pos */
     double rb_ave[3];   /* averaging base pos */
-    char cmds_periodic[3][MAXRCVCMD]; /* periodic commands */
+    char cmds_periodic[4][MAXRCVCMD]; /* periodic commands */
     char cmd_reset[MAXRCVCMD]; /* reset command */
     double bl_reset;    /* baseline length to reset (km) */
     lock_t lock;        /* lock flag */
