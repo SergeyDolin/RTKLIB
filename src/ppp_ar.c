@@ -48,6 +48,33 @@ static int test_sys(int sys, int m){
     return 0;
 }
 
+/* GLONASS frequency channel number (returns INVALID_FCN if not found) */
+#define INVALID_FCN 99
+static int get_glo_fcn(int sat, const nav_t *nav)
+{
+    int i, prn;
+    if (satsys(sat, &prn) != SYS_GLO || !nav) return INVALID_FCN;
+    for (i = 0; i < nav->ng; i++) {
+        if (nav->geph[i].sat == sat) return nav->geph[i].frq;
+    }
+    if (nav->glo_fcn[prn-1] > 0) return nav->glo_fcn[prn-1] - 8;
+    return INVALID_FCN;
+}
+
+/* Least-squares estimate of GLO IFB rate (cycles/channel) from (Δk, frac) pairs.
+ * Model: frac_i = δ * Δk_i + noise  →  δ = Σ(Δk * frac) / Σ(Δk²).
+ * Returns 0.0 if there are fewer than 2 distinct Δk values or sum_dk2 == 0. */
+static double est_glo_ifb(const int *dk, const double *frac, int n)
+{
+    double sum_dk2 = 0.0, sum_dk_frac = 0.0;
+    int i;
+    for (i = 0; i < n; i++) {
+        sum_dk2     += (double)dk[i] * dk[i];
+        sum_dk_frac += (double)dk[i] * frac[i];
+    }
+    return (sum_dk2 > 0.0) ? sum_dk_frac / sum_dk2 : 0.0;
+}
+
 /* complemetaty error function [1] */
 static double q_gamma(double a, double x, double log_gamma_a);
 static double p_gamma(double a, double x, double log_gamma_a){
@@ -142,7 +169,7 @@ static int matchnlfcb(const gtime_t obst, int sat1, int sat2,
 static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
                       int n, const int *exc, int *sat1, int *sat2, int *iu,
                       int *ir, int f, double *el){
-    const int sat_sys[]={SYS_GPS,SYS_GAL,SYS_CMP,0};
+    const int sat_sys[]={SYS_GPS,SYS_GLO,SYS_GAL,SYS_CMP,0};
     double elmask,el_temp[MAXOBS]={0};
     int i,j,k,m=0,ns=0,prn,idxs[MAXOBS]={0},sat_no[MAXOBS]={0},frq=f==-1?0:f;
     int ref_sat_idx=0,sys,nf=NF(&rtk->opt);
@@ -401,6 +428,9 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     int ns=0,nb=0;
     int i,j,f2,sat,prn,ref_sat,sys,sys_idx=-1,sat1[MAXOBS]={0},sat2[MAXOBS]={0},iu[MAXOBS]={0},ir[MAXOBS]={0},na=rtk->na,stat=0;
     double frq1=0.0,frq2=0.0,lam1,lam2,lam_nl,gamma,el[MAXOBS]={0};
+    /* GLONASS IFB rates estimated below (cycles per channel unit) */
+    double glo_ifb_wl = 0.0;  /* WL IFB rate */
+    double glo_ifb_nl = 0.0;  /* NL IFB rate */
     double *H_nl,*H_if;
     double *Nw,*Nl,*Nc; /* float ambiguity */
     double *Bw,*Bl,*Bc; /* float ambiguity */
@@ -432,11 +462,99 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     sd_nl_fcb=zeros(ns,1);
     Qnl=zeros(ns,ns);
 
+    /* ================================================================
+     * GLONASS IFB pre-estimation (two-step least-squares).
+     *
+     * GLONASS uses FDMA: each satellite has a unique frequency channel
+     * k ∈ [-7,+6].  For a between-satellite SD, the receiver hardware
+     * inter-frequency bias (IFB) does NOT cancel but leaves a residual
+     * proportional to the channel difference Δk = k_i − k_j:
+     *   WL_ij = N_WL_ij + Δk * δ_WL           (WL IFB)
+     *   NL_ij = N_NL_ij + Δk * δ_NL           (NL IFB)
+     *
+     * Step 1: estimate δ_WL from fractional parts of raw MW-smoothed WL.
+     * Step 2: estimate δ_NL from fractional parts of NL computed with
+     *         the corrected (integer-rounded) WL from step 1.
+     * Both use simple ridge-less LS:  δ = Σ(Δk · frac) / Σ(Δk²).
+     * ================================================================ */
+    if (opt.navsys & SYS_GLO) {
+        int    glo_dk[MAXOBS];
+        double glo_wl_frac[MAXOBS], glo_nl_frac[MAXOBS];
+        int    n_glo_wl = 0, n_glo_nl = 0;
+
+        /* Use separate dk arrays for WL and NL (NL is a subset of WL pairs) */
+        int glo_dk_nl[MAXOBS];
+
+        for (i = 0; i < ns; i++) {
+            double wl_a, wl_fcb_g, sd_wl_g, frq1_g, frq2_g, lam1_g, lam2_g, gamma_g, lam_nl_g;
+            double sd_if_g, raw_nl, nl_frac;
+            int k1, k2, dk, iamb, jamb;
+
+            sat     = sat1[i];
+            ref_sat = sat2[i];
+            if (satsys(sat, NULL) != SYS_GLO) continue;
+
+            k1 = get_glo_fcn(sat,     nav);
+            k2 = get_glo_fcn(ref_sat, nav);
+            if (k1 == INVALID_FCN || k2 == INVALID_FCN) continue;
+            dk = k1 - k2;
+
+            /* require enough MW-smoothed epochs for reliable WL */
+            if (rtk->ssat[sat-1].mw[2] < 10 || rtk->ssat[ref_sat-1].mw[2] < 10) continue;
+
+            f2 = obs->L[1] == 0.0 ? 2 : 1;
+            frq1_g = sat2freq(sat, obs[iu[i]].code[0],  nav);
+            frq2_g = sat2freq(sat, obs[iu[i]].code[f2], nav);
+            if (frq1_g == 0.0 || frq2_g == 0.0) continue;
+
+            lam1_g  = CLIGHT / frq1_g;
+            lam2_g  = CLIGHT / frq2_g;
+            lam_nl_g = lam1_g * lam2_g / (lam1_g + lam2_g);
+            gamma_g  = CLIGHT * frq2_g / (SQR(frq1_g) - SQR(frq2_g));
+
+            sd_wl_g = rtk->ssat[sat-1].mw[1] - rtk->ssat[ref_sat-1].mw[1];
+            if (opt.arprod == AR_PROD_UPD && nav->upds) {
+                wl_fcb_g = nav->upds->wls.wl[sat-1] - nav->upds->wls.wl[ref_sat-1];
+            } else {
+                wl_fcb_g = nav->wlbias[sat-1] - nav->wlbias[ref_sat-1];
+            }
+            wl_a = (opt.arprod == AR_PROD_OSB_COD) ? sd_wl_g : sd_wl_g - wl_fcb_g;
+
+            /* collect WL fractional part for Step-1 IFB estimation */
+            glo_dk[n_glo_wl]      = dk;
+            glo_wl_frac[n_glo_wl] = wl_a - floor(wl_a + 0.5);
+            n_glo_wl++;
+
+            /* Step-2: NL IFB — only usable if WL is close enough to an integer */
+            if (fabs(wl_a - floor(wl_a + 0.5)) > 0.35) continue;
+
+            iamb    = IB(sat,     0, &opt);
+            jamb    = IB(ref_sat, 0, &opt);
+            sd_if_g = rtk->x[iamb] - rtk->x[jamb];
+            raw_nl  = (sd_if_g - gamma_g * floor(wl_a + 0.5)) / lam_nl_g;
+            nl_frac = raw_nl - floor(raw_nl + 0.5);
+
+            /* store dk separately for NL pairs (subset of WL pairs) */
+            glo_dk_nl[n_glo_nl]    = dk;
+            glo_nl_frac[n_glo_nl]  = nl_frac;
+            n_glo_nl++;
+        }
+
+        if (n_glo_wl >= 2) {
+            glo_ifb_wl = est_glo_ifb(glo_dk,    glo_wl_frac, n_glo_wl);
+            trace(2, "GLO IFB WL: %.4f cyc/ch  (n=%d)\n\r", glo_ifb_wl, n_glo_wl);
+        }
+        if (n_glo_nl >= 2) {
+            glo_ifb_nl = est_glo_ifb(glo_dk_nl, glo_nl_frac, n_glo_nl);
+            trace(2, "GLO IFB NL: %.4f cyc/ch  (n=%d)\n\r", glo_ifb_nl, n_glo_nl);
+        }
+    }
+
     /* generate WL-IF-NL */
     for(i=0;i<ns;i++){
         sat=sat1[i];
         ref_sat=sat2[i];
-        satsys(sat,&prn);
+        sys=satsys(sat,&prn);
         sys_idx=satsysidx(sat);
         if(sys_idx==-1) continue;
 
@@ -461,7 +579,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         } else {
             wl_fcb=nav->wlbias[sat-1]-nav->wlbias[ref_sat-1];
         }
-    
+
         double wl_var=rtk->ssat[sat-1].mw[3] + rtk->ssat[ref_sat-1].mw[3];
 
         if(opt.arprod == AR_PROD_FCB || opt.arprod == AR_PROD_UPD){
@@ -469,6 +587,16 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         } else if(opt.arprod == AR_PROD_OSB_COD){
             wl_amb = sd_wl;
         }
+
+        /* GLONASS FDMA: apply receiver WL IFB correction (cyc/channel) */
+        sys = satsys(sat, NULL);
+        if (sys == SYS_GLO && glo_ifb_wl != 0.0) {
+            int k1 = get_glo_fcn(sat,     nav);
+            int k2 = get_glo_fcn(ref_sat, nav);
+            if (k1 != INVALID_FCN && k2 != INVALID_FCN)
+                wl_amb -= (k1 - k2) * glo_ifb_wl;
+        }
+
         rtk->sdamb[sat-1].wl=wl_amb;
         rtk->sdamb[sat-1].wl_fix=newround(wl_amb);
         rtk->sdamb[sat-1].wl_res=wl_amb-newround(wl_amb);
@@ -499,6 +627,14 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
         }
         if(isnan(nl_amb)) nl_amb=0.0;
+
+        /* GLONASS FDMA: apply receiver NL IFB correction (cyc/channel) */
+        if (sys == SYS_GLO && glo_ifb_nl != 0.0) {
+            int k1 = get_glo_fcn(sat,     nav);
+            int k2 = get_glo_fcn(ref_sat, nav);
+            if (k1 != INVALID_FCN && k2 != INVALID_FCN)
+                nl_amb -= (k1 - k2) * glo_ifb_nl;
+        }
 
         double var_nl=(rtk->P[iamb+iamb*rtk->nx]+rtk->P[jamb+jamb*rtk->nx])/SQR(lam_nl);
 

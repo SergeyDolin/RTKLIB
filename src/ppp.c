@@ -844,10 +844,24 @@ int m = 0;                                  /* consecutive stable epochs counter
 int stat_ar = SOLQ_FLOAT;                   /* AR stat from previous epoch */
 int coldStart = 1;                          /* CPP cold-start flag */
 int cpp_epoch_cnt = 0;                      /* epoch counter: warmup after fix loss */
+int ppp_backward = 0;                       /* 1 during backward post-processing pass */
 #define CPP_WARMUP_EPOCHS 30                /* epochs to let solution self-converge (1 Hz = 30 s) */
 #define CPP_STABLE_EPOCHS 3                 /* consecutive stable epochs before jumpstart */
 #define CPP_IMPROVE_THRESH 0.02             /* relative improvement threshold: >2% = still converging */
 double posterior_std, prior_std = 0.0;      /* variance geometric mean for stability check */
+
+/* reset CPP state for a new processing pass ----------------------------------
+* call with backward=1 before the backward pass of a combined solution,
+* and with backward=0 before (or after) the forward pass.              */
+extern void ppp_set_backward(int backward)
+{
+    ppp_backward  = backward;
+    coldStart     = 1;
+    stat_ar       = SOLQ_FLOAT;
+    cpp_epoch_cnt = 0;
+    m             = 0;
+    prior_std     = 0.0;
+}
 
 /* temporal update of position -----------------------------------------------*/
 static void udpos_ppp(rtk_t *rtk)
@@ -875,6 +889,10 @@ static void udpos_ppp(rtk_t *rtk)
     }
     /* kinematic CPP mode: three-stage collaborative jumpstart -------------- */
     if (rtk->opt.mode==PMODE_CPP_KINEMA) {
+
+        /* during backward pass of combined solution, skip jumpstart entirely:
+         * the filter already has a good position from the forward pass end */
+        if (ppp_backward) return;
 
         if (coldStart) {
             /* --- COLD START: no epoch counting, request jumpstart immediately --- */

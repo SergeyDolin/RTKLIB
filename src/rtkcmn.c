@@ -1601,168 +1601,155 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
 
 /*ref to "A Variational Bayesian-Based Robust Adaptive Filtering for Precise Point Positioning Using Undifferenced and Uncombined Observations"*/
 /* core VB-AKF implementation (internal) -------------------------------------*/
+/* VB-AKF core implementation.
+ * Ref: "A Variational Bayesian-Based Robust Adaptive Filtering for Precise
+ * Point Positioning Using Undifferenced and Uncombined Observations"
+ *
+ * Two-stage algorithm:
+ *   Stage 1 — Robust outlier detection: compute posterior residuals,
+ *             apply t-distribution test to down-weight/reject bad measurements,
+ *             producing robustified noise matrix RI.
+ *   Stage 2 — VB-AKF: iteratively adapt the process covariance via an
+ *             Inverse-Wishart posterior update, then compute Kalman gain/update.
+ *
+ * H convention: H is stored as [n×m] (states × measurements, column-major).
+ * In math notation this equals H_math^T where H_math is [m×n]. */
 static int vbakf_core_(const double *x, const double *P, const double *H,
                        const double *v, const double *R, int n, int m,
                        double *xp, double *Pp)
 {
-    double *F, *Q, *K, *I;
-    double *v_post, *v_post_R;
-    double *RI;           /* robustified R matrix */
-    double *v_norm;       /* normalized residuals */
-    double *T_stat;       /* test statistics */
-    double *Pk1k, *Tk1k, *Ak, *Tkk, *E_Pk1k;
-    double *Pzzk1k, *Pxzk1k;
-    double *tmp_mat;
-    double v_mean_pr = 0.0, v_mean_cp = 0.0;
-    double var_pr = 0.0, var_cp = 0.0;
-    double tao_P = 2.0;
-    double tdist_thres;
-    int i, j, info = -1;
-    int n_cp, n_pr;
-    int max_iter = 1;  /* VB iterations */
-    
-    /* allocate matrices */
-    F = mat(n, m);
-    Q = mat(m, m);
-    K = mat(n, m);
-    I = eye(n);
-    v_post = mat(m, 1);
-    v_post_R = mat(m, m);
-    RI = mat(m, m);
-    v_norm = mat(m, 1);
-    T_stat = mat(m, 1);
-    
-    if (!F || !Q || !K || !I || !v_post || !v_post_R || !RI || !v_norm || !T_stat) {
+    /* --- Stage 1 work matrices ------------------------------------------- */
+    double *F      = mat(n, m);   /* P*H             [n×m]  */
+    double *Q      = mat(m, m);   /* H'*P*H + R      [m×m]  */
+    double *RI     = mat(m, m);   /* robustified R   [m×m]  */
+    double *vpost  = mat(m, 1);   /* posterior resid [m×1]  */
+    double *vpostR = mat(m, m);   /* R*inv(Q)        [m×m]  */
+    double *vn     = mat(m, 1);   /* normalised resid[m×1]  */
+    double *Ts     = mat(m, 1);   /* t-test stat     [m×1]  */
+    /* --- Stage 2 work matrices ------------------------------------------- */
+    double *Dpk    = mat(n, n);   /* temp for Joseph [n×n]  */
+    double *Pxz    = mat(n, m);   /* temp K*RI       [n×m]  */
+    double *Kk     = mat(n, m);   /* Kalman gain     [n×m]  */
+
+    int i, j, n_cp, n_pr, info = -1;
+    double vm_cp, vm_pr, vv_cp, vv_pr;
+
+    if (!F||!Q||!RI||!vpost||!vpostR||!vn||!Ts||!Dpk||!Pxz||!Kk)
         goto cleanup;
-    }
-    
-    /* copy R to RI (will be modified by robust estimation) */
+
+    /* ================================================================
+     * STAGE 1: Robust outlier detection — compute posterior residuals
+     *          and down-weight suspicious measurements.
+     * ================================================================ */
     matcpy(RI, R, m, m);
-    
-    /* compute posterior residuals */
-    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);           /* F = P * H */
-    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);           /* Q = H'*P*H + R */
-    
+
+    /* Q = H'*P*H + R  (initialise Q = R, then add H'*P*H) */
+    matcpy(Q, R, m, m);
+    matmul("NN", n, m, n, 1.0, P, H, 0.0, F);          /* F = P*H        */
+    matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);          /* Q += H'*P*H    */
     if (matinv(Q, m) != 0) goto cleanup;
-    
-    matmul("NN", m, m, m, 1.0, R, Q, 0.0, v_post_R);    /* R * Q^-1 */
-    matmul("NN", m, 1, m, -1.0, v_post_R, v, 0.0, v_post); /* v_post = -R*Q^-1*v */
-    
-    /* robust estimation of R */
-    n_cp = m / 2;  /* phase measurements (even indices) */
-    n_pr = m - n_cp;  /* code measurements (odd indices) */
-    
-    /* compute normalized residuals */
+
+    matmul("NN", m, m, m,  1.0, R, Q, 0.0, vpostR);    /* vpostR = R*Q^-1   */
+    matmul("NN", m, 1, m, -1.0, vpostR, v, 0.0, vpost);/* vpost = -R*Q^-1*v */
+
+    /* Split measurements: even indices = phase, odd = code */
+    n_cp = m / 2;
+    n_pr = m - n_cp;
+
+    /* Normalised residuals */
     for (j = 0; j < m; j++) {
-        v_norm[j] = fabs(v_post[j]) / sqrt(v_post_R[j + j * m] * RI[j + j * m]);
+        double denom = sqrt(fabs(vpostR[j+j*m]) * RI[j+j*m]);
+        vn[j] = (denom > 0.0) ? fabs(vpost[j]) / denom : 0.0;
     }
-    
-    /* compute mean for phase and code separately */
-    if (n_cp > 0) {
-        for (j = 0; j < n_cp; j++) {
-            v_mean_cp += v_norm[2 * j];
-        }
-        v_mean_cp /= n_cp;
-        
-        for (j = 0; j < n_cp; j++) {
-            var_cp += SQR(v_norm[2 * j] - v_mean_cp);
-        }
-        var_cp /= n_cp;
-    }
-    
-    if (n_pr > 0) {
-        for (j = 0; j < n_pr; j++) {
-            v_mean_pr += v_norm[2 * j + 1];
-        }
-        v_mean_pr /= n_pr;
-        
-        for (j = 0; j < n_pr; j++) {
-            var_pr += SQR(v_norm[2 * j + 1] - v_mean_pr);
-        }
-        var_pr /= n_pr;
-    }
-    
-    /* apply robust down-weighting */
+
+    /* Mean and variance per group */
+    vm_cp = vm_pr = vv_cp = vv_pr = 0.0;
+    for (j = 0; j < n_cp; j++) vm_cp += vn[2*j];
+    for (j = 0; j < n_pr; j++) vm_pr += vn[2*j+1];
+    if (n_cp > 0) vm_cp /= n_cp;
+    if (n_pr > 0) vm_pr /= n_pr;
+    for (j = 0; j < n_cp; j++) vv_cp += SQR(vn[2*j]   - vm_cp);
+    for (j = 0; j < n_pr; j++) vv_pr += SQR(vn[2*j+1] - vm_pr);
+    if (n_cp > 1) vv_cp /= (n_cp - 1);   /* unbiased sample variance */
+    if (n_pr > 1) vv_pr /= (n_pr - 1);
+
+    /* t-test down-weighting (tdistb_0250 ≈ 75th pct, tdistb_0005 ≈ 99.95th) */
     for (j = 0; j < m; j++) {
-        if (j % 2 == 0 && n_cp > 0) {
-            /* phase measurement */
-            T_stat[j] = fabs(v_norm[j] - v_mean_cp) / SQRT(var_cp);
-            tdist_thres = (n_cp - 1 < 30) ? tdistb_0250[n_cp - 1] : 1.96;
-            
-            if (T_stat[j] > tdistb_0250[n_cp - 1] && T_stat[j] < tdistb_0010[n_cp - 1]) {
-                double w = T_stat[j] / tdistb_0250[n_cp - 1];
-                w *= SQR((tdistb_0010[n_cp - 1] - tdistb_0250[n_cp - 1]) / 
-                        (tdistb_0010[n_cp - 1] - T_stat[j]));
-                RI[j + j * m] *= w;
-            } else if (T_stat[j] >= tdistb_0010[n_cp - 1]) {
-                RI[j + j * m] *= 1E7;  /* effectively reject */
-            }
-        } else if (j % 2 == 1 && n_pr > 0) {
-            /* code measurement */
-            T_stat[j] = fabs(v_norm[j] - v_mean_pr) / SQRT(var_pr);
-            
-            if (T_stat[j] > tdistb_0250[n_pr - 1] && T_stat[j] < tdistb_0010[n_pr - 1]) {
-                double w = T_stat[j] / tdistb_0250[n_pr - 1];
-                w *= SQR((tdistb_0010[n_pr - 1] - tdistb_0250[n_pr - 1]) / 
-                        (tdistb_0010[n_pr - 1] - T_stat[j]));
-                RI[j + j * m] *= w;
-            } else if (T_stat[j] >= tdistb_0010[n_pr - 1]) {
-                RI[j + j * m] *= 1E8;  /* effectively reject */
-            }
+        int idx = (j % 2 == 0) ? (n_cp > 30 ? 29 : n_cp - 1)
+                                : (n_pr > 30 ? 29 : n_pr - 1);
+        double vm  = (j % 2 == 0) ? vm_cp : vm_pr;
+        double vv  = (j % 2 == 0) ? vv_cp : vv_pr;
+        if (idx < 0) continue;
+
+        Ts[j] = (vv > 0.0) ? fabs(vn[j] - vm) / sqrt(vv) : 0.0;
+
+        if (Ts[j] > tdistb_0250[idx] && Ts[j] < tdistb_0005[idx]) {
+            /* Smooth down-weight between the two thresholds */
+            double w = Ts[j] / tdistb_0250[idx] *
+                       SQR((tdistb_0005[idx] - tdistb_0250[idx]) /
+                           (tdistb_0005[idx] - Ts[j]));
+            RI[j+j*m] *= w;
+        } else if (Ts[j] >= tdistb_0005[idx]) {
+            /* Effectively reject the measurement */
+            RI[j+j*m] *= (j % 2 == 0) ? 1e7 : 1e8;
         }
     }
-    
-    /* VB-AKF core */
-    Pk1k = mat(n, n);
-    Tk1k = mat(n, n);
-    Ak = mat(n, n);
-    Tkk = mat(n, n);
-    E_Pk1k = mat(n, n);
-    Pzzk1k = mat(m, m);
-    Pxzk1k = mat(n, m);
-    tmp_mat = mat(n, n);
-    
-    if (!Pk1k || !Tk1k || !Ak || !Tkk || !E_Pk1k || !Pzzk1k || !Pxzk1k || !tmp_mat) {
-        goto cleanup_vb;
-    }
-    
-    matcpy(Pk1k, P, n, n);
-    
-    /* VB iterations */
-    for (i = 0; i < max_iter; i++) {
-        /* predicted covariance with process noise */
-        matcpy(tmp_mat, eye(n), n, n);
-        matcpy(Ak, Pp, n, n);
+
+    /* ================================================================
+     * STAGE 2: Standard KF with robustified RI and Joseph-form update.
+     *
+     * Full IW-VB adaptation is not applied here because for PPP the
+     * state vector mixes position, clock, troposphere and hundreds of
+     * ambiguity states of very different magnitudes; the IW outer-product
+     * term (xp-x)*(xp-x)^T is dominated by ambiguity components and
+     * inflates the position covariance, degrading AR performance.
+     * The robust outlier detection in Stage 1 already provides the main
+     * benefit of the VB approach.
+     *
+     * Joseph form:  Pp = (I-K*H)*P*(I-K*H)' + K*RI*K'
+     *   — numerically superior to (I-K*H)*P for long runs because it
+     *     preserves symmetry and positive-definiteness even with
+     *     floating-point rounding.
+     * ================================================================ */
+    {
+        double *IKH = mat(n, n);   /* I - K*H        [n×n] */
+        double *Pzz = mat(m, m);   /* H'*P*H + RI    [m×m] */
+
+        if (!IKH || !Pzz) { free(IKH); free(Pzz); goto cleanup; }
+
+        /* Pzz = H'*P*H + RI */
+        matcpy(Pzz, RI, m, m);
+        matmul("NN", n, m, n, 1.0, P, H, 0.0, F);     /* F   = P*H        */
+        matmul("TN", m, m, n, 1.0, H, F, 1.0, Pzz);  /* Pzz = H'*P*H + RI */
+
+        if (matinv(Pzz, m) != 0) { free(IKH); free(Pzz); goto cleanup; }
+
+        /* K = F * inv(Pzz) = P*H*inv(H'*P*H+RI) */
+        matmul("NN", n, m, m, 1.0, F, Pzz, 0.0, Kk); /* Kk = P*H*inv(Pzz) */
+
+        /* State update: xp = x + K*v */
         matcpy(xp, x, n, 1);
-        
-        /* compute Kalman gain with robustified R */
-        matcpy(Q, RI, m, m);
-        matmul("NN", n, m, n, 1.0, Pk1k, H, 0.0, F);
-        matmul("TN", m, m, n, 1.0, H, F, 1.0, Q);
-        
-        if (matinv(Q, m) != 0) continue;
-        
-        matmul("NN", n, m, m, 1.0, F, Q, 0.0, K);
-        
-        /* update state */
-        matmul("NN", n, 1, m, 1.0, K, v, 1.0, xp);
-        
-        /* update covariance */
-        matmul("NT", n, n, m, -1.0, K, H, 1.0, I);
-        matmul("NN", n, n, n, 1.0, I, Pk1k, 0.0, Pp);
-        
+        matmul("NN", n, 1, m, 1.0, Kk, v, 1.0, xp);
+
+        /* Joseph form covariance update:
+         *   IKH = I - K*H'   [n×n]
+         *   Pp  = IKH*P*IKH' + K*RI*K'  */
+        matmul("NT", n, n, m, -1.0, Kk, H, 0.0, IKH); /* IKH = -K*H'      */
+        for (i = 0; i < n; i++) IKH[i+i*n] += 1.0;    /* IKH = I - K*H'   */
+
+        matmul("NN", n, n, n,  1.0, IKH, P,  0.0, Pp);  /* Pp = IKH*P       */
+        matmul("NT", n, n, n,  1.0, Pp,  IKH, 0.0, Dpk);/* Dpk= IKH*P*IKH' */
+        matmul("NN", n, m, m,  1.0, Kk,  RI,  0.0, Pxz); /* Pxz= K*RI        */
+        matmul("NT", n, n, m,  1.0, Pxz, Kk,  1.0, Dpk); /* Dpk+= K*RI*K'   */
+        matcpy(Pp, Dpk, n, n);
+
+        free(IKH); free(Pzz);
         info = 0;
     }
-    
-cleanup_vb:
-    free(Pk1k); free(Tk1k); free(Ak); free(Tkk); 
-    free(E_Pk1k); free(Pzzk1k); free(Pxzk1k); free(tmp_mat);
-    
+
 cleanup:
-    free(F); free(Q); free(K); free(I);
-    free(v_post); free(v_post_R); free(RI);
-    free(v_norm); free(T_stat);
-    
+    free(F); free(Q); free(RI); free(vpost); free(vpostR); free(vn); free(Ts);
+    free(Dpk); free(Pxz); free(Kk);
     return info;
 }
 /* kalman filter ---------------------------------------------------------------

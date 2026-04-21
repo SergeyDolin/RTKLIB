@@ -54,6 +54,9 @@
 
 /* constants/global variables ------------------------------------------------*/
 
+/* declared in ppp.c — resets CPP jumpstart globals and sets backward flag */
+extern void ppp_set_backward(int backward);
+
 static pcvs_t pcvss={0};        /* receiver antenna parameters */
 static pcvs_t pcvsr={0};        /* satellite antenna parameters */
 static obs_t obss={0};          /* observation data */
@@ -450,9 +453,10 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
             sols=solf[i];
             sols.time=timeadd(sols.time,-tt/2.0);
             
-            if ((popt->mode==PMODE_KINEMA||popt->mode==PMODE_MOVEB)&&
+            if ((popt->mode==PMODE_KINEMA  ||popt->mode==PMODE_MOVEB||
+                 popt->mode==PMODE_PPP_KINEMA||popt->mode==PMODE_CPP_KINEMA)&&
                 sols.stat==SOLQ_FIX) {
-                
+
                 /* degrade fix to float if validation failed */
                 if (!valcomb(solf+i,solb+j)) sols.stat=SOLQ_FLOAT;
             }
@@ -1011,10 +1015,13 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         
         if (solf&&solb) {
             isolf=isolb=0;
+            ppp_set_backward(0);                          /* ensure CPP in forward mode */
             procpos(NULL,&popt_,sopt,1); /* forward */
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
+            ppp_set_backward(1);                          /* reset CPP, skip jumpstart backward */
             procpos(NULL,&popt_,sopt,1); /* backward */
-            
+            ppp_set_backward(0);                          /* restore forward mode */
+
             /* combine forward/backward solutions */
             if (!aborts&&(fp=openfile(outfile))) {
                 combres(fp,&popt_,sopt);
