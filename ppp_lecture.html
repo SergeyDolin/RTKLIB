@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>PPP и CPP — Математическая лекция (RTKLIB)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body,{
+          delimiters:[
+            {left:'\\[',right:'\\]',display:true},
+            {left:'\\(',right:'\\)',display:false}
+          ],
+          throwOnError:false
+        });"></script>
+<style>
+  @page { size: A4; margin: 20mm 20mm 20mm 20mm; }
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: 'Arial', 'Helvetica Neue', sans-serif;
+    font-size: 11pt;
+    line-height: 1.55;
+    color: #1a1a1a;
+    max-width: 170mm;
+    margin: 0 auto;
+  }
+
+  /* ── Title page ── */
+  .title-page {
+    text-align: center;
+    padding-top: 60mm;
+    page-break-after: always;
+  }
+  .title-page h1 {
+    font-size: 24pt;
+    color: #16213e;
+    margin-bottom: 6pt;
+    line-height: 1.25;
+  }
+  .title-page .subtitle {
+    font-size: 13pt;
+    color: #555;
+    margin: 8pt 0;
+  }
+  .title-page .en-title {
+    font-size: 11pt;
+    color: #16213e;
+    margin-top: 16pt;
+    font-style: italic;
+  }
+  .title-page hr { width: 60%; border: 1.5px solid #16213e; margin: 16pt auto; }
+
+  /* ── Headings ── */
+  h1 {
+    font-size: 15pt;
+    color: #16213e;
+    border-bottom: 2px solid #16213e;
+    padding-bottom: 4pt;
+    margin-top: 20pt;
+    margin-bottom: 8pt;
+    page-break-after: avoid;
+  }
+  h2 {
+    font-size: 12pt;
+    color: #0f3460;
+    margin-top: 14pt;
+    margin-bottom: 5pt;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt;
+    color: #533483;
+    margin-top: 10pt;
+    margin-bottom: 4pt;
+    page-break-after: avoid;
+  }
+
+  /* ── Paragraphs ── */
+  p { margin: 4pt 0 6pt; text-align: justify; }
+
+  /* ── Display math ── */
+  .eq {
+    display: block;
+    text-align: center;
+    margin: 10pt 0 10pt 20pt;
+    overflow-x: auto;
+  }
+  .eq-label {
+    display: flex;
+    align-items: center;
+    margin: 10pt 0;
+  }
+  .eq-label .math { flex: 1; margin-left: 20pt; }
+  .eq-label .num {
+    font-size: 9pt;
+    color: #888;
+    white-space: nowrap;
+    margin-left: 8pt;
+  }
+
+  /* ── Note box ── */
+  .note {
+    background: #fff8e1;
+    border-left: 4px solid #f9a825;
+    padding: 6pt 10pt;
+    margin: 8pt 0;
+    font-size: 10pt;
+  }
+
+  /* ── Definition table ── */
+  .defs {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8pt 0;
+    font-size: 10pt;
+  }
+  .defs td {
+    padding: 3pt 6pt;
+    vertical-align: top;
+    border: 0.4pt solid #ddd;
+  }
+  .defs td:first-child {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    color: #0f3460;
+    white-space: nowrap;
+    background: #f5f8ff;
+    width: 32%;
+  }
+
+  /* ── Data table ── */
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8pt 0;
+    font-size: 10pt;
+  }
+  table.data th {
+    background: #16213e;
+    color: white;
+    padding: 5pt 8pt;
+    text-align: center;
+    font-size: 9.5pt;
+  }
+  table.data td {
+    padding: 3pt 8pt;
+    border: 0.4pt solid #bbb;
+    vertical-align: top;
+  }
+  table.data tr:nth-child(even) td { background: #f5f8ff; }
+
+  /* ── Matrix table ── */
+  table.matrix {
+    border-collapse: collapse;
+    margin: 8pt 0 8pt 20pt;
+    font-size: 9.5pt;
+    font-family: 'Courier New', monospace;
+  }
+  table.matrix td {
+    padding: 3pt 10pt;
+    text-align: center;
+    border: 0.4pt solid #aaa;
+    background: #f0f4ff;
+    min-width: 28pt;
+  }
+  table.matrix td.diag { background: #cde; font-weight: bold; }
+  table.matrix td.upper { background: #e8f4e8; font-weight: bold; }
+  table.matrix .label {
+    font-size: 8pt;
+    color: #555;
+    text-align: center;
+    padding: 2pt 0;
+    border: none;
+    background: none;
+  }
+
+  /* ── Flowchart ── */
+  .flowbox {
+    background: #f5f8ff;
+    border: 1pt solid #16213e;
+    border-radius: 4pt;
+    padding: 6pt 14pt;
+    margin: 4pt 0;
+    font-size: 10pt;
+  }
+  .flowbox b { color: #16213e; }
+  .flow-arrow {
+    text-align: center;
+    color: #0f3460;
+    font-size: 14pt;
+    margin: 2pt 0;
+    line-height: 1;
+  }
+
+  /* ── Page breaks ── */
+  .pb { page-break-after: always; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════
+     TITLE PAGE
+══════════════════════════════════════════════════════════════ -->
+<div class="title-page">
+  <h1>Точное позиционирование<br>PPP и CPP</h1>
+  <p class="subtitle">Математическая лекция на основе кода RTKLIB</p>
+  <hr>
+  <p class="en-title">Precise Point Positioning &amp; Collaborative Precise Positioning</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════
+     1. ИЗМЕРИТЕЛЬНАЯ МОДЕЛЬ
+══════════════════════════════════════════════════════════════ -->
+<h1>1. Измерительная модель ГНСС</h1>
+
+<h2>1.1 Уравнения наблюдений</h2>
+<p>В основе PPP лежат два типа наблюдений: <b>псевдодальность</b> (code) и <b>фазовые измерения</b> (carrier phase). Для спутника <i>s</i> на частоте \(f_j\) запишем наблюдения в метрах:</p>
+
+<p><b>Псевдодальность:</b></p>
+<div class="eq">\[P_j^s = \rho^s + c\,\delta t_r - c\,\delta t^s + T^s + I_j^s + b_{r,j} - b_j^s + \varepsilon_{P_j}\]</div>
+
+<p><b>Фазовое измерение (в метрах):</b></p>
+<div class="eq">\[L_j^s = \rho^s + c\,\delta t_r - c\,\delta t^s + T^s - I_j^s + \lambda_j N_j^s + b_{r,j}^\phi - b_j^{s,\phi} + \varepsilon_{L_j}\]</div>
+
+<div class="note">Ключевое отличие: ионосферная задержка <b>прибавляется</b> к псевдодальности и <b>вычитается</b> из фазы. Неоднозначность \(\lambda_j N_j^s\) присутствует только в фазовом измерении.</div>
+
+<table class="defs">
+<tr><td>\(\rho^s\)</td><td>Геометрическое расстояние спутник–приёмник, м</td></tr>
+<tr><td>\(c\)</td><td>Скорость света, \(c = 299\,792\,458\) м/с</td></tr>
+<tr><td>\(\delta t_r\)</td><td>Смещение часов приёмника, с</td></tr>
+<tr><td>\(\delta t^s\)</td><td>Смещение часов спутника (из точных эфемерид), с</td></tr>
+<tr><td>\(T^s\)</td><td>Тропосферная задержка, м</td></tr>
+<tr><td>\(I_j^s\)</td><td>Ионосферная задержка на частоте \(f_j\), м</td></tr>
+<tr><td>\(\lambda_j = c/f_j\)</td><td>Длина волны несущей на частоте \(j\), м</td></tr>
+<tr><td>\(N_j^s\)</td><td>Целочисленная фазовая неоднозначность, циклы</td></tr>
+<tr><td>\(b_{r,j},\;b_j^s\)</td><td>Приборные задержки (DCB) приёмника и спутника на частоте \(j\)</td></tr>
+<tr><td>\(\varepsilon\)</td><td>Шум измерений (белый гауссовский)</td></tr>
+</table>
+
+<h2>1.2 Геометрическое расстояние и релятивистские поправки</h2>
+<div class="eq">\[\rho^s = \|\mathbf{r}^s(t^s) - \mathbf{r}_r(t_r)\| + \delta\rho_\mathrm{Shapiro}\]</div>
+
+<p><b>Поправка Шапиро</b> — задержка сигнала в гравитационном поле Земли:</p>
+<div class="eq">\[\delta\rho_\mathrm{Shapiro} = \frac{2\mu}{c^2}\ln\frac{r^s + r_r + \rho^s}{r^s + r_r - \rho^s}\]</div>
+<p>где \(\mu = GM = 3.986\times10^{14}\) м³/с² — гравитационный параметр Земли, \(r^s\), \(r_r\) — геоцентрические расстояния спутника и приёмника.</p>
+
+<p><b>Поворот Земли</b> за время распространения сигнала \(\Delta t = \rho^s/c\) (эффект Саньяка):</p>
+<div class="eq">\[\mathbf{r}^s_\text{corr} = R_z(\Omega_E \cdot \Delta t)\;\mathbf{r}^s(t^s)\]</div>
+<p>где \(\Omega_E = 7.2921151467\times10^{-5}\) рад/с — угловая скорость вращения Земли.</p>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     2. IFLC
+══════════════════════════════════════════════════════════════ -->
+<h1>2. Ионосферно-свободная линейная комбинация (IFLC)</h1>
+
+<h2>2.1 Частотная зависимость ионосферной задержки</h2>
+<p>Первичная ионосферная задержка обратно пропорциональна квадрату несущей частоты:</p>
+<div class="eq">\[I_j^s = \frac{f_1^2}{f_j^2}\,I_1^s\]</div>
+<p>Это позволяет устранить ионосферу линейной комбинацией измерений на двух частотах. Введём коэффициенты IFLC:</p>
+<div class="eq">\[\alpha = \frac{f_1^2}{f_1^2 - f_2^2},\qquad \beta = -\frac{f_2^2}{f_1^2 - f_2^2}\]</div>
+
+<h2>2.2 Ионосферно-свободные наблюдения</h2>
+<p>Псевдодальность IF (ионосфера устранена):</p>
+<div class="eq">\[P_{IF} = \alpha\,P_1 + \beta\,P_2 = \rho^s + c\,\delta t_r - c\,\delta t^s + T^s + \varepsilon_{IF}\]</div>
+<p>Фаза IF:</p>
+<div class="eq">\[L_{IF} = \alpha\,L_1 + \beta\,L_2 = \rho^s + c\,\delta t_r - c\,\delta t^s + T^s + N_{IF}^s + \varepsilon_{IF}\]</div>
+<p>Нецелочисленная IF-неоднозначность:</p>
+<div class="eq">\[N_{IF}^s = \alpha\,\lambda_1\,N_1^s + \beta\,\lambda_2\,N_2^s\]</div>
+
+<h2>2.3 Числовые значения для GPS</h2>
+<table class="defs">
+<tr><td>\(f_1 = 1575.42\) МГц</td><td>Несущая L1</td></tr>
+<tr><td>\(f_2 = 1227.60\) МГц</td><td>Несущая L2</td></tr>
+<tr><td>\(\alpha \approx +2.546\)</td><td>Коэффициент при L1</td></tr>
+<tr><td>\(\beta \approx -1.546\)</td><td>Коэффициент при L2</td></tr>
+</table>
+
+<div class="note">
+<b>⚠ Усиление шума.</b> IFLC увеличивает дисперсию шума в \(\sqrt{\alpha^2+\beta^2} \approx 3\) раза. Именно поэтому в функции <code>varerr()</code> базовая дисперсия умножается на коэффициент <b>3.0</b> при режиме <code>IONOOPT_IFLC</code>.
+</div>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     3. ТРОПОСФЕРА
+══════════════════════════════════════════════════════════════ -->
+<h1>3. Тропосферная задержка</h1>
+
+<h2>3.1 Общая модель</h2>
+<p>Полная тропосферная задержка в направлении спутника (угол места \(El\)):</p>
+<div class="eq">\[T^s = m_h(El)\cdot ZHD + m_w(El)\cdot ZWD\]</div>
+
+<table class="defs">
+<tr><td>\(ZHD\)</td><td>Зенитная гидростатическая задержка — вычисляется аналитически из давления</td></tr>
+<tr><td>\(ZWD\)</td><td>Зенитная влажная задержка — оценивается фильтром Калмана</td></tr>
+<tr><td>\(m_h(El)\)</td><td>Гидростатическая отображающая функция (mapping function)</td></tr>
+<tr><td>\(m_w(El)\)</td><td>Влажная отображающая функция</td></tr>
+</table>
+
+<h2>3.2 Формула Саастамойнена для ZHD</h2>
+<div class="eq">\[ZHD = \frac{0.0022768\cdot P}{1 - 0.00266\cos(2\varphi) - 2.8\times10^{-7}\,h}\]</div>
+<p>где \(P\) — атмосферное давление (мбар), \(\varphi\) — геодезическая широта, \(h\) — высота над эллипсоидом (м).</p>
+
+<h2>3.3 Оценка ZTD фильтром Калмана (TROPOPT_EST)</h2>
+<p>Состояние тропосферы \(x_{trp}\) — это <b>отклонение</b> полного ZTD от значения модели:</p>
+<div class="eq">\[T^s = m_h\cdot ZHD + m_w\cdot\bigl(ZTD_0 + x_{trp}\bigr)\]</div>
+<p>Частная производная для матрицы измерений \(\mathbf{H}\):</p>
+<div class="eq">\[\frac{\partial T^s}{\partial x_{trp}} = m_w(El)\]</div>
+
+<h2>3.4 Градиентная модель (TROPOPT_ESTG)</h2>
+<p>Три состояния: \(x_{trp}\), \(\nabla_N\) (северный градиент), \(\nabla_E\) (восточный градиент):</p>
+<div class="eq">\[T^s = m_h\cdot ZHD + m_w\cdot x_{trp} + m_w\frac{\cos(El)}{\sin(El)}\bigl(\nabla_N\cos(Az) + \nabla_E\sin(Az)\bigr)\]</div>
+<p>Частные производные:</p>
+<div class="eq">\[\frac{\partial T^s}{\partial \nabla_N} = m_w\frac{\cos(El)}{\sin(El)}\cos(Az),\qquad \frac{\partial T^s}{\partial \nabla_E} = m_w\frac{\cos(El)}{\sin(El)}\sin(Az)\]</div>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     4. НЕВЯЗКИ И МАТРИЦА H
+══════════════════════════════════════════════════════════════ -->
+<h1>4. Вектор невязок и матрица частных производных H</h1>
+
+<h2>4.1 Скорректированные наблюдения</h2>
+<p>Перед фильтрацией из наблюдений вычитаются приборные задержки DCB/OSB (из продуктов IGS/MGEX):</p>
+<div class="eq">\[y_j^s = P_j^s - b_{r,j}^{DCB} - b_j^{s,\mathrm{OSB}}\quad\text{(псевдодальность)}\]</div>
+<div class="eq">\[y_j^s = L_j^s\cdot\lambda_j - b_{r,j}^{\phi}\quad\text{(фаза, в метрах)}\]</div>
+
+<h2>4.2 Вектор невязок (innovation)</h2>
+<div class="eq">\[v_j^s = y_j^s - \hat{\rho}^s - c\,\hat{\delta t}_r - \widehat{T}^s - C_j\,\hat{I}^s - \hat{N}_j^s + c\,\delta t^s\]</div>
+
+<h2>4.3 Единичный вектор направления на спутник</h2>
+<div class="eq">\[\mathbf{e}^s = \frac{\mathbf{r}^s - \mathbf{r}_r}{\|\mathbf{r}^s - \mathbf{r}_r\|}\]</div>
+
+<h2>4.4 Структура строки матрицы H</h2>
+<p>Для измерения \(i\) (спутник \(s\), частота \(j\)) строка матрицы \(\mathbf{H}\):</p>
+
+<table class="data">
+<tr>
+  <th>Блок состояний</th>
+  <th>Индекс в x</th>
+  <th>Значение H[i, ·]</th>
+</tr>
+<tr><td>Положение (x, y, z)</td><td>IC = 0..2</td><td>\(-\mathbf{e}^s\) — единичный вектор на спутник</td></tr>
+<tr><td>Скорость</td><td>3..5</td><td>0</td></tr>
+<tr><td>Ускорение</td><td>6..8</td><td>0</td></tr>
+<tr><td>Часы приёмника (система \(k\))</td><td>IC(k)</td><td>+1</td></tr>
+<tr><td>ZTD (тропосфера)</td><td>IT</td><td>\(m_w(El)\)</td></tr>
+<tr><td>Градиент \(\nabla_N\)</td><td>IT+1</td><td>\(m_w\dfrac{\cos El}{\sin El}\cos(Az)\)</td></tr>
+<tr><td>Градиент \(\nabla_E\)</td><td>IT+2</td><td>\(m_w\dfrac{\cos El}{\sin El}\sin(Az)\)</td></tr>
+<tr><td>DCB L5</td><td>ID</td><td>±1 (только для L5)</td></tr>
+<tr><td>Неоднозначность \(N_j^s\)</td><td>IB(s,j)</td><td>+1 (только для фазы)</td></tr>
+</table>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     6. МАТРИЦА R
+══════════════════════════════════════════════════════════════ -->
+<h1>5. Матрица шума измерений R</h1>
+<p>Матрица \(\mathbf{R}\) диагональна. При использовании IFLC ионосфера устранена комбинацией, поэтому в дисперсии отдельного слагаемого \(\sigma_{ion}^2\) нет — её вклад уже поглощён коэффициентом \(f_{IF}=3\). Дисперсия \(i\)-го измерения (<code>varerr()</code>):</p>
+<div class="eq">\[\sigma_i^2 = \sigma_0^2 + \sigma_{trp}^2 + \sigma_{sat}^2\]</div>
+
+<h2>5.1 Базовая дисперсия</h2>
+<div class="eq">\[\sigma_0^2 = f_{sys}^2 \cdot f_{IF} \cdot \left(a_\sigma^2 + \frac{b_\sigma^2}{\sin^2(El)}\right) \cdot \eta_j^2\]</div>
+
+<table class="defs">
+<tr><td>\(a_\sigma = \texttt{err[1]}\)</td><td>Постоянная составляющая погрешности, м</td></tr>
+<tr><td>\(b_\sigma = \texttt{err[2]}\)</td><td>Угломестнозависимая составляющая, м</td></tr>
+<tr><td>\(f_{sys}\)</td><td>GPS=1.0, ГЛОНАСС=1.5, Galileo=1.0, BeiDou=1.0</td></tr>
+<tr><td>\(f_{IF} = 3.0\)</td><td>Для IFLC (учитывает усиление шума); иначе 1.0</td></tr>
+<tr><td>\(\eta_j = \texttt{eratio[j]}\)</td><td>Отношение ошибки P к L: ~100 для псевдодальности, ~1 для фазы</td></tr>
+</table>
+
+<h2>5.2 Дополнительные составляющие</h2>
+<table class="defs">
+<tr><td>\(\sigma_{trp}^2\)</td><td>Дисперсия остаточной тропосферной ошибки (из модели)</td></tr>
+<tr><td>\(\sigma_{sat}^2\)</td><td>Дисперсия ошибок орбиты и часов спутника (из продуктов IGS)</td></tr>
+</table>
+<p>Для ГЛОНАСС (FDMA) дополнительно добавляется межчастотная погрешность приёмника:</p>
+<div class="eq">\[\sigma_{GLO,IFB}^2 = (0.6)^2 = 0.36\;\text{м}^2\quad\text{(только для псевдодальности)}\]</div>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     7. ФИЛЬТР КАЛМАНА
+══════════════════════════════════════════════════════════════ -->
+<h1>6. Фильтр Калмана (общий вид)</h1>
+
+<h2>6.1 Вектор состояния</h2>
+<p>Полный вектор состояния \(\mathbf{x}\) объединяет все неизвестные. Суммарная размерность \(N_x = N_R + N_B\):</p>
+
+<div class="eq">\[
+\mathbf{x} = \Bigl[
+\underbrace{\mathbf{r}_{xyz}}_{\text{положение}},\;
+\underbrace{\mathbf{v}_{xyz}}_{\text{скорость}},\;
+\underbrace{\mathbf{a}_{xyz}}_{\text{ускорение}},\;
+\underbrace{\delta t_{r,k}}_{\text{часы}},\;
+\underbrace{ZTD,\nabla_N,\nabla_E}_{\text{тропосфера}},\;
+\underbrace{DCB_{L5}}_{\text{DCB}},\;
+\underbrace{N_j^s}_{\text{неоднозн.}}
+\Bigr]^T
+\]</div>
+
+<table class="data">
+<tr><th>Блок</th><th>Размер</th><th>Описание</th></tr>
+<tr><td>\(N_P = 3\) (или 9)</td><td>3 или 9</td><td>Положение (+ скорость + ускорение при <code>dynamics=1</code>)</td></tr>
+<tr><td>\(N_C = N_{sys}\)</td><td>1..5</td><td>Часы приёмника — по одному на каждую НС</td></tr>
+<tr><td>\(N_T = 1\) (или 3)</td><td>1 или 3</td><td>ZTD (+ горизонтальные градиенты при <code>ESTG</code>)</td></tr>
+<tr><td>\(N_D = 1\)</td><td>1</td><td>DCB L5 (при \(N_f \geq 3\))</td></tr>
+<tr><td>\(N_B = N_f \times N_{sat}\)</td><td>до 2×MAXSAT</td><td>Фазовые неоднозначности — на каждую частоту и спутник</td></tr>
+</table>
+
+<h2>6.2 Уравнения прогноза (predict)</h2>
+<div class="eq">\[\mathbf{x}_{k|k-1} = \mathbf{F}_k\,\mathbf{x}_{k-1}\]</div>
+<div class="eq">\[\mathbf{P}_{k|k-1} = \mathbf{F}_k\,\mathbf{P}_{k-1}\,\mathbf{F}_k^T + \mathbf{Q}_k\]</div>
+
+<h2>6.3 Уравнения обновления (update)</h2>
+<p><b>Усиление Калмана:</b></p>
+<div class="eq">\[\mathbf{K}_k = \mathbf{P}_{k|k-1}\,\mathbf{H}_k^T \left(\mathbf{H}_k\,\mathbf{P}_{k|k-1}\,\mathbf{H}_k^T + \mathbf{R}_k\right)^{-1}\]</div>
+<p><b>Обновление состояния:</b></p>
+<div class="eq">\[\mathbf{x}_k = \mathbf{x}_{k|k-1} + \mathbf{K}_k\,\mathbf{v}_k,\qquad \mathbf{v}_k = \mathbf{y}_k - \mathbf{H}_k\,\mathbf{x}_{k|k-1}\]</div>
+<p><b>Обновление ковариации:</b></p>
+<div class="eq">\[\mathbf{P}_k = \left(\mathbf{I} - \mathbf{K}_k\,\mathbf{H}_k\right)\mathbf{P}_{k|k-1}\]</div>
+
+<table class="defs">
+<tr><td>\(\mathbf{F}_k\)</td><td>Матрица перехода состояния</td></tr>
+<tr><td>\(\mathbf{Q}_k\)</td><td>Матрица шума процесса (блочно-диагональная)</td></tr>
+<tr><td>\(\mathbf{H}_k\)</td><td>Матрица частных производных (Якобиан наблюдений)</td></tr>
+<tr><td>\(\mathbf{R}_k\)</td><td>Диагональная матрица шума измерений</td></tr>
+<tr><td>\(\mathbf{v}_k\)</td><td>Вектор невязок (innovation vector)</td></tr>
+<tr><td>\(\mathbf{K}_k\)</td><td>Матрица усиления (коэффициентов) Калмана</td></tr>
+</table>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     8. ДИНАМИЧЕСКИЕ МОДЕЛИ
+══════════════════════════════════════════════════════════════ -->
+<h1>7. Динамические модели состояний (матрицы F и Q)</h1>
+
+<h2>7.1 Кинематическая модель с динамикой (opt.dynamics = 1)</h2>
+<p>Блок положение–скорость–ускорение. Матрица перехода \(\mathbf{F}_{pos}\) (9×9), \(\Delta t\) — интервал между эпохами:</p>
+
+<div class="eq">\[
+\mathbf{F}_{pos} = \begin{pmatrix}
+1 & 0 & 0 & \Delta t & 0 & 0 & \frac{\Delta t^2}{2} & 0 & 0 \\
+0 & 1 & 0 & 0 & \Delta t & 0 & 0 & \frac{\Delta t^2}{2} & 0 \\
+0 & 0 & 1 & 0 & 0 & \Delta t & 0 & 0 & \frac{\Delta t^2}{2} \\
+0 & 0 & 0 & 1 & 0 & 0 & \Delta t & 0 & 0 \\
+0 & 0 & 0 & 0 & 1 & 0 & 0 & \Delta t & 0 \\
+0 & 0 & 0 & 0 & 0 & 1 & 0 & 0 & \Delta t \\
+0 & 0 & 0 & 0 & 0 & 0 & 1 & 0 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 0 & 0 & 1
+\end{pmatrix}
+\]</div>
+
+<p>Шум процесса добавляется в блок ускорений (3×3):</p>
+<div class="eq">\[\mathbf{Q}_{acc} = \mathrm{diag}\!\left(q_h^2|\Delta t|,\;q_h^2|\Delta t|,\;q_v^2|\Delta t|\right)\]</div>
+<p>где \(q_h = \texttt{prn[3]}\) — горизонтальный, \(q_v = \texttt{prn[4]}\) — вертикальный шум ускорения.</p>
+
+<h2>7.2 Часы приёмника — белый шум</h2>
+<p>Сбрасываются каждую эпоху (нет корреляции во времени):</p>
+<div class="eq">\[P_{clk} \leftarrow \sigma_{clk}^2 = 60^2 = 3600\;\text{м}^2\]</div>
+
+<h2>7.3 Тропосфера — случайное блуждание</h2>
+<div class="eq">\[P_{ZTD} \leftarrow P_{ZTD} + q_{ZTD}^2\cdot|\Delta t|,\quad q_{ZTD} = \texttt{prn[2]}\]</div>
+<div class="eq">\[P_{\nabla} \leftarrow P_{\nabla} + \bigl(0.1\,q_{ZTD}\bigr)^2\cdot|\Delta t|\quad\text{(для градиентов)}\]</div>
+
+<h2>7.4 Ионосфера — случайное блуждание с угломестной зависимостью</h2>
+<div class="eq">\[P_{I^s} \leftarrow P_{I^s} + \left(\frac{q_{ion}}{\sin\!\bigl(\max(El,\,5°)\bigr)}\right)^{\!2}\cdot|\Delta t|,\quad q_{ion} = \texttt{prn[1]}\]</div>
+<p>Шум обратно пропорционален синусу угла места: при низких спутниках ионосфера изменяется быстрее.</p>
+
+<h2>7.5 Фазовые неоднозначности</h2>
+<p>Без срыва цикла — случайное блуждание (для учёта флуктуаций многолучёвости):</p>
+<div class="eq">\[P_{N_j^s} \leftarrow P_{N_j^s} + q_{bias}^2\cdot|\Delta t|,\quad q_{bias} = \texttt{prn[0]}\]</div>
+<p>При обнаружении срыва цикла — полный сброс:</p>
+<div class="eq">\[P_{N_j^s} \leftarrow \sigma_{bias}^2 = 60^2 = 3600\;\text{м}^2\]</div>
+
+<h2>7.6 Начальные дисперсии состояний</h2>
+<table class="data">
+<tr><th>Состояние</th><th>\(\sigma_0\)</th><th>\(\sigma_0^2\), м²</th></tr>
+<tr><td>Положение</td><td>60 м</td><td>3 600</td></tr>
+<tr><td>Часы</td><td>60 м</td><td>3 600</td></tr>
+<tr><td>ZTD</td><td>0.6 м</td><td>0.36</td></tr>
+<tr><td>Градиенты \(\nabla\)</td><td>0.01 м</td><td>10⁻⁴</td></tr>
+<tr><td>Ионосфера \(I^s\)</td><td>60 м</td><td>3 600</td></tr>
+<tr><td>Неоднозначность \(N_j^s\)</td><td>60 м</td><td>3 600</td></tr>
+<tr><td>DCB</td><td>60 м</td><td>3 600</td></tr>
+</table>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     9. ОБНАРУЖЕНИЕ СРЫВОВ
+══════════════════════════════════════════════════════════════ -->
+<h1>8. Обнаружение срывов цикла</h1>
+
+<h2>8.1 Флаг LLI</h2>
+<p>Приёмник выставляет бит LLI (Loss of Lock Indicator). При <b>LLI &amp; 1 = 1</b> — срыв зафиксирован аппаратурно. Также проверяется бит чётности полуцикла.</p>
+
+<h2>8.2 Геометрически-свободная комбинация (GF)</h2>
+<p>Комбинация устраняет геометрию, тропосферу и часы — остаётся ионосфера плюс неоднозначности:</p>
+<div class="eq">\[GF = L_1 - L_2 = 2I_1^s + \left(\lambda_1 N_1 - \lambda_2 N_2\right)\]</div>
+<p>В стационарном состоянии \(GF\) медленно меняется (только ионосфера). Срыв детектируется, если:</p>
+<div class="eq">\[|GF_k - GF_{k-1}| > \varepsilon_{GF}(El)\]</div>
+
+<h2>8.3 Комбинация Мельбурна–Вюббены (MW)</h2>
+<p>Wide-lane комбинация не зависит от ионосферы, тропосферы и геометрии:</p>
+<div class="eq">\[MW = \frac{f_1 L_1 - f_2 L_2}{f_1 - f_2} - \frac{f_1 P_1 + f_2 P_2}{f_1 + f_2}\]</div>
+<p>В стационарном состоянии \(MW \approx \lambda_{WL} N_{WL}\). Длина wide-lane волны (GPS):</p>
+<div class="eq">\[\lambda_{WL} = \frac{c}{f_1 - f_2} \approx 0.862\;\text{м}\]</div>
+<p>Порог обнаружения срыва: \(\;|\Delta MW / \lambda_{WL}| > 10\;\text{циклов}\).</p>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     10. PPP-AR
+══════════════════════════════════════════════════════════════ -->
+<h1>9. Разрешение фазовых неоднозначностей (PPP-AR)</h1>
+
+<h2>9.1 Wide-Lane неоднозначность</h2>
+<p>После применения OSB-поправок (Observable-Specific Signal Biases) из продуктов IGS:</p>
+<div class="eq">\[\hat{N}_{WL}^s = \frac{MW^s}{\lambda_{WL}} = N_{WL}^s + \varepsilon_{WL}\]</div>
+<p>Фиксация WL округлением:</p>
+<div class="eq">\[\check{N}_{WL}^s = \mathrm{round}\!\left(\hat{N}_{WL}^s\right)\]</div>
+
+<h2>9.2 Narrow-Lane неоднозначность</h2>
+<p>После фиксации WL из ионосферно-свободной неоднозначности:</p>
+<div class="eq">\[\hat{N}_{NL}^s = \frac{\hat{N}_{IF}^s - \beta\,\lambda_2\,\check{N}_{WL}^s}{\alpha\,\lambda_1}\]</div>
+<p>Длина narrow-lane волны для GPS:</p>
+<div class="eq">\[\lambda_{NL} = \frac{c}{f_1 + f_2} \approx 0.107\;\text{м}\]</div>
+
+<h2>9.3 Межспутниковые одиночные разности (SD)</h2>
+<p>Для исключения приёмных биасов берутся разности между опорным спутником \(r\) и тестируемым \(i\):</p>
+<div class="eq">\[\nabla\hat{N}_{NL}^{ri} = \hat{N}_{NL}^r - \hat{N}_{NL}^i\]</div>
+<p>Строка матрицы дизайна для SD:</p>
+<div class="eq">\[\mathbf{h}_{NL}^{ri} = \frac{1}{\lambda_{NL}}\left(\mathbf{e}_{IB(r,f)} - \mathbf{e}_{IB(i,f)}\right)\]</div>
+
+<h2>9.4 Метод LAMBDA (Integer Least Squares)</h2>
+<p>Задача целочисленного наименьших квадратов:</p>
+<div class="eq">\[\check{\mathbf{N}} = \arg\min_{\mathbf{N}\in\mathbb{Z}^n} \left(\hat{\mathbf{N}} - \mathbf{N}\right)^T \mathbf{Q}_N^{-1} \left(\hat{\mathbf{N}} - \mathbf{N}\right)\]</div>
+<p>Решается через Z-преобразование для декорреляции матрицы \(\mathbf{Q}_N\).</p>
+
+<h2>9.5 Ratio Test (критерий успешности)</h2>
+<div class="eq">\[R = \frac{Q(\check{\mathbf{N}}_2)}{Q(\check{\mathbf{N}}_1)} > \mathrm{thresh}_{AR}\]</div>
+<p>где \(\check{\mathbf{N}}_1\) — лучшее, \(\check{\mathbf{N}}_2\) — второе лучшее целочисленное решение. Типичный порог: \(\mathrm{thresh}_{AR} = 3.0\).</p>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     11. ГЛОНАСС IFB
+══════════════════════════════════════════════════════════════ -->
+<h1>10. ГЛОНАСС: межчастотные поправки IFB</h1>
+
+<p>ГЛОНАСС использует FDMA: каждый спутник передаёт на своей частоте:</p>
+<div class="eq">\[f_k = f_0 + k\cdot\Delta f,\quad f_0 = 1602\;\text{МГц},\;\Delta f = 562.5\;\text{кГц}\]</div>
+<p>Из-за разных частот приборная задержка приёмника зависит от частотного номера \(k\):</p>
+<div class="eq">\[\delta_{WL,r}^{GLO}(k) = \delta_{WL,r} + k\cdot\Delta\delta_{WL}\]</div>
+<p>При однократном дифференцировании между спутниками \(i\) и \(j\):</p>
+<div class="eq">\[\nabla N_{WL}^{ij} = N_{WL}^{ij} + (k_i - k_j)\cdot\Delta\delta_{WL}\]</div>
+<p>Оценка IFB методом наименьших квадратов по всем парам:</p>
+<div class="eq">\[\Delta\hat{\delta}_{WL} = \frac{\displaystyle\sum_i \Delta k_i\cdot\mathrm{frac}\!\left(\hat{N}_{WL}^{ri}\right)}{\displaystyle\sum_i \Delta k_i^2}\]</div>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     12. CPP
+══════════════════════════════════════════════════════════════ -->
+<h1>11. CPP — Collaborative Precise Positioning</h1>
+
+<h2>11.1 Концепция</h2>
+<p>CPP ускоряет сходимость PPP путём инъекции RTK-решения от партнёрского приёмника. RTK сходится за секунды, но требует базовой станции вблизи. PPP не требует базы, но сходится 20–40 минут. CPP объединяет оба подхода.</p>
+
+<div style="display:flex;gap:12pt;margin:10pt 0;">
+  <div style="flex:1;border:1pt solid #16213e;border-radius:4pt;padding:8pt;background:#f5f8ff;">
+    <b>RTK</b><br>
+    ✓ Быстрая сходимость (~секунды)<br>
+    ✗ Требует базовую станцию вблизи<br>
+    ✗ Ограниченная область покрытия
+  </div>
+  <div style="flex:1;border:1pt solid #16213e;border-radius:4pt;padding:8pt;background:#fff5f5;">
+    <b>PPP</b><br>
+    ✓ Независим от базы<br>
+    ✓ Глобальное покрытие<br>
+    ✗ Медленная сходимость (20–40 мин)
+  </div>
+  <div style="flex:1;border:2pt solid #16213e;border-radius:4pt;padding:8pt;background:#f0fff0;">
+    <b>CPP</b><br>
+    ✓ Быстрая сходимость<br>
+    ✓ Независим от базы<br>
+    ✓ Инъекция RTK в PPP
+  </div>
+</div>
+
+<h2>11.2 Критерий качества сходимости PPP</h2>
+<p>Геометрическое среднее дисперсий положения:</p>
+<div class="eq">\[\sigma_{PPP}^{geo} = \sqrt[3]{P_{xx}\cdot P_{yy}\cdot P_{zz}}\]</div>
+
+<h2>11.3 Условия инъекции RTK-решения</h2>
+<p>Инъекция происходит при выполнении хотя бы одного из условий:</p>
+<p><b>Условие 1 — дисперсия PPP хуже RTK:</b></p>
+<div class="eq">\[\sigma_{PPP}^{geo} > \sigma_{RTK}^{geo}\]</div>
+<p><b>Условие 2 — расхождение в положении превышает 2σ:</b></p>
+<div class="eq">\[|\hat{x}_{PPP,i} - \hat{x}_{RTK,i}| > 2\sqrt{P_{PPP,ii}}\quad\forall\;i\in\{x,y,z\}\]</div>
+
+<h2>11.4 Процедура инъекции</h2>
+<p>RTK-решение инжектируется как псевдоизмерение — эквивалент шага обновления Калмана с \(\mathbf{H} = [\mathbf{I}_{3\times3}\;\mathbf{0}]\) и \(\mathbf{R} = \mathbf{P}_{RTK}\):</p>
+<div class="eq">\[\mathbf{x}_r \leftarrow \mathbf{x}_{RTK},\qquad \mathbf{P}_{r,pos} \leftarrow \mathbf{P}_{RTK} + \mathbf{Q}_{inject}\]</div>
+
+<h2>11.5 Логика ожидания стабилизации</h2>
+<table class="data">
+<tr><th>Условие</th><th>Действие</th></tr>
+<tr><td>\(t < 30\) эпох с момента потери сходимости</td><td>Ждём (warmup)</td></tr>
+<tr><td>Улучшение \(\sigma\) > 2% за эпоху</td><td>Продолжаем ждать (всё ещё сходится)</td></tr>
+<tr><td>3 эпохи подряд без улучшения > 2%</td><td>Стабильно → проверяем условия инъекции</td></tr>
+</table>
+
+<table class="defs" style="margin-top:8pt;">
+<tr><td>CPP_WARMUP_EPOCHS = 30</td><td>Эпохи прогрева после потери сходимости</td></tr>
+<tr><td>CPP_STABLE_EPOCHS = 3</td><td>Число стабильных эпох для подтверждения</td></tr>
+<tr><td>CPP_IMPROVE_THRESH = 0.02</td><td>Порог относительного улучшения (2% в эпоху)</td></tr>
+</table>
+
+<div class="pb"></div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     13. СПРАВОЧНЫЕ ТАБЛИЦЫ
+══════════════════════════════════════════════════════════════ -->
+<h1>12. Справочные таблицы</h1>
+
+<h2>Физические константы</h2>
+<table class="data">
+<tr><th>Константа</th><th>Значение</th><th>Описание</th></tr>
+<tr><td>\(c\)</td><td>299 792 458 м/с</td><td>Скорость света</td></tr>
+<tr><td>\(f_1\)</td><td>1 575.42 МГц</td><td>GPS L1</td></tr>
+<tr><td>\(f_2\)</td><td>1 227.60 МГц</td><td>GPS L2</td></tr>
+<tr><td>\(f_5\)</td><td>1 176.45 МГц</td><td>GPS L5</td></tr>
+<tr><td>\(\Omega_E\)</td><td>\(7.292115\times10^{-5}\) рад/с</td><td>Угловая скорость Земли (WGS-84)</td></tr>
+<tr><td>\(R_E\)</td><td>6 378 137 м</td><td>Радиус Земли (WGS-84)</td></tr>
+<tr><td>\(H_{ion}\)</td><td>350 000 м</td><td>Высота ионосферного слоя (SLM)</td></tr>
+<tr><td>\(\mu = GM\)</td><td>\(3.986\times10^{14}\) м³/с²</td><td>Гравитационный параметр Земли</td></tr>
+</table>
+
+<h2>Шумы процесса (prn[])</h2>
+<table class="data">
+<tr><th>Параметр</th><th>Типичное значение</th><th>Описание</th></tr>
+<tr><td>prn[0]</td><td>~10⁻⁴ м/√с</td><td>Шум фазовой неоднозначности</td></tr>
+<tr><td>prn[1]</td><td>~10⁻⁴ м/√с</td><td>Шум ионосферы</td></tr>
+<tr><td>prn[2]</td><td>~10⁻⁵ м/√с</td><td>Шум ZTD</td></tr>
+<tr><td>prn[3]</td><td>~10⁻⁴ м/с^{3/2}</td><td>Шум горизонтального ускорения</td></tr>
+<tr><td>prn[4]</td><td>~10⁻⁴ м/с^{3/2}</td><td>Шум вертикального ускорения</td></tr>
+<tr><td>prn[5]</td><td>~10⁻¹² м/√с</td><td>Шум часов приёмника</td></tr>
+</table>
+
+<h2>Ключевые файлы RTKLIB</h2>
+<table class="data">
+<tr><th>Файл</th><th>Содержимое</th></tr>
+<tr><td><code>src/ppp.c</code></td><td>Основной алгоритм PPP: динамика, невязки, фильтрация, CPP</td></tr>
+<tr><td><code>src/ppp_ar.c</code></td><td>Разрешение неоднозначностей: WL, NL, LAMBDA, GLONASS IFB</td></tr>
+<tr><td><code>src/rtkcmn.c</code></td><td>Ядро фильтра Калмана, тропосфера, ионосфера</td></tr>
+<tr><td><code>src/rtklib.h</code></td><td>Константы и макросы индексов: IC(), IT(), II(), IB(), ID()</td></tr>
+</table>
+
+</body>
+</html>

@@ -1143,16 +1143,16 @@ static int outecef(uint8_t *buff, const char *s, const sol_t *sol,
 {
     const char *sep=opt2sep(opt);
     char *p=(char *)buff;
-    
+
     trace(3,"outecef:\n");
-    
+
     p+=sprintf(p,"%s%s%14.4f%s%14.4f%s%14.4f%s%3d%s%3d%s%8.4f%s%8.4f%s%8.4f%s"
                "%8.4f%s%8.4f%s%8.4f%s%6.2f%s%6.1f",
                s,sep,sol->rr[0],sep,sol->rr[1],sep,sol->rr[2],sep,sol->stat,sep,
                sol->ns,sep,SQRT(sol->qr[0]),sep,SQRT(sol->qr[1]),sep,
                SQRT(sol->qr[2]),sep,sqvar(sol->qr[3]),sep,sqvar(sol->qr[4]),sep,
                sqvar(sol->qr[5]),sep,sol->age,sep,sol->ratio);
-    
+
     if (opt->outvel) { /* output velocity */
         p+=sprintf(p,"%s%10.5f%s%10.5f%s%10.5f%s%9.5f%s%8.5f%s%8.5f%s%8.5f%s"
                    "%8.5f%s%8.5f",
@@ -1161,6 +1161,8 @@ static int outecef(uint8_t *buff, const char *s, const sol_t *sol,
                    sep,sqvar(sol->qv[3]),sep,sqvar(sol->qv[4]),sep,
                    sqvar(sol->qv[5]));
     }
+    if (opt->pmode==PMODE_CPP_KINEMA||opt->pmode==PMODE_CPP_STATIC)
+        p+=sprintf(p,"%s%4d",sep,(int)sol->cnvg);
     p+=sprintf(p,"\r\n");
     return p-(char *)buff;
 }
@@ -1195,7 +1197,7 @@ static int outpos(uint8_t *buff, const char *s, const sol_t *sol,
                sep,pos[2],sep,sol->stat,sep,sol->ns,sep,SQRT(Q[4]),sep,
                SQRT(Q[0]),sep,SQRT(Q[8]),sep,sqvar(Q[1]),sep,sqvar(Q[2]),
                sep,sqvar(Q[5]),sep,sol->age,sep,sol->ratio);
-    
+
     if (opt->outvel) { /* output velocity */
         soltocov_vel(sol,P);
         ecef2enu(pos,sol->rr+3,vel);
@@ -1206,6 +1208,8 @@ static int outpos(uint8_t *buff, const char *s, const sol_t *sol,
                    SQRT(Q[0]),sep,SQRT(Q[8]),sep,sqvar(Q[1]),sep,sqvar(Q[2]),
                    sep,sqvar(Q[5]));
     }
+    if (opt->pmode==PMODE_CPP_KINEMA||opt->pmode==PMODE_CPP_STATIC)
+        p+=sprintf(p,"%s%4d",sep,(int)sol->cnvg);
     p+=sprintf(p,"\r\n");
     return p-(char *)buff;
 }
@@ -1226,10 +1230,13 @@ static int outenu(uint8_t *buff, const char *s, const sol_t *sol,
     covenu(pos,P,Q);
     ecef2enu(pos,rr,enu);
     p+=sprintf(p,"%s%s%14.4f%s%14.4f%s%14.4f%s%3d%s%3d%s%8.4f%s%8.4f%s%8.4f%s"
-               "%8.4f%s%8.4f%s%8.4f%s%6.2f%s%6.1f\r\n",
+               "%8.4f%s%8.4f%s%8.4f%s%6.2f%s%6.1f",
                s,sep,enu[0],sep,enu[1],sep,enu[2],sep,sol->stat,sep,sol->ns,sep,
                SQRT(Q[0]),sep,SQRT(Q[4]),sep,SQRT(Q[8]),sep,sqvar(Q[1]),
                sep,sqvar(Q[5]),sep,sqvar(Q[2]),sep,sol->age,sep,sol->ratio);
+    if (opt->pmode==PMODE_CPP_KINEMA||opt->pmode==PMODE_CPP_STATIC)
+        p+=sprintf(p,"%s%4d",sep,(int)sol->cnvg);
+    p+=sprintf(p,"\r\n");
     return p-(char *)buff;
 }
 /* output solution in the form of NMEA RMC sentence --------------------------*/
@@ -1514,6 +1521,7 @@ extern int outsolheads(uint8_t *buff, const solopt_t *opt)
     p+=sprintf(p,"%s  %-*s%s",COMMENTH,(opt->timef?16:8)+timeu+1,s3[opt->times],
                sep);
     
+    int cpp=(opt->pmode==PMODE_CPP_KINEMA||opt->pmode==PMODE_CPP_STATIC);
     if (opt->posf==SOLF_LLH) { /* lat/lon/hgt */
         if (opt->degf) {
             p+=sprintf(p,"%16s%s%16s%s%10s%s%3s%s%3s%s%8s%s%8s%s%8s%s%8s%s%8s%s"
@@ -1543,7 +1551,7 @@ extern int outsolheads(uint8_t *buff, const solopt_t *opt)
                    "x-ecef(m)",sep,"y-ecef(m)",sep,"z-ecef(m)",sep,"Q",sep,"ns",
                    sep,"sdx(m)",sep,"sdy(m)",sep,"sdz(m)",sep,"sdxy(m)",sep,
                    "sdyz(m)",sep,"sdzx(m)",sep,"age(s)",sep,"ratio");
-        
+
         if (opt->outvel) {
             p+=sprintf(p,"%s%10s%s%10s%s%10s%s%9s%s%8s%s%8s%s%8s%s%8s%s%8s",
                        sep,"vx(m/s)",sep,"vy(m/s)",sep,"vz(m/s)",sep,"sdvx",sep,
@@ -1558,6 +1566,7 @@ extern int outsolheads(uint8_t *buff, const solopt_t *opt)
                    "sden(m)",sep,"sdnu(m)",sep,"sdue(m)",sep,"age(s)",sep,
                    "ratio");
     }
+    if (cpp) p+=sprintf(p,"%s%4s",sep,"cnvg");
     p+=sprintf(p,"\r\n");
     return p-(char *)buff;
 }

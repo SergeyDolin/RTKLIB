@@ -245,7 +245,7 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
         int *sat2,int *iu,int *ir,double *el,double *Nw,double *Bw,double *Nl,double *Nc,double *sd_nl_fcb){
     prcopt_t opt=rtk->opt;
     int i,j,f2,sat,ref_sat,prn,sys_idx=-1,iamb,jamb,nb=0;
-    double frq1,frq2,lam1,lam2,lam_nl,lam_wl,gamma;
+    double frq1,frq2,lam1,lam2,lam_nl,sd_if;
 
     /* clear fix flag for all sats (1=float, 2=fix) */
     for(i=0;i<MAXSAT;i++) for(j=0;j<NFREQ;j++){
@@ -260,7 +260,7 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
         if(sys_idx==-1) continue;
         if(rtk->sdamb[sat-1].fix_nl_flag!=1) continue;
 
-        f2=obs->L[1]==0.0?2:1;
+        f2=obs[iu[i]].L[1]==0.0?2:1;
 
         frq1 = sat2freq(sat, obs[iu[i]].code[0], nav);
         frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav);
@@ -271,7 +271,7 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
 
         iamb=IB(sat,0,&opt);
         jamb=IB(ref_sat,0,&opt);
-        double sd_if=rtk->x[iamb]-rtk->x[jamb];
+        sd_if=rtk->x[iamb]-rtk->x[jamb];
 
         H_nl[iamb+nb*rtk->nx]=1.0/lam_nl;
         H_nl[jamb+nb*rtk->nx]=-1.0/lam_nl;
@@ -368,10 +368,10 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         sys=satsys(sat,&prn);
         sys_idx=satsysidx(sat);
         if(sys_idx==-1) continue;
-        f2=obs->L[1]==0.0?2:1;
+        f2=obs[iu[i]].L[1]==0.0?2:1;
 
         frq1 = sat2freq(sat, obs[iu[i]].code[0], nav);
-        frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav); 
+        frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav);
         lam1=CLIGHT/frq1;
         lam2=CLIGHT/frq2;
         lam_nl=lam1*lam2/(lam2+lam1);
@@ -426,8 +426,10 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
                         int n, const int *exc,const nav_t *nav){
     prcopt_t opt = rtk->opt;
     int ns=0,nb=0;
-    int i,j,f2,sat,prn,ref_sat,sys,sys_idx=-1,sat1[MAXOBS]={0},sat2[MAXOBS]={0},iu[MAXOBS]={0},ir[MAXOBS]={0},na=rtk->na,stat=0;
+    int i,f2,sat,prn,ref_sat,sys,sys_idx=-1,sat1[MAXOBS]={0},sat2[MAXOBS]={0},iu[MAXOBS]={0},ir[MAXOBS]={0},na=rtk->na,stat=0;
     double frq1=0.0,frq2=0.0,lam1,lam2,lam_nl,gamma,el[MAXOBS]={0};
+    double wl_amb,sd_wl,wl_fcb,wl_var,sd_if,nl_amb,nl_fcb1,nl_fcb2;
+    int iamb,jamb,k1,k2;
     /* GLONASS IFB rates estimated below (cycles per channel unit) */
     double glo_ifb_wl = 0.0;  /* WL IFB rate */
     double glo_ifb_nl = 0.0;  /* NL IFB rate */
@@ -502,7 +504,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
             /* require enough MW-smoothed epochs for reliable WL */
             if (rtk->ssat[sat-1].mw[2] < 10 || rtk->ssat[ref_sat-1].mw[2] < 10) continue;
 
-            f2 = obs->L[1] == 0.0 ? 2 : 1;
+            f2 = obs[iu[i]].L[1] == 0.0 ? 2 : 1;
             frq1_g = sat2freq(sat, obs[iu[i]].code[0],  nav);
             frq2_g = sat2freq(sat, obs[iu[i]].code[f2], nav);
             if (frq1_g == 0.0 || frq2_g == 0.0) continue;
@@ -560,8 +562,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
         rtk->sdamb[ref_sat-1].ref_sat_no=0;
 
-        f2=obs->L[1]==0.0?2:1;
-
+        f2=obs[iu[i]].L[1]==0.0?2:1;
 
         frq1 = sat2freq(sat, obs[iu[i]].code[0], nav); 
         frq2 = sat2freq(sat, obs[iu[i]].code[f2], nav);
@@ -571,28 +572,31 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         gamma=CLIGHT*frq2/(SQR(frq1)-SQR(frq2));
 
         /* round WL ambiguity */
-        double wl_amb=0.0;
-        double sd_wl=rtk->ssat[sat-1].mw[1]-rtk->ssat[ref_sat-1].mw[1];
-        double wl_fcb=0.0;
+        wl_amb=0.0;
+        sd_wl=rtk->ssat[sat-1].mw[1]-rtk->ssat[ref_sat-1].mw[1];
+        wl_fcb=0.0;
         if(opt.arprod == AR_PROD_UPD){
             wl_fcb=nav->upds->wls.wl[sat-1]-nav->upds->wls.wl[ref_sat-1];
         } else {
             wl_fcb=nav->wlbias[sat-1]-nav->wlbias[ref_sat-1];
         }
 
-        double wl_var=rtk->ssat[sat-1].mw[3] + rtk->ssat[ref_sat-1].mw[3];
+        wl_var=rtk->ssat[sat-1].mw[3] + rtk->ssat[ref_sat-1].mw[3];
 
         if(opt.arprod == AR_PROD_FCB || opt.arprod == AR_PROD_UPD){
-            wl_amb=sd_wl-wl_fcb;
+            /* FCB/UPD products contain WL biases computed for the L1+L2
+             * combination.  When the satellite is tracked on L1+L5 (f2==2),
+             * those biases are wrong — skip them to avoid corrupting WL. */
+            wl_amb = (f2==2) ? sd_wl : sd_wl-wl_fcb;
         } else if(opt.arprod == AR_PROD_OSB_COD){
-            wl_amb = sd_wl;
+            wl_amb = sd_wl;  /* OSBs already applied per-signal in mwmeas() */
         }
 
         /* GLONASS FDMA: apply receiver WL IFB correction (cyc/channel) */
         sys = satsys(sat, NULL);
         if (sys == SYS_GLO && glo_ifb_wl != 0.0) {
-            int k1 = get_glo_fcn(sat,     nav);
-            int k2 = get_glo_fcn(ref_sat, nav);
+            k1 = get_glo_fcn(sat,     nav);
+            k2 = get_glo_fcn(ref_sat, nav);
             if (k1 != INVALID_FCN && k2 != INVALID_FCN)
                 wl_amb -= (k1 - k2) * glo_ifb_wl;
         }
@@ -611,32 +615,35 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
 
         trace(2,"SAT: %d; FIX: %d REF: %d\n\r", i, rtk->sdamb[sat-1].fix_wl_flag, rtk->sdamb[sat-1].ref_sat_no);
         /* float if ambiguity */
-        int iamb=IB(sat,0,&opt);
-        int jamb=IB(ref_sat,0,&opt);
-        double sd_if = rtk->x[iamb]-rtk->x[jamb];
+        iamb=IB(sat,0,&opt);
+        jamb=IB(ref_sat,0,&opt);
+        sd_if = rtk->x[iamb]-rtk->x[jamb];
         trace(2, "SAT: %d; SD IF: %f\n\r", i, sd_if);
 
         /* nl ambiguity */
-        double nl_amb=0.0;
-        double nl_fcb1=0.0, nl_fcb2=0.0;
+        nl_amb=0.0;
+        nl_fcb1=0.0; nl_fcb2=0.0;
 
         if(opt.arprod == AR_PROD_OSB_COD){
             nl_amb = (sd_if-gamma*newround(wl_amb))/lam_nl;
             trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
-        } else if(opt.arprod == AR_PROD_UPD&&!matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
+        } else if(opt.arprod == AR_PROD_UPD&&f2!=2&&
+                  !matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
+            /* UPD NL FCBs are computed for L1+L2; skip for L1+L5 (f2==2) */
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
+        } else {
+            /* L1+L5 with FCB/UPD: OSBs applied in corr_meas(), no separate FCB */
+            nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl;
         }
         if(isnan(nl_amb)) nl_amb=0.0;
 
         /* GLONASS FDMA: apply receiver NL IFB correction (cyc/channel) */
         if (sys == SYS_GLO && glo_ifb_nl != 0.0) {
-            int k1 = get_glo_fcn(sat,     nav);
-            int k2 = get_glo_fcn(ref_sat, nav);
+            k1 = get_glo_fcn(sat,     nav);
+            k2 = get_glo_fcn(ref_sat, nav);
             if (k1 != INVALID_FCN && k2 != INVALID_FCN)
                 nl_amb -= (k1 - k2) * glo_ifb_nl;
         }
-
-        double var_nl=(rtk->P[iamb+iamb*rtk->nx]+rtk->P[jamb+jamb*rtk->nx])/SQR(lam_nl);
 
         rtk->sdamb[sat-1].nl=nl_amb;
         rtk->sdamb[sat-1].nl_fix=newround(nl_amb);
@@ -736,11 +743,11 @@ extern void holdamb_ppp(rtk_t *rtk, const double *xa)
 /* ambiguity resolution in ppp -----------------------------------------------*/
 extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc)
 {
-    int i,nb=0;
+    int i,ipos=0,npos=3,nb=0;
+    float ratio_post=0.0;
     double var=0.0;
     prcopt_t opt=rtk->opt;
     rtk->sol.ratio=0.0;
-    float ratio_post=0.0;
 
     if(opt.thresar[0]<1.0){
         rtk->nb_ar=0;
@@ -748,7 +755,6 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     }
 
     /* skip AR if position variance too high to avoid false fix */
-    int ipos=0,npos=3;
     for(i=ipos;i<ipos+npos;i++) var+=SQRT(rtk->P[i+i*rtk->nx]);
     var=var/3.0; /* maintain compatibility with previous code */
     if(var>opt.thresar[2]){
@@ -772,7 +778,6 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
 
 extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,const obsd_t *obs,int ns,const nav_t *nav,int *exc){
     int i,f,lockc[NFREQ],ar=0,excflag=0,arsats[MAXOBS]={0},sat,nb=0;
-    double ratio_post=0.0;
 
     /* if no FIX on previous sample and enough sats, exclude next sat in list */
     if(rtk->sol.prevf_ratio<rtk->sol.thres&&rtk->nb_ar>=rtk->opt.mindropsats){

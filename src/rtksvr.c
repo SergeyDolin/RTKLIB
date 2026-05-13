@@ -903,6 +903,7 @@ extern int rtksvrstart(rtksvr_t *svr, int cycle, int buffsize, int *strs,
     /* set solution options */
     for (i=0;i<2;i++) {
         svr->solopt[i]=solopt[i];
+        svr->solopt[i].pmode=prcopt->mode;
     }
     /* set base station position */
     if (prcopt->refpos!=POSOPT_SINGLE) {

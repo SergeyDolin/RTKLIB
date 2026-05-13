@@ -1003,6 +1003,7 @@ typedef struct {        /* solution type */
     float prev_ratio;   /* previous initial AR ratio factor for validation */
     float prevf_ratio;  /* previous final AR ratio factor for validation */
     float thres;        /* AR ratio threshold for valiation */
+    float cnvg;         /* convergence indicator (0:not converged,1:converged) */
 } sol_t;
 
 typedef struct {        /* solution buffer type */
@@ -1075,6 +1076,7 @@ typedef struct {        /* RINEX control struct type */
     int    sys;         /* navigation system */
     int    tsys;        /* time system */
     char   tobs[8][MAXOBSTYPE][4]; /* rinex obs types */
+    double tshift[8][MAXOBSTYPE]; /* rinex obs time shifts */
     obs_t  obs;         /* observation data */
     nav_t  nav;         /* navigation data */
     sta_t  sta;         /* station info */
@@ -1200,6 +1202,7 @@ typedef struct {        /* solution options type */
     char sep[64];       /* field separator */
     char prog[64];      /* program name */
     double maxsolstd;   /* max std-dev for solution output (m) (0:all) */
+    int    pmode;       /* positioning mode (copy from prcopt) */
 } solopt_t;
 
 typedef struct {        /* file options type */

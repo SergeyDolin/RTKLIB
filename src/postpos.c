@@ -131,18 +131,20 @@ static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
     double t1,t2;
     int i,j,w1,w2;
     char s2[32],s3[32];
-    
+    solopt_t sopt_=*sopt;
+    sopt_.pmode=popt->mode;
+
     trace(3,"outheader: n=%d\n",n);
     
-    if (sopt->posf==SOLF_NMEA||sopt->posf==SOLF_STAT) {
+    if (sopt_.posf==SOLF_NMEA||sopt_.posf==SOLF_STAT) {
         return;
     }
-    if (sopt->outhead) {
-        if (!*sopt->prog) {
+    if (sopt_.outhead) {
+        if (!*sopt_.prog) {
             fprintf(fp,"%s program   : RTKLIB ver.%s\n",COMMENTH,VER_RTKLIB);
         }
         else {
-            fprintf(fp,"%s program   : %s\n",COMMENTH,sopt->prog);
+            fprintf(fp,"%s program   : %s\n",COMMENTH,sopt_.prog);
         }
         for (i=0;i<n;i++) {
             fprintf(fp,"%s inp file  : %s\n",COMMENTH,file[i]);
@@ -154,26 +156,26 @@ static void outheader(FILE *fp, char **file, int n, const prcopt_t *popt,
         te=obss.data[j].time;
         t1=time2gpst(ts,&w1);
         t2=time2gpst(te,&w2);
-        if (sopt->times>=1) ts=gpst2utc(ts);
-        if (sopt->times>=1) te=gpst2utc(te);
-        if (sopt->times==2) ts=timeadd(ts,9*3600.0);
-        if (sopt->times==2) te=timeadd(te,9*3600.0);
+        if (sopt_.times>=1) ts=gpst2utc(ts);
+        if (sopt_.times>=1) te=gpst2utc(te);
+        if (sopt_.times==2) ts=timeadd(ts,9*3600.0);
+        if (sopt_.times==2) te=timeadd(te,9*3600.0);
         time2str(ts,s2,1);
         time2str(te,s3,1);
-        fprintf(fp,"%s obs start : %s %s (week%04d %8.1fs)\n",COMMENTH,s2,s1[sopt->times],w1,t1);
-        fprintf(fp,"%s obs end   : %s %s (week%04d %8.1fs)\n",COMMENTH,s3,s1[sopt->times],w2,t2);
+        fprintf(fp,"%s obs start : %s %s (week%04d %8.1fs)\n",COMMENTH,s2,s1[sopt_.times],w1,t1);
+        fprintf(fp,"%s obs end   : %s %s (week%04d %8.1fs)\n",COMMENTH,s3,s1[sopt_.times],w2,t2);
     }
-    if (sopt->outopt) {
+    if (sopt_.outopt) {
         outprcopt(fp,popt);
     }
     if (PMODE_DGPS<=popt->mode&&popt->mode<=PMODE_FIXED&&popt->mode!=PMODE_MOVEB) {
         fprintf(fp,"%s ref pos   :",COMMENTH);
-        outrpos(fp,popt->rb,sopt);
+        outrpos(fp,popt->rb,&sopt_);
         fprintf(fp,"\n");
     }
-    if (sopt->outhead||sopt->outopt) fprintf(fp,"%s\n",COMMENTH);
-    
-    outsolhead(fp,sopt);
+    if (sopt_.outhead||sopt_.outopt) fprintf(fp,"%s\n",COMMENTH);
+
+    outsolhead(fp,&sopt_);
 }
 /* search next observation data index ----------------------------------------*/
 static int nextobsf(const obs_t *obs, int *i, int rcv)
@@ -337,33 +339,35 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
     obsd_t obs[MAXOBS*2]; /* for rover and base */
     double rb[3]={0};
     int i,nobs,n,solstatic,pri[]={6,1,2,3,4,5,1,6};
-    
+    solopt_t sopt_=*sopt;
+    sopt_.pmode=popt->mode;
+
     trace(3,"procpos : mode=%d\n",mode);
-    
-    solstatic=sopt->solstatic&&
+
+    solstatic=sopt_.solstatic&&
               (popt->mode==PMODE_STATIC||popt->mode==PMODE_PPP_STATIC);
-    
+
     rtkinit(&rtk,popt);
     rtcm_path[0]='\0';
-    
+
     while ((nobs=inputobs(obs,rtk.sol.stat,popt))>=0) {
-        
+
         /* exclude satellites */
         for (i=n=0;i<nobs;i++) {
             if ((satsys(obs[i].sat,NULL)&popt->navsys)&&
                 popt->exsats[obs[i].sat-1]!=1) obs[n++]=obs[i];
         }
         if (n<=0) continue;
-        
+
         /* carrier-phase bias correction */
         if (!strstr(popt->pppopt,"-ENA_FCB")) {
             corr_phase_bias_ssr(obs,n,&navs);
         }
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
-        
+
         if (mode==0) { /* forward/backward */
             if (!solstatic) {
-                outsol(fp,&rtk.sol,rtk.rb,sopt);
+                outsol(fp,&rtk.sol,rtk.rb,&sopt_);
             }
             else if (time.time==0||pri[rtk.sol.stat]<=pri[sol.stat]) {
                 sol=rtk.sol;
@@ -388,7 +392,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
     }
     if (mode==0&&solstatic&&time.time!=0.0) {
         sol.time=time;
-        outsol(fp,&sol,rb,sopt);
+        outsol(fp,&sol,rb,&sopt_);
     }
     rtkfree(&rtk);
 }
@@ -423,10 +427,12 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
     sol_t sols={{0}},sol={{0}};
     double tt,Qf[9],Qb[9],Qs[9],rbs[3]={0},rb[3]={0},rr_f[3],rr_b[3],rr_s[3];
     int i,j,k,solstatic,pri[]={0,1,2,3,4,5,1,6};
-    
+    solopt_t sopt_=*sopt;
+    sopt_.pmode=popt->mode;
+
     trace(3,"combres : isolf=%d isolb=%d\n",isolf,isolb);
-    
-    solstatic=sopt->solstatic&&
+
+    solstatic=sopt_.solstatic&&
               (popt->mode==PMODE_STATIC||popt->mode==PMODE_PPP_STATIC);
     
     for (i=0,j=isolb-1;i<isolf&&j>=0;i++,j--) {
@@ -509,7 +515,7 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
             }
         }
         if (!solstatic) {
-            outsol(fp,&sols,rbs,sopt);
+            outsol(fp,&sols,rbs,&sopt_);
         }
         else if (time.time==0||pri[sols.stat]<=pri[sol.stat]) {
             sol=sols;
@@ -521,7 +527,7 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
     }
     if (solstatic&&time.time!=0.0) {
         sol.time=time;
-        outsol(fp,&sol,rb,sopt);
+        outsol(fp,&sol,rb,&sopt_);
     }
 }
 /* read prec ephemeris, sbas data, tec grid and open rtcm --------------------*/
