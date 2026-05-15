@@ -232,22 +232,20 @@ static int decode_stqraw(raw_t *raw)
 static int decode_stqrawx(raw_t *raw)
 {
     uint8_t *p=raw->buff+4,ind;
-    double tow,peri,pr1,cp1;
-    int i,j,ver,week,nsat,sys,sig,prn,sat,n=0;
-    int gnss_type, signal_type;
+    double tow,pr1,cp1;
+    int i,j,week,nsat,sys,prn,sat,n=0;
+    int gnss_type;
     
     trace(4,"decode_stqraw: len=%d\n",raw->len);
     
     if (raw->outtype) {
         sprintf(raw->msgtype,"SKYTRAQ RAWX  (%4d): nsat=%2d",raw->len,U1(p+13));
     }
-    ver=U1(p+1);
     raw->iod=U1(p+2);
     week=U2(p+3);
     week=adjgpsweek(week);
     tow =U4(p+5)*0.001;
     raw->time=gpst2time(week,tow);
-    peri=U2(p+9)*0.001;
     nsat=U1(p+13);
     if (raw->len<19+31*nsat) {
         trace(2,"stq raw length error: len=%d nsat=%d\n",raw->len,nsat);
@@ -255,59 +253,28 @@ static int decode_stqrawx(raw_t *raw)
     }
     for (i=0,p+=14;i<nsat&&i<MAXOBS;i++,p+=31) {
         gnss_type=U1(p)&0xF;
-        signal_type=(U1(p)>>4)&0xF;
         if (gnss_type==0) { /* GPS */
             sys=SYS_GPS;
-            switch (signal_type) {
-                case  1: sig=CODE_L1X; break;
-                case  2: sig=CODE_L2X; break;
-                case  4: sig=CODE_L5X; break;
-                default: sig=CODE_L1C; break;
-            }
             prn=U1(p+1);
         }
         else if (gnss_type==1) { /* SBAS */
             sys=SYS_SBS;
-            sig=CODE_L1C;
             prn=U1(p+1);
         }
         else if (gnss_type==2) { /* GLONASS */
             sys=SYS_GLO;
-            switch (signal_type) {
-                case  2: sig=CODE_L2C; break;
-                case  4: sig=CODE_L3X; break;
-                default: sig=CODE_L1C; break;
-            }
             prn=U1(p+1);
         }
         else if (gnss_type==3) { /* Galileo */
             sys=SYS_GAL;
-            switch (signal_type) {
-                case  4: sig=CODE_L5X; break;
-                case  5: sig=CODE_L7X; break;
-                case  6: sig=CODE_L6X; break;
-                default: sig=CODE_L1C; break;
-            }
             prn=U1(p+1);
         }
         else if (gnss_type==4) { /* QZSS */
             sys=SYS_QZS;
-            switch (signal_type) {
-                case  1: sig=CODE_L1X; break;
-                case  2: sig=CODE_L2X; break;
-                case  4: sig=CODE_L5X; break;
-                case  6: sig=CODE_L6X; break;
-                default: sig=CODE_L1C; break;
-            }
             prn=U1(p+1);
         }
         else if (gnss_type==5) { /* BeiDou */
             sys=SYS_CMP;
-            switch (signal_type) {
-                case  4: sig=CODE_L7I; break;
-                case  6: sig=CODE_L6I; break;
-                default: sig=CODE_L2I; break;
-            }
             prn=U1(p+1);
         }
         else {

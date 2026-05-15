@@ -483,7 +483,7 @@ static int decode_cresgloeph(raw_t *raw)
 {
     geph_t geph={0};
     uint8_t *p=raw->buff+8,str[12];
-    int i,j,k,sat,prn,frq,time,no;
+    int i,j,k,sat,prn,frq,no;
     
     trace(4,"decode_cregloeph: len=%d\n",raw->len);
     
@@ -491,7 +491,7 @@ static int decode_cresgloeph(raw_t *raw)
     
     prn =U1(p);   p+=1;
     frq =U1(p)-8; p+=1+2;
-    time=U4(p);   p+=4;
+    p+=4; /* time: not used */
     
     if (!(sat=satno(SYS_GLO,prn))) {
         trace(2,"creasent bin 65 satellite number error: prn=%d\n",prn);

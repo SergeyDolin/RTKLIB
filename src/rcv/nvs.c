@@ -69,7 +69,7 @@ static int decode_xf5raw(raw_t *raw)
     int dTowInt;
     double dTowUTC, dTowGPS, dTowFrac, L1, P1, D1;
     double gpsutcTimescale;
-    uint8_t rcvTimeScaleCorr, sys, carrNo;
+    uint8_t sys, carrNo;
     int i,j,prn,sat,n=0,nsat,week;
     uint8_t *p=raw->buff+2;
     char *q,tstr[32],flag;
@@ -84,7 +84,7 @@ static int decode_xf5raw(raw_t *raw)
     week = U2(p+8);
     gpsutcTimescale = R8(p+10);
     /* glonassutcTimescale = R8(p+18); */
-    rcvTimeScaleCorr = I1(p+26);
+    /* rcvTimeScaleCorr = I1(p+26); not used */
     
     /* check gps week range */
     if (week>=4096) {

@@ -468,7 +468,7 @@ static int decode_trkmeas(raw_t *raw)
     uint8_t *p=raw->buff+6;
     gtime_t time;
     double ts,tr=-1.0,t,tau,utc_gpst,snr,adr,dop;
-    int i,j,n=0,nch,sys,prn,sat,qi,frq,flag,lock1,lock2,week;
+    int i,j,n=0,nch,sys,prn,sat,qi,flag,lock2,week;
     
     trace(4,"decode_trkmeas: len=%d\n",raw->len);
     
@@ -528,9 +528,7 @@ static int decode_trkmeas(raw_t *raw)
         if      (tau<-302400.0) tau+=604800.0;
         else if (tau> 302400.0) tau-=604800.0;
         
-        frq  =U1(p+ 7)-7; /* frequency */
         flag =U1(p+ 8);   /* tracking status */
-        lock1=U1(p+16);   /* code lock count */
         lock2=U1(p+17);   /* phase lock count */
         snr  =U2(p+20)/256.0;
         adr  =I8(p+32)*P2_32+(flag&0x40?0.5:0.0);
@@ -588,7 +586,7 @@ static int decode_trkd5(raw_t *raw)
     static double adrs[MAXSAT]={0};
     gtime_t time;
     double ts,tr=-1.0,t,tau,adr,dop,snr,utc_gpst;
-    int i,j,n=0,type,off,len,sys,prn,sat,qi,frq,flag,week;
+    int j,n=0,type,off,len,sys,prn,sat,qi,flag,week;
     uint8_t *p=raw->buff+6;
     
     trace(4,"decode_trkd5: len=%d\n",raw->len);
@@ -605,7 +603,7 @@ static int decode_trkd5(raw_t *raw)
         case 6 : off=86; len=64; break; /* u-blox 7 */
         default: off=78; len=56; break;
     }
-    for (i=0,p=raw->buff+off;p-raw->buff<raw->len-2;i++,p+=len) {
+    for (p=raw->buff+off;p-raw->buff<raw->len-2;p+=len) {
         qi=U1(p+41)&7;
         if (qi<4||7<qi) continue;
         t=I8(p)*P2_32/1000.0;
@@ -624,19 +622,18 @@ static int decode_trkd5(raw_t *raw)
     
     trace(4,"time=%s\n",time_str(time,0));
     
-    for (i=0,p=raw->buff+off;p-raw->buff<raw->len-2;i++,p+=len) {
-        
+    for (p=raw->buff+off;p-raw->buff<raw->len-2;p+=len) {
+
         /* quality indicator */
         qi =U1(p+41)&7;
         if (qi<4||7<qi) continue;
-        
+
         if (type==6) {
             if (!(sys=ubx_sys(U1(p+56)))) {
                 trace(2,"ubx trkd5: system error\n");
                 continue;
             }
             prn=U1(p+57)+(sys==SYS_QZS?192:0);
-            frq=U1(p+59)-7;
         }
         else {
             prn=U1(p+34);

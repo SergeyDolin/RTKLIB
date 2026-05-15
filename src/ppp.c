@@ -398,15 +398,14 @@ static double gfmeas(const obsd_t *obs, const nav_t *nav)
 /* Melbourne-Wubbena linear combination --------------------------------------*/
 static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, double *var, double el)
 {
-    int sys,prn,f2;
+    int prn,f2;
     double freq1,freq2,lam_wl,lam1,lam2;
     double osb_L1=0.0,osb_L2=0.0,osb_P1=0.0,osb_P2=0.0;
     double mea_L1=0.0,mea_L2=0.0,mea_P1=0.0,mea_P2=0.0;
     double MW=0.0;
 
-    sys=satsys(obs->sat,&prn);
+    satsys(obs->sat,&prn);
 
-    
     f2=obs->L[1]==0.0?2:1;
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
@@ -1408,7 +1407,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     double ve[MAXOBS*2*NFREQ]={0},vare[MAXOBS*2*NFREQ]={0},vmax=0,shapiro=0;
     char str[40];
     int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
-    int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1,prn,vs=0,iamb=0;
+    int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1,prn,iamb=0;
     
     time2str(obs[0].time,str,2);
     
@@ -1495,7 +1494,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 H[ID(opt)+nx*nv]=1.0;
             }
             if (j%2==0) { /* phase bias */
-                vs++;
                 if ((bias=x[IB(sat,j/2,opt)])==0.0) continue;
                 H[IB(sat,j/2,opt)+nx*nv]=1.0;
                 rtk->ssat[sat-1].amb[j/2]=x[iamb];
@@ -1639,7 +1637,7 @@ static int valpos(rtk_t *rtk, const double *v, const double *R, const int *vflg,
     return stat;
 }
 
-static int test_hold_amb(rtk_t *rtk)
+static int __attribute__((unused)) test_hold_amb(rtk_t *rtk)
 {
     int i,j,stat=0;
     

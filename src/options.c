@@ -39,14 +39,6 @@ static double elmask_,elmaskar_,elmaskhold_;
 static double antpos_[2][3];
 static char exsats_[1024];
 static char snrmask_[NFREQ][1024];
-static char prc_ts_[100];
-static char prc_te_[100];
-static char GPS_frq_[20];
-static char GLO_frq_[20];
-static char GAL_frq_[20];
-static char BD2_frq_[20];
-static char BD3_frq_[20];
-static char QZS_frq_[20];
 
 /* system options table ------------------------------------------------------*/
 #define SWTOPT  "0:off,1:on"

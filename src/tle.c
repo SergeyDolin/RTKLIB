@@ -42,7 +42,7 @@
 
 static void SGP4_STR3(double tsince, const tled_t *data, double *rs)
 {
-    double xnodeo,omegao,xmo,eo,xincl,xno,xndt2o,xndd6o,bstar;
+    double xnodeo,omegao,xmo,eo,xincl,xno,bstar;
     double a1,cosio,theta2,x3thm1,eosq,betao2,betao,del1,ao,delo,xnodp,aodp,s4;
     double qoms24,perige,pinvsq,tsi,eta,etasq,eeta,psisq,coef,coef1,c1,c2,c3,c4;
     double c5,sinio,a3ovk2,x1mth2,theta4,xmdot,x1m5th,omgdot,xhdot1,xnodot;
@@ -61,8 +61,6 @@ static void SGP4_STR3(double tsince, const tled_t *data, double *rs)
     xincl=data->inc*DE2RA;
     temp=TWOPI/XMNPDA/XMNPDA;
     xno=data->n*temp*XMNPDA;
-    xndt2o=data->ndot*temp;
-    xndd6o=data->nddot*temp/XMNPDA;
     bstar=data->bstar/AE;
     eo=data->ecc;
     /*

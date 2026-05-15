@@ -769,8 +769,8 @@ static int decode_galephemerisb(raw_t *raw)
 {
     eph_t eph={0};
     uint8_t *p=raw->buff+OEM4HLEN;
-    double tow,sqrtA,af0_fnav,af1_fnav,af2_fnav,af0_inav,af1_inav,af2_inav,tt;
-    int prn,sat,week,rcv_fnav,rcv_inav,svh_e1b,svh_e5a,svh_e5b,dvs_e1b,dvs_e5a;
+    double sqrtA,af0_fnav,af1_fnav,af2_fnav,af0_inav,af1_inav,af2_inav,tt;
+    int prn,sat,week,rcv_fnav,svh_e1b,svh_e5a,svh_e5b,dvs_e1b,dvs_e5a;
     int dvs_e5b,toc_fnav,toc_inav,set,sel_eph=3; /* 1:I/NAV+2:F/NAV */
     
     if (strstr(raw->opt,"-GALINAV")) sel_eph=1;
@@ -782,7 +782,7 @@ static int decode_galephemerisb(raw_t *raw)
     }
     prn       =U4(p);   p+=4;
     rcv_fnav  =U4(p)&1; p+=4;
-    rcv_inav  =U4(p)&1; p+=4;
+    p+=4; /* rcv_inav */
     svh_e1b   =U1(p)&3; p+=1;
     svh_e5a   =U1(p)&3; p+=1;
     svh_e5b   =U1(p)&3; p+=1;
@@ -838,7 +838,7 @@ static int decode_galephemerisb(raw_t *raw)
              (svh_e1b<<1)|dvs_e1b);
     eph.code=set?((1<<1)+(1<<8)):((1<<0)+(1<<2)+(1<<9));
     eph.iodc=eph.iode;
-    tow=time2gpst(raw->time,&week);
+    time2gpst(raw->time,&week);
     eph.week=week; /* gps-week = gal-week */
     eph.toe=gpst2time(eph.week,eph.toes);
     
@@ -865,8 +865,8 @@ static int decode_galephemerisb(raw_t *raw)
 static int decode_galclockb(raw_t *raw)
 {
     uint8_t *p=raw->buff+OEM4HLEN;
-    double a0,a1,a0g,a1g;
-    int dtls,tot,wnt,wnlsf,dn,dtlsf,t0g,wn0g;
+    double a0,a1;
+    int dtls,tot,wnt,wnlsf,dn,dtlsf;
     
     if (raw->len<OEM4HLEN+64) {
         trace(2,"oem4 galclockb length error: len=%d\n",raw->len);
@@ -880,10 +880,10 @@ static int decode_galclockb(raw_t *raw)
     wnlsf=U4(p); p+=4;
     dn   =U4(p); p+=4;
     dtlsf=U4(p); p+=4;
-    a0g  =R8(p); p+=8;
-    a1g  =R8(p); p+=8;
-    t0g  =U4(p); p+=4;
-    wn0g =U4(p);
+    p+=8; /* a0g */
+    p+=8; /* a1g */
+    p+=4; /* t0g */
+    /* wn0g: not used */
     raw->nav.utc_gal[0]=a0;
     raw->nav.utc_gal[1]=a1;
     raw->nav.utc_gal[2]=tot;
@@ -987,7 +987,7 @@ static int decode_navicephemerisb(raw_t *raw)
     eph_t eph={0};
     uint8_t *p=raw->buff+OEM4HLEN;
     double sqrtA;
-    int prn,sat,toc,rsv,l5_health,s_health,alert,autonav;
+    int prn,sat,toc,l5_health,s_health;
     
     if (raw->len<OEM4HLEN+204) {
         trace(2,"oem4 navicephemrisb length error: len=%d\n",raw->len);
@@ -1003,7 +1003,7 @@ static int decode_navicephemerisb(raw_t *raw)
     eph.tgd[0]=R8(p);   p+=8; /* TGD */
     eph.deln  =R8(p);   p+=8;
     eph.iode  =U4(p);   p+=4; /* IODEC */
-    rsv       =U4(p);   p+=4;
+    p+=4; /* rsv */
     l5_health =U4(p)&1; p+=4;
     s_health  =U4(p)&1; p+=4;
     eph.cuc   =R8(p);   p+=8;
@@ -1013,7 +1013,7 @@ static int decode_navicephemerisb(raw_t *raw)
     eph.crc   =R8(p);   p+=8;
     eph.crs   =R8(p);   p+=8;
     eph.idot  =R8(p);   p+=8;
-    rsv       =U4(p);   p+=4;
+    p+=4; /* rsv */
     eph.M0    =R8(p);   p+=8;
     eph.toes  =U4(p);   p+=4;
     eph.e     =R8(p);   p+=8;
@@ -1022,9 +1022,9 @@ static int decode_navicephemerisb(raw_t *raw)
     eph.omg   =R8(p);   p+=8;
     eph.OMGd  =R8(p);   p+=8;
     eph.i0    =R8(p);   p+=8;
-    rsv       =U4(p);   p+=4;
-    alert     =U4(p);   p+=4;
-    autonav   =U4(p);
+    p+=4; /* rsv */
+    p+=4; /* alert */
+    /* autonav: not used */
     
     if (toc!=eph.toes) { /* toe and toc should be matched */
         trace(2,"oem4 navicephemrisb toe and toc unmatch prn=%d\n",prn);

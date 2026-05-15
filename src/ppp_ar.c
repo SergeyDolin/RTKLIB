@@ -36,7 +36,7 @@
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
 #define IB(s,f,opt) (NR(opt)+MAXSAT*(f)+(s)-1)
 
-static int test_sys(int sys, int m){
+static int __attribute__((unused)) test_sys(int sys, int m){
     switch(sys){
         case SYS_GPS: return m==0;
         case SYS_SBS: return m==0;
@@ -145,7 +145,7 @@ static int matchnlupd(const gtime_t obst, int sat1, int sat2,
     return stat;
 }
 
-static int matchnlfcb(const gtime_t obst, int sat1, int sat2, 
+static int __attribute__((unused)) matchnlfcb(const gtime_t obst, int sat1, int sat2,
                       double *nl_fcb1, double *nl_fcb2, const nav_t *nav){
     double fcb1=0.0,fcb2=0.0;
     int i,stat=0;
@@ -172,7 +172,7 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
     const int sat_sys[]={SYS_GPS,SYS_GLO,SYS_GAL,SYS_CMP,0};
     double elmask,el_temp[MAXOBS]={0};
     int i,j,k,m=0,ns=0,prn,idxs[MAXOBS]={0},sat_no[MAXOBS]={0},frq=f==-1?0:f;
-    int ref_sat_idx=0,sys,nf=NF(&rtk->opt);
+    int ref_sat_idx=0,sys;
 
     elmask=rtk->opt.elmin;
 
@@ -338,7 +338,7 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
 static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *sd_nl_fcb,double *H_if,
                    const double *Bl,const double *Bw,int nb,const int *sat1,const int *sat2,const int *iu,double *xa){
     prcopt_t opt=rtk->opt;
-    int i,j,f2,ny,na=rtk->na,sat,sys,sys_idx=-1,prn,stat=1;
+    int i,j,f2,ny,na=rtk->na,sat,sys_idx=-1,prn,stat=1;
     double *y,*db,*Qb_if,*Qab,*QQ,*Qy,*DP,*Bc,*dx;
     double frq1=0.0,frq2=0.0,lam1,lam2,lam_nl,gamma;
 
@@ -365,7 +365,7 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
     /* fix IF ambiguity */
     for(i=0;i<nb;i++){
         sat=sat1[i];
-        sys=satsys(sat,&prn);
+        satsys(sat,&prn);
         sys_idx=satsysidx(sat);
         if(sys_idx==-1) continue;
         f2=obs[iu[i]].L[1]==0.0?2:1;

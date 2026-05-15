@@ -319,7 +319,7 @@ static char codepris[7][MAXFREQ][16]={  /* code priority for each freq-index */
     {"ABCX"    ,"ABCX"      ,""        ,""       ,""       ,""      ,""}  /* IRN */
 };
 
-static char obsfrqstr[7][MAXFREQ][5]={
+static char obsfrqstr[7][MAXFREQ][5] __attribute__((unused)) ={
         {"L1", "L2", "L5", "",   "",    "", ""},       /*GPS*/
         {"G1", "G2", "G3", "G1a","G2a", "", ""},       /*GLO*/
         {"E1", "E5b","E5a","E6", "E5ab","", ""},       /*GAL*/
@@ -329,7 +329,7 @@ static char obsfrqstr[7][MAXFREQ][5]={
         {"L5", "S",  "",   "",   "",    "", ""},       /*IRN*/
 };
 
-static int obsfrqidx[7][MAXFREQ][1]={
+static int obsfrqidx[7][MAXFREQ][1] __attribute__((unused)) ={
         {0,1,2,3,4,5,6},                               /*GPS*/
         {0,1,2,3,0+NFREQ,1+NFREQ,2+NFREQ},             /*GLO*/
         {0,1,2,3,4,5,6},                               /*GAL*/
@@ -545,7 +545,6 @@ extern int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vfl
     double v_SYS[NUM_SYS][MAXOBS]={0},v_copy[MAXOBS]={0},mean,thres=20.0;
     int nv_SYS[NUM_SYS]={0},sat_SYS[NUM_SYS][MAXOBS]={0};
     int i,j,sat,sys_idx,qc_flag=0;
-    prcopt_t *popt=&rtk->opt;
 
     for(j=0;j<nv;j++){
         sat=(vflag[i]>>8)&0xFF;
@@ -3123,7 +3122,7 @@ static double gettgd(int sat, const nav_t *nav,int type)
     }
 }
 
-static double corrTGD(const nav_t *nav,uint8_t code, int sat)
+static double __attribute__((unused)) corrTGD(const nav_t *nav,uint8_t code, int sat)
 {
     int sys,prn,frq_idx=0;
     sys=satsys(sat,&prn);
@@ -3343,7 +3342,6 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
 extern double corr_code_bias(const prcopt_t *popt,const nav_t *nav,const obsd_t *obs,int frq)
 {
     double isc=0.0,dcb=0.0;
-    int ppp = (popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED);
 
     isc=corrISC(popt,nav->cbias[obs->sat-1],obs->code[frq],obs->sat);
 
@@ -3876,7 +3874,6 @@ extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,c
     int sat,prn,f,i;
     double cbias[NFREQ+NEXOBS]={0},frqs[NFREQ+NEXOBS]={0},alpha=0.0,beta=0.0;
     double corr_P[NFREQ+NEXOBS]={0},corr_L[NFREQ+NEXOBS]={0};
-    int ppp = ((popt->mode >= PMODE_PPP_KINEMA && popt->mode <= PMODE_PPP_FIXED));
     for(i=0;i<NFREQ;i++){
         P[i]=0.0;
         if(L) L[i]=0.0;
@@ -3928,8 +3925,6 @@ extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,c
             if(obs->L[f]!=0.0) corr_L[f]=obs->L[f]*CLIGHT/frqs[f]-phw*CLIGHT/frqs[f];
             if(popt->modear==ARMODE_CONT&&(popt->arprod>=AR_PROD_OSB_COD)){
                 double cosb=0.0,posb=0.0;
-                double a=cosb/CLIGHT*1E9;
-                double b=posb/CLIGHT*1E9;
                 corr_L[f]-=posb;
                 corr_P[f]-=cosb;
             }

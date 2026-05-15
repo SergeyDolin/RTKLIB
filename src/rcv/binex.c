@@ -303,14 +303,14 @@ static int decode_bnx_01_02(raw_t *raw, uint8_t *buff, int len)
 {
     geph_t geph={0};
     uint8_t *p=buff;
-    double tod,tof,tau_gps;
-    int prn,sat,day,leap;
+    double tod,tof;
+    int prn,sat;
     
     trace(4,"BINEX 0x01-02: len=%d\n",len);
     
     if (len>=119) {
         prn        =U1(p)+1;   p+=1;
-        day        =U2(p);     p+=2;
+        p+=2; /* day */
         tod        =U4(p);     p+=4;
         geph.taun  =-R8(p);    p+=8;
         geph.gamn  =R8(p);     p+=8;
@@ -327,8 +327,8 @@ static int decode_bnx_01_02(raw_t *raw, uint8_t *buff, int len)
         geph.svh   =U1(p)&0x1; p+=1; /* MSB of Bn */
         geph.frq   =I1(p);     p+=1;
         geph.age   =U1(p);     p+=1;
-        leap       =U1(p);     p+=1;
-        tau_gps    =R8(p);     p+=8;
+        p+=1; /* leap */
+        p+=8; /* tau_gps */
         geph.dtaun =R8(p);
     }
     else {
@@ -359,8 +359,8 @@ static int decode_bnx_01_03(raw_t *raw, uint8_t *buff, int len)
 {
     seph_t seph={0};
     uint8_t *p=buff;
-    double tow,tod,tof;
-    int prn,sat,week,iodn;
+    double tow,tof;
+    int prn,sat,week;
     
     trace(4,"BINEX 0x01-03: len=%d\n",len);
     
@@ -369,7 +369,7 @@ static int decode_bnx_01_03(raw_t *raw, uint8_t *buff, int len)
         week       =U2(p);     p+=2;
         tow        =U4(p);     p+=4;
         seph.af0   =R8(p);     p+=8;
-        tod        =R4(p);     p+=4;
+        p+=4; /* tod */
         tof        =U4(p);     p+=4;
         seph.pos[0]=R8(p)*1E3; p+=8;
         seph.vel[0]=R8(p)*1E3; p+=8;
@@ -382,7 +382,7 @@ static int decode_bnx_01_03(raw_t *raw, uint8_t *buff, int len)
         seph.acc[2]=R8(p)*1E3; p+=8;
         seph.svh   =U1(p);     p+=1;
         seph.sva   =U1(p);     p+=1;
-        iodn       =U1(p);
+        /* iodn: not used */
     }
     else {
         trace(2,"BINEX 0x01-03 length error: len=%d\n",len);
@@ -490,7 +490,7 @@ static int decode_bnx_01_05(raw_t *raw, uint8_t *buff, int len)
 {
     eph_t eph={0};
     uint8_t *p=buff;
-    double tow,toc,sqrtA;
+    double tow,sqrtA;
     int prn,sat,flag1,flag2;
     
     trace(4,"BINEX 0x01-05: len=%d\n",len);
@@ -499,7 +499,7 @@ static int decode_bnx_01_05(raw_t *raw, uint8_t *buff, int len)
         prn       =U1(p);        p+=1;
         eph.week  =U2(p);        p+=2;
         tow       =I4(p);        p+=4;
-        toc       =I4(p);        p+=4;
+        p+=4; /* toc */
         eph.toes  =I4(p);        p+=4;
         eph.f2    =R4(p);        p+=4;
         eph.f1    =R4(p);        p+=4;
@@ -1018,11 +1018,11 @@ static uint8_t *decode_bnx_7f_05_obs(raw_t *raw, uint8_t *buff, int sat,
 static int decode_bnx_7f_05(raw_t *raw, uint8_t *buff, int len)
 {
     obsd_t data={{0}};
-    double clkoff=0.0,toff[16]={0};
+    double toff[16]={0};
     char *msg;
     uint8_t *p=buff;
     uint32_t flag;
-    int i,nsat,nobs,prn,sys,sat,clkrst=0,rsys=0,nsys=0,tsys[16]={0};
+    int i,nsat,nobs,prn,sys,sat,nsys=0,tsys[16]={0};
     
     trace(4,"decode_bnx_7f_05\n");
     
@@ -1031,12 +1031,11 @@ static int decode_bnx_7f_05(raw_t *raw, uint8_t *buff, int len)
     nsat=(int)(flag&0x3F)+1;
     
     if (flag&0x80) { /* rxclkoff */
-        clkrst=getbitu(p,0, 2);
-        clkoff=getbits(p,2,22)*1E-9; p+=3;
+        p+=3; /* clkrst, clkoff */
     }
     if (flag&0x40) { /* systime */
         nsys=getbitu(p,0,4);
-        rsys=getbitu(p,4,4); p++;
+        p++; /* rsys */
         for (i=0;i<nsys;i++) {
             toff[i]=getbits(p,0,24)*1E-9;
             tsys[i]=getbitu(p,28,4); p+=4;

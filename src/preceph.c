@@ -449,7 +449,7 @@ extern int readupd(const prcopt_t *opt,char *file_ewl,char *file_wl,char *file_n
     return 0;
 }
 
-static int biasstr2time(const char *s, int i, int n, gtime_t *t) {
+static int __attribute__((unused)) biasstr2time(const char *s, int i, int n, gtime_t *t) {
     double ep[6];
     ep[1] = 1.0;
     ep[2] = 1.0;

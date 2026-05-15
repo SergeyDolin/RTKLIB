@@ -1102,7 +1102,7 @@ static int encode_type1045(rtcm_t *rtcm, int sync)
     eph_t *eph;
     uint32_t sqrtA,e;
     int i=24,prn,week,toe,toc,i0,OMG0,omg,M0,deln,idot,OMGd,crs,crc;
-    int cus,cuc,cis,cic,af0,af1,af2,bgd1,bgd2,oshs,osdvs;
+    int cus,cuc,cis,cic,af0,af1,af2,bgd1,oshs,osdvs;
     
     trace(3,"encode_type1045: sync=%d\n",sync);
     
@@ -1131,7 +1131,6 @@ static int encode_type1045(rtcm_t *rtcm, int sync)
     af1  =ROUND(eph->f1 /P2_46);
     af2  =ROUND(eph->f2 /P2_59);
     bgd1 =ROUND(eph->tgd[0]/P2_32); /* E5a/E1 */
-    bgd2 =ROUND(eph->tgd[1]/P2_32); /* E5b/E1 */
     oshs =(eph->svh>>4)&3;          /* E5a SVH */
     osdvs=(eph->svh>>3)&1;          /* E5a DVS */
     setbitu(rtcm->buff,i,12,1045     ); i+=12;

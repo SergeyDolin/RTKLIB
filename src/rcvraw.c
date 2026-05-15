@@ -901,14 +901,14 @@ static int decode_glostr_eph(const uint8_t *buff, geph_t *geph)
 {
     geph_t geph_glo={0};
     double tow,tod,tof,toe;
-    int P,P1,P2,P3,P4,tk_h,tk_m,tk_s,tb,ln,NT,slot,M,week;
+    int tk_h,tk_m,tk_s,tb,slot,week;
     int i=1,frn1,frn2,frn3,frn4;
     
     trace(4,"decode_glostr_eph:\n");
     
     /* frame 1 */
     frn1           =getbitu(buff,i, 4);           i+= 4+2;
-    P1             =getbitu(buff,i, 2);           i+= 2;
+    i+= 2; /* P1 */
     tk_h           =getbitu(buff,i, 5);           i+= 5;
     tk_m           =getbitu(buff,i, 6);           i+= 6;
     tk_s           =getbitu(buff,i, 1)*30;        i+= 1;
@@ -919,7 +919,7 @@ static int decode_glostr_eph(const uint8_t *buff, geph_t *geph)
     /* frame 2 */
     frn2           =getbitu(buff,i, 4);           i+= 4;
     geph_glo.svh   =getbitu(buff,i, 1);           i+= 1+2; /* MSB of Bn */
-    P2             =getbitu(buff,i, 1);           i+= 1;
+    i+= 1; /* P2 */
     tb             =getbitu(buff,i, 7);           i+= 7+5;
     geph_glo.vel[1]=getbitg(buff,i,24)*P2_20*1E3; i+=24;
     geph_glo.acc[1]=getbitg(buff,i, 5)*P2_30*1E3; i+= 5;
@@ -927,10 +927,10 @@ static int decode_glostr_eph(const uint8_t *buff, geph_t *geph)
     
     /* frame 3 */
     frn3           =getbitu(buff,i, 4);           i+= 4;
-    P3             =getbitu(buff,i, 1);           i+= 1;
+    i+= 1; /* P3 */
     geph_glo.gamn  =getbitg(buff,i,11)*P2_40;     i+=11+1;
-    P              =getbitu(buff,i, 2);           i+= 2;
-    ln             =getbitu(buff,i, 1);           i+= 1;
+    i+= 2; /* P */
+    i+= 1; /* ln */
     geph_glo.vel[2]=getbitg(buff,i,24)*P2_20*1E3; i+=24;
     geph_glo.acc[2]=getbitg(buff,i, 5)*P2_30*1E3; i+= 5;
     geph_glo.pos[2]=getbitg(buff,i,27)*P2_11*1E3; i+=27+4;
@@ -940,11 +940,11 @@ static int decode_glostr_eph(const uint8_t *buff, geph_t *geph)
     geph_glo.taun  =getbitg(buff,i,22)*P2_30;     i+=22;
     geph_glo.dtaun =getbitg(buff,i, 5)*P2_30;     i+= 5;
     geph_glo.age   =getbitu(buff,i, 5);           i+= 5+14;
-    P4             =getbitu(buff,i, 1);           i+= 1;
+    i+= 1; /* P4 */
     geph_glo.sva   =getbitu(buff,i, 4);           i+= 4+3;
-    NT             =getbitu(buff,i,11);           i+=11;
+    i+=11; /* NT */
     slot           =getbitu(buff,i, 5);           i+= 5;
-    M              =getbitu(buff,i, 2);
+    /* M: 2 bits, not used */
     
     if (frn1!=1||frn2!=2||frn3!=3||frn4!=4) {
         trace(3,"decode_glostr error: frn=%d %d %d %d %d\n",frn1,frn2,frn3,
@@ -1014,7 +1014,7 @@ extern int decode_glostr(const uint8_t *buff, geph_t *geph, double *utc)
 static int decode_frame_eph(const uint8_t *buff, eph_t *eph)
 {
     eph_t eph_sat={0};
-    double tow1,tow2,tow3,toc,sqrtA;
+    double tow1,toc,sqrtA;
     int i=48,id1,id2,id3,week,iodc0,iodc1,iode,tgd;
     
     trace(4,"decode_frame_eph:\n");
@@ -1036,7 +1036,7 @@ static int decode_frame_eph(const uint8_t *buff, eph_t *eph)
     eph_sat.f0  =getbits(buff,i,22)*P2_31;
     
     i=240*1+24; /* subframe 2 */
-    tow2        =getbitu(buff,i,17)*6.0;          i+=17+2;
+    i+=17+2; /* tow2 */
     id2         =getbitu(buff,i, 3);              i+=3+2;
     eph_sat.iode=getbitu(buff,i, 8);              i+= 8;
     eph_sat.crs =getbits(buff,i,16)*P2_5;         i+=16;
@@ -1050,7 +1050,7 @@ static int decode_frame_eph(const uint8_t *buff, eph_t *eph)
     eph_sat.fit =getbitu(buff,i, 1)?0.0:4.0; /* 0:4hr,1:>4hr */
     
     i=240*2+24; /* subframe 3 */
-    tow3        =getbitu(buff,i,17)*6.0;          i+=17+2;
+    i+=17+2; /* tow3 */
     id3         =getbitu(buff,i, 3);              i+=3+2;
     eph_sat.cic =getbits(buff,i,16)*P2_29;        i+=16;
     eph_sat.OMG0=getbits(buff,i,32)*P2_31*SC2RAD; i+=32;

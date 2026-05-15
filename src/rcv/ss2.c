@@ -194,7 +194,6 @@ static int decode_ss2eph(raw_t *raw)
 /* decode id#67 sbas data ----------------------------------------------------*/
 static int decode_ss2sbas(raw_t *raw)
 {
-    gtime_t time;
     int i,prn;
     uint8_t *p=raw->buff+4;
     
@@ -211,7 +210,6 @@ static int decode_ss2sbas(raw_t *raw)
     }
     raw->sbsmsg.week=U4(p);
     raw->sbsmsg.tow=(int)R8(p+4);
-    time=gpst2time(raw->sbsmsg.week,raw->sbsmsg.tow);
     raw->sbsmsg.prn=prn;
     for (i=0;i<29;i++) raw->sbsmsg.msg[i]=p[16+i];
     return 3;

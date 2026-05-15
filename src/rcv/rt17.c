@@ -1658,17 +1658,13 @@ static int DecodeType17(raw_t *Raw, uint32_t rif)
 {
     rt17_t *rt17 = (rt17_t*) Raw->rcv_data;
     uint8_t *p = rt17->MessageBuffer;
-    double ClockOffset, tow;
+    double tow;
     int Flags1, Flags2, FlagStatus, i, n, nsat, prn, Week;
     gtime_t Time;
     obsd_t *obs;
 
     tow = R8(p) * 0.001; p += 8;         /* Receive time within the current GPS week. */
-    ClockOffset = R8(p) * 0.001; p += 8; /* Clock offset value. 0.0 = not known */ 
-
-#if 0
-    tow += ClockOffset;
-#endif
+    p += 8;                               /* ClockOffset: not used */
  
     /* The observation data does not have the current GPS week number. Punt! */
     Week = GetWeek(Raw, tow);
