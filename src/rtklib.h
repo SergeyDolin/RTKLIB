@@ -58,18 +58,18 @@ extern "C" {
 /* constants -----------------------------------------------------------------*/
 
 /* collaborative precise positioning (CPP) shared globals --------------------*/
-double RTK_sol[6];                      /* RTK solution received from partner (x,y,z,sx,sy,sz) */
-double CPP_sol[6];                      /* CPP solution received for moving-base */
-int check;                              /* reserved */
-int connectCPP;                         /* partner RTK connection flag */
-int checkMB;                            /* CPP moving-base availability flag */
-char namePoint[10];                     /* point name for CPP protocol */
-char checkbuff[65536];                  /* CPP command buffer ("run"/"stop" + name) */
-char *string_read;                      /* reserved */
-int portTCP;                            /* TCP port to receive RTK solutions */
-int portSRV;                            /* TCP port to send CPP commands */
-int portMB;                             /* TCP port to receive CPP moving-base solutions */
-float dX,dY,dZ,sx,sy,sz;                /* CPP stage-3 coord/std differences */
+extern double RTK_sol[6];               /* RTK solution received from partner (x,y,z,sx,sy,sz) */
+extern double CPP_sol[6];               /* CPP solution received for moving-base */
+extern int check;                       /* reserved */
+extern int connectCPP;                  /* partner RTK connection flag */
+extern int checkMB;                     /* CPP moving-base availability flag */
+extern char namePoint[10];              /* point name for CPP protocol */
+extern char checkbuff[65536];           /* CPP command buffer ("run"/"stop" + name) */
+extern char *string_read;               /* reserved */
+extern int portTCP;                     /* TCP port to receive RTK solutions */
+extern int portSRV;                     /* TCP port to send CPP commands */
+extern int portMB;                      /* TCP port to receive CPP moving-base solutions */
+extern float dX,dY,dZ,sx,sy,sz;        /* CPP stage-3 coord/std differences */
 
 #define VER_RTKLIB  "2.4.3"             /* library version */
 

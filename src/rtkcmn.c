@@ -156,6 +156,20 @@
 #endif
 #include "rtklib.h"
 
+/* CPP shared global variable definitions (declared extern in rtklib.h) ------*/
+double RTK_sol[6]={0};
+double CPP_sol[6]={0};
+int check=0;
+int connectCPP=0;
+int checkMB=0;
+char namePoint[10]={0};
+char checkbuff[65536]={0};
+char *string_read=NULL;
+int portTCP=0;
+int portSRV=0;
+int portMB=0;
+float dX=0,dY=0,dZ=0,sx=0,sy=0,sz=0;
+
 /* constants -----------------------------------------------------------------*/
 
 #define POLYCRC32   0xEDB88320u /* CRC32 polynomial */
