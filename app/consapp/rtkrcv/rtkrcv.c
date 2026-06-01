@@ -1618,11 +1618,12 @@ static void accept_sock(int ssock, con_t **con)
 int main(int argc, char **argv)
 {
     con_t *con[MAXCON]={0};
-    int i,start=1,port=0,outstat=0,trace=0,sock=0;
+    int i,start=1,port=0,outstat=0,trace=0,sock=0,nocon=0;
     char *dev="",file[MAXSTR]="";
 
     for (i=1;i<argc;i++) {
         if      (!strcmp(argv[i],"-s")) start=1;
+        else if (!strcmp(argv[i],"-n")) nocon=1;
         else if (!strcmp(argv[i],"-p")&&i+1<argc) port=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-m")&&i+1<argc) moniport=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-d")&&i+1<argc) dev=argv[++i];
@@ -1669,24 +1670,26 @@ int main(int argc, char **argv)
     if (moniport>0&&!openmoni(moniport)) {
         fprintf(stderr,"monitor port open error: %d\n",moniport);
     }
-    if (port) {
-        /* open socket for remote console */
-        if ((sock=open_sock(port))<=0) {
-            fprintf(stderr,"console open error port=%d\n",port);
-            if (moniport>0) closemoni();
-            if (outstat>0) rtkclosestat();
-            traceclose();
-            return -1;
+    if (!nocon) {
+        if (port) {
+            /* open socket for remote console */
+            if ((sock=open_sock(port))<=0) {
+                fprintf(stderr,"console open error port=%d\n",port);
+                if (moniport>0) closemoni();
+                if (outstat>0) rtkclosestat();
+                traceclose();
+                return -1;
+            }
         }
-    }
-    else {
-        /* open device for local console */
-        if (!(con[0]=con_open(0,dev))) {
-            fprintf(stderr,"console open error dev=%s\n",dev);
-            if (moniport>0) closemoni();
-            if (outstat>0) rtkclosestat();
-            traceclose();
-            return -1;
+        else {
+            /* open device for local console */
+            if (!(con[0]=con_open(0,dev))) {
+                fprintf(stderr,"console open error dev=%s\n",dev);
+                if (moniport>0) closemoni();
+                if (outstat>0) rtkclosestat();
+                traceclose();
+                return -1;
+            }
         }
     }
     signal(SIGINT, sigshut); /* keyboard interrupt */

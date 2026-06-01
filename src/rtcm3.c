@@ -1942,8 +1942,9 @@ static int decode_ssr7(rtcm_t *rtcm, int sys, int subtype)
             rtcm->ssr[sat-1].pbias[k]=pbias[k];
             rtcm->ssr[sat-1].stdpb[k]=(float)stdpb[k];
         }
+        rtcm->ssr[sat-1].update=1; /* flag for update_ssr() in rtksvr */
     }
-    return 20;
+    return 10; /* treat as SSR message so update_ssr() is called immediately */
 }
 /* get signal index ----------------------------------------------------------*/
 static void sigindex(int sys, const uint8_t *code, int n, const char *opt,

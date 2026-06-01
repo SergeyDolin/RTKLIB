@@ -1462,17 +1462,33 @@ static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
     /* CPP: partner RTK solution stream */
     /* format: week tow X Y Z Q NS SDX SDY SDZ ... */
     if (tcpcli->svr.port == portTCP) {
+        static int logged_match = 0;
         double x=0,y=0,z=0,sdx=0,sdy=0,sdz=0;
+        if (!logged_match) {
+            tracet(0,"readtcpcli CPP RTK: portTCP=%d matched — stream active\n", portTCP);
+            logged_match = 1;
+        }
 
         nr = recv(tcpcli->svr.sock, Comrade.string_read, sizeof(Comrade.string_read)-1, 0);
         Comrade.string_read[nr>0?nr:0] = '\0';
 
         if (nr<=0 || Comrade.string_read[0]=='\0') {
+            if (connectCPP) {
+                tracet(0,"readtcpcli CPP RTK: no data (nr=%d) — connectCPP→0\n",nr);
+            }
             connectCPP = 0;
+            /* EAGAIN/EWOULDBLOCK: socket alive but no data yet (InjectRelay waiting for
+               candidate). Update tact so the inactive timeout does not disconnect us. */
+            if (nr < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                tcpcli->svr.tact = tickget();
+            }
         }
         else if (sscanf(Comrade.string_read,
                         "%*s %*s %lf %lf %lf %*s %*s %lf %lf %lf",
                         &x,&y,&z,&sdx,&sdy,&sdz)==6) {
+            if (!connectCPP) {
+                tracet(0,"readtcpcli CPP RTK: first data received — xyz=%.3f %.3f %.3f\n",x,y,z);
+            }
             connectCPP = 1;
             RTK_sol[0] = x;
             RTK_sol[1] = y;
@@ -1484,6 +1500,8 @@ static int readtcpcli(tcpcli_t *tcpcli, uint8_t *buff, int n, char *msg)
                    x,y,z,sdx,sdy,sdz);
         }
         else {
+            tracet(0,"readtcpcli CPP RTK: sscanf failed — raw[%d]: %.80s\n",
+                   nr, Comrade.string_read);
             connectCPP = 0;
         }
     }
