@@ -74,6 +74,10 @@
 #define THRES_REJECT 4.0            /* reject threshold of posfit-res (sigma) */
 
 #define THRES_MW_JUMP 10.0
+#define THRES_DOP     1.0              /* Doppler slip threshold (cycles) */
+#define HATCH_MAX_N   10               /* max Hatch filter smoothing epochs */
+#define HATCH_ERATIO  300.0            /* enable Hatch only for high-noise receivers */
+#define SNR_REF       30.0            /* reference C/N0 for SNR weighting (dBHz) */
 
 #define VAR_POS     SQR(60.0)       /* init variance receiver position (m^2) */
 #define VAR_VEL     SQR(60.0)       /* init variance of receiver vel ((m/s)^2) */
@@ -106,7 +110,7 @@
 #define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
 #define NP(opt)     ((opt)->dynamics?9:3)
 #define NC(opt)     (NSYS)
-#define NT(opt)     ((opt)->tropopt<TROPOPT_EST?0:((opt)->tropopt==TROPOPT_EST?1:3))
+#define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
 #define ND(opt)     ((opt)->nf>=3?1:0)
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
@@ -366,6 +370,19 @@ static double varerr(int sat, int sys, double el, double snr_rover,
     if(code) var+=SQR(opt->err[1]*0.01*0.0025);
     else var+=SQR(opt->err[1]*0.0025*0.004*0.2);
 
+    /* SNR-based variance scaling (CSRS-PPP amplitude model):
+     * σ *= 10^((snr_ref - C/N0) / 20)
+     * High SNR (>ref) → no change; low SNR → variance increases */
+    if (obs) {
+        int frq_idx=(int)snr_rover; /* snr_rover carries frequency index */
+        double snr_dBHz=obs->SNR[frq_idx]*SNR_UNIT;
+        if (snr_dBHz>1.0) {
+            double snr_ref=30.0; /* reference C/N0 (dBHz) */
+            double snr_factor=pow(10.0,(snr_ref-snr_dBHz)/20.0);
+            if (snr_factor>1.0) var*=SQR(snr_factor);
+        }
+    }
+
     return var;
 }
 /* initialize state and covariance -------------------------------------------*/
@@ -550,7 +567,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
          * causing Galileo to get zero correction when using SSR-only stream. */
         if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] == 0.0)
         {
-            if (codes[0]==CODE_L1X)
+            if (codes[0]==CODE_L1X||codes[0]==CODE_L1B||codes[0]==CODE_L1C)
             {
                 P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1X-1];
                 L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
@@ -563,17 +580,13 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
         else
         {
-            
-            if (codes[0] == CODE_L1C || codes[0] == CODE_L1X) {  /* E1 */
-                
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];  
+            if (codes[0]==CODE_L1C||codes[0]==CODE_L1X||codes[0]==CODE_L1B) {  /* E1 */
+                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
             }
-            
-            if (codes[2] == CODE_L5X) {
+            if (codes[2]==CODE_L5Q||codes[2]==CODE_L5X) {  /* E5a */
                 P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];
-            } 
-            if (codes[2] == CODE_L7X) {  /* E5a */
-
+            }
+            if (codes[2]==CODE_L7X) {  /* E5b */
                 P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
             }
         }
@@ -775,6 +788,105 @@ static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
 }
 
+/* detect cycle slip by Doppler (NRCan/CSRS-PPP approach) --------------------*/
+static void detslp_dop(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
+{
+    double freq, dt, dL, dop_pred;
+    int i, f, sat;
+
+    for (i = 0; i < n && i < MAXOBS; i++) {
+        sat = obs[i].sat;
+        for (f = 0; f < NFREQ; f++) {
+            if (obs[i].L[f] == 0.0 || obs[i].D[f] == 0.0) continue;
+            if (rtk->ssat[sat-1].ph[0][f] == 0.0) continue;
+
+            freq = sat2freq(sat, obs[i].code[f], nav);
+            if (freq == 0.0) continue;
+
+            dt = timediff(obs[i].time, rtk->ssat[sat-1].pt[0][f]);
+            if (fabs(dt) < DTTOL || fabs(dt) > 60.0) continue;
+
+            /* Doppler slip detection only reliable for short intervals:
+               at 1 Hz Doppler precision, 30 s gives 30 cycles prediction error */
+            if (fabs(dt) > 2.0) continue;
+
+            /* predicted ΔL from Doppler (cycles): D in Hz, positive = approaching */
+            dop_pred = obs[i].D[f] * dt;
+            /* actual ΔL (cycles) */
+            dL = obs[i].L[f] - rtk->ssat[sat-1].ph[0][f];
+
+            if (fabs(dL - dop_pred) > THRES_DOP) {
+                for (f = 0; f < rtk->opt.nf; f++) rtk->ssat[sat-1].slip[f] |= 1;
+                char sid[8]; satno2id(sat,sid);
+                trace(3, "detslp_dop: slip %s f=%d dL=%.2f pred=%.2f\n",
+                      sid, f+1, dL, dop_pred);
+                break;
+            }
+        }
+    }
+}
+
+/* save previous phase and time for next-epoch Doppler/Hatch use -------------*/
+static void save_prev_phase(rtk_t *rtk, const obsd_t *obs, int n)
+{
+    int i, f, sat;
+    for (i = 0; i < n && i < MAXOBS; i++) {
+        sat = obs[i].sat;
+        for (f = 0; f < NFREQ; f++) {
+            if (obs[i].L[f] == 0.0) continue;
+            rtk->ssat[sat-1].pt[0][f] = obs[i].time;
+            rtk->ssat[sat-1].ph[0][f] = obs[i].L[f];
+        }
+    }
+}
+
+/* carrier-smoothed pseudorange (Hatch filter) --------------------------------
+ * Fills obsh[i].P[f] with Hatch-smoothed values. Reset on cycle slip.
+ * P_s(k) = (1-1/N)*(P_s(k-1)+ΔL) + (1/N)*P_raw(k),  N = min(n, HATCH_MAX_N)
+ *---------------------------------------------------------------------------*/
+static void hatch_smooth(rtk_t *rtk, const obsd_t *obs, obsd_t *obsh, int n,
+                         const nav_t *nav)
+{
+    int i, f, sat, slip, N;
+    double freq, lam, L_m, dL;
+
+    for (i = 0; i < n && i < MAXOBS; i++) {
+        sat = obs[i].sat;
+        for (f = 0; f < NFREQ; f++) {
+            /* default: pass raw pseudorange through */
+            obsh[i].P[f] = obs[i].P[f];
+
+            if (obs[i].P[f] == 0.0 || obs[i].L[f] == 0.0) {
+                rtk->ssat[sat-1].hatch_n[f] = 0;
+                continue;
+            }
+            freq = sat2freq(sat, obs[i].code[f], nav);
+            if (freq == 0.0) continue;
+
+            lam   = CLIGHT / freq;
+            L_m   = obs[i].L[f] * lam;        /* phase in metres */
+            slip  = rtk->ssat[sat-1].slip[f] & 1;
+
+            if (rtk->ssat[sat-1].hatch_n[f] <= 0 || slip) {
+                /* initialise or reset after slip */
+                rtk->ssat[sat-1].hatch_P[f] = obs[i].P[f];
+                rtk->ssat[sat-1].hatch_L[f] = L_m;
+                rtk->ssat[sat-1].hatch_n[f] = 1;
+            } else {
+                dL = L_m - rtk->ssat[sat-1].hatch_L[f];
+                N  = rtk->ssat[sat-1].hatch_n[f] + 1;
+                if (N > HATCH_MAX_N) N = HATCH_MAX_N;
+                rtk->ssat[sat-1].hatch_P[f] =
+                    (1.0 - 1.0/N) * (rtk->ssat[sat-1].hatch_P[f] + dL)
+                    + (1.0/N) * obs[i].P[f];
+                rtk->ssat[sat-1].hatch_L[f] = L_m;
+                rtk->ssat[sat-1].hatch_n[f] = N;
+                obsh[i].P[f] = rtk->ssat[sat-1].hatch_P[f];
+            }
+        }
+    }
+}
+
 static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 {
     int i,sat;
@@ -829,6 +941,7 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
         }
     }
 
+    detslp_dop(rtk,obs,n,nav);  /* Doppler-based — fastest, catches sharp slips */
     detslp_ll(rtk,obs,n);
     detslp_mw(rtk,obs,n,nav);
     detslp_gf(rtk,obs,n,nav);
@@ -1198,7 +1311,7 @@ static void uddcb_ppp(rtk_t *rtk)
 /* temporal update of phase biases -------------------------------------------*/
 static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS],offset=0.0,pos[3]={0};
+    double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS]={0},offset=0.0,pos[3]={0};
     double freq1,freq2,ion,dantr[NFREQ]={0},dants[NFREQ]={0};
     int i,j,k,f,sat,slip[MAXOBS]={0},clk_jump=0;
     
@@ -1265,12 +1378,32 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             sat=obs[i].sat;
             j=IB(sat,f,&rtk->opt);
             
-            rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[0])*fabs(rtk->tt);
-            
+            /* SNR-based process noise: low C/N0 → faster bias drift allowed */
+            {
+                double snr_f=obs[i].SNR[f]*SNR_UNIT;
+                double snr_scale=1.0;
+                if (snr_f>1.0) {
+                    snr_scale=pow(10.0,(SNR_REF-snr_f)/10.0);
+                    if (snr_scale<1.0) snr_scale=1.0;
+                    if (snr_scale>50.0) snr_scale=50.0;
+                }
+                rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[0])*fabs(rtk->tt)*snr_scale;
+            }
+
             if (bias[i]==0.0||(rtk->x[j]!=0.0&&!slip[i])) continue;
-            
-            /* reinitialize phase-bias if detecting cycle slip */
-            initx(rtk,bias[i],VAR_BIAS,IB(sat,f,&rtk->opt));
+            if (bias[i]!=bias[i]) continue; /* skip NaN bias (f=0 with non-IFLC iono) */
+
+            /* adaptive initial variance: scale VAR_BIAS by SNR quality */
+            {
+                double snr_f=obs[i].SNR[f]*SNR_UNIT;
+                double var_init=VAR_BIAS;
+                if (snr_f>1.0) {
+                    double sf=pow(10.0,(SNR_REF-snr_f)/10.0);
+                    if (sf>1.0) var_init*=sf;
+                    if (var_init>VAR_BIAS*50.0) var_init=VAR_BIAS*50.0;
+                }
+                initx(rtk,bias[i],var_init,IB(sat,f,&rtk->opt));
+            }
             
             /* reset fix flags */
             for (k=0;k<MAXSAT;k++) rtk->ambc[sat-1].flags[k]=0;
@@ -1366,8 +1499,47 @@ static int model_trop(gtime_t time, const double *pos, const double *azel,
         *dtrp=sbstropcorr(time,pos,azel,var);
         return 1;
     }
+
+    if (opt->tropopt==TROPOPT_GPT3) {
+        double pres,temp,e,ah,aw,zhd,zwd,mfw,mfh;
+        if (!gpt3(time,pos,&pres,&temp,&e,&ah,&aw,&zhd,&zwd)) {
+            *dtrp=tropmodel(time,pos,azel,REL_HUMI); /* fallback */
+            *var=SQR(ERR_SAAS);
+            trace(2,"model_trop: GPT3 fallback el=%.2f pos=%.2f/%.2f/%.1f dtrp=%.4f\n",
+                  azel[1]*R2D,pos[0]*R2D,pos[1]*R2D,pos[2],*dtrp);
+            return 1;
+        }
+        mfh=vmf3(ah,aw,azel[1],pos[0],pos[2],&mfw);
+        *dtrp=zhd*mfh+zwd*mfw;
+        if (*dtrp!=*dtrp||*dtrp<0.0||*dtrp>100.0) { /* NaN or absurd value */
+            trace(2,"model_trop: GPT3 NaN/invalid dtrp=%.4f zhd=%.4f mfh=%.4f zwd=%.4f mfw=%.4f\n",
+                  *dtrp,zhd,mfh,zwd,mfw);
+            *dtrp=tropmodel(time,pos,azel,REL_HUMI);
+            *var=SQR(ERR_SAAS);
+            return 1;
+        }
+        trace(4,"model_trop: GPT3 el=%.2f dtrp=%.4f (zhd=%.4f mfh=%.4f zwd=%.4f mfw=%.4f)\n",
+              azel[1]*R2D,*dtrp,zhd,mfh,zwd,mfw);
+        *var=SQR(0.05);
+        return 1;
+    }
+    if (opt->tropopt==TROPOPT_GPT3_EST) {
+        double pres,temp,e,ah,aw,zhd,zwd_model,mfw,mfh;
+        if (!gpt3(time,pos,&pres,&temp,&e,&ah,&aw,&zhd,&zwd_model)) {
+            /* fallback: use Saastamoinen ZHD, treat estimated state as total ZTD */
+            trp[0]=x[IT(opt)];
+            *dtrp=trop_model_prec(time,pos,azel,trp,dtdx,var);
+            return 1;
+        }
+        mfh=vmf3(ah,aw,azel[1],pos[0],pos[2],&mfw);
+        *dtrp=zhd*mfh+x[IT(opt)]*mfw;
+        dtdx[0]=mfw;
+        *var=SQR(0.01);
+        return 1;
+    }
+
     if (opt->tropopt==TROPOPT_EST||opt->tropopt==TROPOPT_ESTG) {
-        matcpy(trp,x+IT(opt),opt->tropopt==TROPOPT_EST?1:3,1);
+        matcpy(trp,x+IT(opt),opt->tropopt==TROPOPT_ESTG?3:1,1);
         *dtrp=trop_model_prec(time,pos,azel,trp,dtdx,var);
         return 1;
     }
@@ -1510,8 +1682,9 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             cdtr=x[IC(k,opt)];
             H[IC(k,opt)+nx*nv]=1.0;
             
-            if (opt->tropopt==TROPOPT_EST||opt->tropopt==TROPOPT_ESTG) {
-                for (k=0;k<(opt->tropopt>=TROPOPT_ESTG?3:1);k++) {
+            if (opt->tropopt==TROPOPT_EST||opt->tropopt==TROPOPT_ESTG||
+                opt->tropopt==TROPOPT_GPT3_EST) {
+                for (k=0;k<(opt->tropopt==TROPOPT_ESTG?3:1);k++) {
                     H[IT(opt)+k+nx*nv]=dtdx[k];
                 }
             }
@@ -1619,7 +1792,7 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
         }
     }
     else {
-        if(!rtk->tc&&stat!=SOLQ_SINGLE){
+        if(!rtk->tc){
             for (i=0;i<3;i++) {
                 rtk->sol.rr[i]=rtk->x[i];
                 rtk->sol.qr[i]=(float)rtk->P[i+i*rtk->nx];
@@ -1696,7 +1869,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     const prcopt_t *opt=&rtk->opt;
     double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,*xa,*Pa,*norm_v,*post_v,*bias,dr[3]={0},rr[3];
     char str[32];
-    int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_SINGLE,vflg[MAXOBS*NFREQ*2+1];
+    int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_NONE,vflg[MAXOBS*NFREQ*2+1];
     res_t res={0};
     
     time2str(obs[0].time,str,2);
@@ -1722,8 +1895,18 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     /* detect cycle slip */
     detecs_ppp(obs,rtk,n,nav);
 
+    /* Hatch carrier-smoothed pseudoranges — only for high-noise receivers (eratio>50) */
+    obsd_t *obsh=(obsd_t *)malloc(sizeof(obsd_t)*n);
+    if (obsh) {
+        memcpy(obsh,obs,sizeof(obsd_t)*n);
+        if (rtk->opt.eratio[0] > HATCH_ERATIO)
+            hatch_smooth(rtk,obs,obsh,n,nav);
+    } else {
+        obsh=(obsd_t *)obs;
+    }
+
     /* temporal update of ekf states */
-    udstate_ppp(rtk,obs,n,nav);
+    udstate_ppp(rtk,obsh,n,nav);
 
     /* exclude measurements of eclipsing satellite (block IIA) */
     if (rtk->opt.posopt[3]) {
@@ -1749,9 +1932,9 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         matcpy(xp,rtk->x,rtk->nx,1);
         matcpy(Pp,rtk->P,rtk->nx,rtk->nx);
         
-        /* prefit residuals */
-        if (!(nv=ppp_res(0,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg))) {
-            
+        /* prefit residuals (use Hatch-smoothed obs) */
+        if (!(nv=ppp_res(0,obsh,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg))) {
+
             trace(2,"%s ppp (%d) no valid obs data\n",str,i+1);
             break;
         }
@@ -1773,15 +1956,15 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 break;
             }
         }
-        
+
         /* postfit residuals */
         for(j=0;j<3;j++) rr[j]=xp[j];
 
-        ppp_res(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg);
+        ppp_res(i+1,obsh,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg);
         init_postres(rtk,res.post_v,&res,res.Qvv,nv);
 
         freeres(&res);
-        if(ppp_res(i+1,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,post_v,H,R,azel,vflg)){
+        if(ppp_res(i+1,obsh,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,post_v,H,R,azel,vflg)){
             matcpy(rtk->x,xp,rtk->nx,1);
             matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
             stat=SOLQ_PPP;
@@ -1812,8 +1995,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
     if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */
-        if(manage_ppp_ar(rtk,bias,xa,Pa,1,obs,n,nav,exc)){
-            if (ppp_res(9,obs,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
+        if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc)){
+            if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
 
                 stat=SOLQ_FIX;
                 stat_ar=SOLQ_FIX;
@@ -1827,7 +2010,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 /* notify partner that PPP has fixed */
                 strcpy(checkbuff, "stop");
                 strcat(checkbuff, namePoint);
-                trace(0,"CPP fixed (nfix=%d)\n\r", rtk->nfix);
+                trace(2,"CPP fixed (nfix=%d)\n\r", rtk->nfix);
             }
             else {
                 rtk->nfix=0;
@@ -1836,7 +2019,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                     /* Keep coldStart=0: Bertrand's test monitors re-convergence */
                     rtk->sol.cnvg = 0.0f; /* fix lost — clear convergence flag */
                     m=1; prior_std=0.0;   /* restart Bertrand's counter fresh */
-                    trace(0,"CPP fix lost (ppp_res): Bertrand's test will monitor\n\r");
+                    trace(2,"CPP fix lost (ppp_res): Bertrand's test will monitor\n\r");
                 }
             }
         }
@@ -1846,7 +2029,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 /* Keep coldStart=0: Bertrand's test monitors re-convergence */
                 rtk->sol.cnvg = 0.0f; /* fix lost — clear convergence flag */
                 m=1; prior_std=0.0;   /* restart Bertrand's counter fresh */
-                trace(0,"CPP fix lost (AR solver): Bertrand's test will monitor\n\r");
+                trace(2,"CPP fix lost (AR solver): Bertrand's test will monitor\n\r");
             }
         }
         update_stat(rtk,obs,n,stat);
@@ -1931,11 +2114,16 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         }
     }
 
-    /* update solution status */
+    /* PPP mode must never output SOLQ_SINGLE — downgrade to SOLQ_NONE on failure */
+    if (rtk->sol.stat==SOLQ_SINGLE) rtk->sol.stat=SOLQ_NONE;
+
+    /* save phase for next-epoch Doppler slip detection */
+    save_prev_phase(rtk, obs, n);
 
     free(norm_v);free(post_v);free(bias);
     free(rs); free(dts); free(var); free(azel);
     free(xp); free(Pp); free(v); free(H); free(R);
     free(xa);free(Pa);
+    if (obsh != (obsd_t *)obs) free(obsh);
 
 }

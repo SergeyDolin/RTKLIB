@@ -236,6 +236,25 @@ extern int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
         *trp=sbstropcorr(time,pos,azel,var);
         return 1;
     }
+
+    /* GPT3 + VMF3 model (also used for GPT3_EST in SPP — no filter state here) */
+    if (tropopt==TROPOPT_GPT3||tropopt==TROPOPT_GPT3_EST) {
+        double pres,temp,e,ah,aw,zhd,zwd,mfw,mfh;
+        if (!gpt3(time,pos,&pres,&temp,&e,&ah,&aw,&zhd,&zwd)) {
+            *trp=tropmodel(time,pos,azel,REL_HUMI); /* fallback to Saastamoinen */
+            *var=SQR(ERR_SAAS/(sin(azel[1])+0.1));
+            return 1;
+        }
+        mfh=vmf3(ah,aw,azel[1],pos[0],pos[2],&mfw);
+        *trp=zhd*mfh+zwd*mfw;
+        if (*trp!=*trp||*trp<0.0||*trp>100.0) { /* NaN or absurd */
+            *trp=tropmodel(time,pos,azel,REL_HUMI);
+            *var=SQR(ERR_SAAS/(sin(azel[1])+0.1));
+            return 1;
+        }
+        *var=SQR(0.05/(sin(azel[1])+0.1));
+        return 1;
+    }
     /* no correction */
     *trp=0.0;
     *var=tropopt==TROPOPT_OFF?SQR(ERR_TROP):0.0;

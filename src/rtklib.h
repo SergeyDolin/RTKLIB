@@ -456,6 +456,8 @@ extern float dX,dY,dZ,sx,sy,sz;        /* CPP stage-3 coord/std differences */
 #define TROPOPT_EST 3                   /* troposphere option: ZTD estimation */
 #define TROPOPT_ESTG 4                  /* troposphere option: ZTD+grad estimation */
 #define TROPOPT_ZTD 5                   /* troposphere option: ZTD correction */
+#define TROPOPT_GPT3 6                  /* troposphere option: GPT3+VMF3 model */
+#define TROPOPT_GPT3_EST 7              /* troposphere option: GPT3 ZHD + estimate ZWD */
 
 #define EPHOPT_BRDC 0                   /* ephemeris option: broadcast ephemeris */
 #define EPHOPT_PREC 1                   /* ephemeris option: precise ephemeris */
@@ -1223,6 +1225,7 @@ typedef struct {        /* file options type */
     char nl     [MAXSTRPATH]; /* nl ambiguty data file */
     char *updf[3];
     char bia    [MAXSTRPATH];
+    char gpt3   [MAXSTRPATH]; /* GPT3 grid file (gpt3_5.grd) */
 } filopt_t;
 
 typedef struct {        /* RINEX options type */
@@ -1307,6 +1310,9 @@ typedef struct {        /* satellite status type */
 
     int init_amb[NFREQ];
     int new_sat;
+    double hatch_P[NFREQ]; /* Hatch-smoothed pseudorange (m) */
+    double hatch_L[NFREQ]; /* prev phase for Hatch filter (m) */
+    int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
 
 typedef struct {        /* ambiguity control type */
@@ -1883,6 +1889,13 @@ EXPORT int ionocorr(gtime_t time, const nav_t *nav, int sat, const double *pos,
                     const double *azel, int ionoopt, double *ion, double *var);
 EXPORT int tropcorr(gtime_t time, const nav_t *nav, const double *pos,
                     const double *azel, int tropopt, double *trp, double *var);
+/* GPT3 model ----------------------------------------------------------------*/
+EXPORT int    gpt3_read(const char *file);
+EXPORT int    gpt3(gtime_t time, const double *pos,
+                   double *pres, double *temp, double *e,
+                   double *ah, double *aw, double *zhd, double *zwd);
+EXPORT double vmf3(double ah, double aw, double el, double lat, double hgt,
+                   double *mfw);
 
 /* antenna models ------------------------------------------------------------*/
 EXPORT int  readpcv(const char *file, pcvs_t *pcvs);

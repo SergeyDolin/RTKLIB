@@ -30,7 +30,7 @@
 #define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
 #define NP(opt)     ((opt)->dynamics?9:3)
 #define NC(opt)     ((opt)->sdopt?0:NSYS)
-#define NT(opt)     ((opt)->tropopt<TROPOPT_EST?0:((opt)->tropopt==TROPOPT_EST?1:3))
+#define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
 #define ND(opt)     ((opt)->nf>=3?1:0)
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
@@ -451,7 +451,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     }
     
     H_nl=zeros(rtk->nx,ns);
-    H_if=zeros(rtk->nx,rtk->nx);
+    H_if=zeros(rtk->nx,rtk->na+ns);
 
     for(i=0;i<na;i++) H_if[i+i*rtk->nx]=1.0;
 

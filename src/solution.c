@@ -1427,7 +1427,7 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
         "QZSS Broadcast","","","",""
     };
     const char *s5[]={
-        "OFF","Saastamoinen","SBAS","Estimate ZTD","Estimate ZTD+Grad","","",""
+        "OFF","Saastamoinen","SBAS","Estimate ZTD","Estimate ZTD+Grad","ZTD","GPT3+VMF3","GPT3 ZHD+Est ZWD",""
     };
     const char *s6[]={
         "Broadcast","Precise","Broadcast+SBAS","Broadcast+SSR APC",

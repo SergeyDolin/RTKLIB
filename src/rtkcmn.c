@@ -3865,19 +3865,33 @@ extern void freenav(nav_t *nav, int opt)
 }
 
 extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
-    int i;
+    int i,sys;
     int sat=obs->sat;
     int code=obs->code[f];
-     
+    int fallback=0;
+
     if(cbias) *cbias=0.0;
     if(pbias) *pbias=0.0;
     if(!nav->osbs||!nav->osbs->sat_osb||nav->osbs->dt==0.0) return;
-    if(!nav->osbs||nav->osbs->dt==0.0) return;
 
     i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
     if(i<0) return;
-    if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
-    if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+
+    /* try exact code first */
+    if(nav->osbs->sat_osb[i].code[sat-1][code]!=0.0||
+       nav->osbs->sat_osb[i].phase[sat-1][code]!=0.0) {
+        if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
+        if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+        return;
+    }
+    /* fallback: Galileo L1B → L1X, GPS/QZS L5Q → L5X */
+    sys=satsys(sat,NULL);
+    if(sys==SYS_GAL&&code==CODE_L1B) fallback=CODE_L1X;
+    else if((sys==SYS_GPS||sys==SYS_QZS)&&code==CODE_L5Q) fallback=CODE_L5X;
+    if(fallback) {
+        if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][fallback];
+        if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][fallback];
+    }
 }
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
@@ -5001,4 +5015,3 @@ extern int showmsg(char *format,...) {return 0;}
 extern void settspan(gtime_t ts, gtime_t te) {}
 extern void settime(gtime_t time) {}
 #endif
-

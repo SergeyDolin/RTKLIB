@@ -812,6 +812,15 @@ static int openses(const prcopt_t *popt, const solopt_t *sopt,
             trace(2,"no geoid data %s\n",fopt->geoid);
         }
     }
+
+    /* load GPT3 grid */
+    if ((popt->tropopt==TROPOPT_GPT3||popt->tropopt==TROPOPT_GPT3_EST)&&*fopt->gpt3) {
+        if (!gpt3_read(fopt->gpt3)) {
+            showmsg("error : GPT3 grid load failed %s",fopt->gpt3);
+            trace(1,"gpt3 grid load error: %s\n",fopt->gpt3);
+            return 0;
+        }
+    }
     return 1;
 }
 /* close procssing session ---------------------------------------------------*/
