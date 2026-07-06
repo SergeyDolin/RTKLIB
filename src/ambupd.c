@@ -43,15 +43,132 @@
 #define IRDCB(s,opt) (NP(opt)+NC(opt)+(s))
 #define IIFCB(s,opt) (NP(opt)+NC(opt)+(s))
 
-#define MIN_ARC_EPOCHS  30       /* Minimum number of MW samples per arc before writing to ambupd.  */
 #define MIN_GAP_RESET_S  90.0    /* Minimum gap that triggers an arc reset (seconds) */
 
-/* --- per-sat arc stats for WL(MW) -------------------------------- */
-typedef struct { int n; double mean, M2; } arcstat_t;
+/* --- per-sat WEIGHTED arc stats for WL(MW), Ge et al. 2008 Eq. 31 -- */
+typedef struct { double n, w_sum, mean, M2; } arcstat_t;
 static arcstat_t wl_arc[MAXSAT];
 static int wl_arc_init[MAXSAT]; /* 0 = not init, 1 = init */
 static gtime_t wl_last_obs[MAXSAT];
 static int wl_last_init[MAXSAT];
+
+/* Quality gates. GREAT-UPD accepts WL arcs with more than 15 samples and writes
+ * the standard error of the unweighted mean to ambupd. Keep the old seconds gate
+ * configurable but disabled by default; the epoch-count gate is the reference one. */
+#define MIN_ARC_SEC_DEF   0.0      /* seconds, optional legacy gate */
+#define MIN_ARC_EPOCHS_DEF 16.0    /* GREAT: wx.size() > 15 */
+#define MAX_WL_STD_DEF    0.15     /* cycles — GREAT mean_sig gate */
+#define MAX_IF_SD_DEF     50.0     /* m — IF state convergence ceiling */
+
+static double g_min_arc_sec = MIN_ARC_SEC_DEF;
+static double g_min_arc_epochs = MIN_ARC_EPOCHS_DEF;
+static double g_max_wl_std  = MAX_WL_STD_DEF;
+static double g_max_if_sd   = MAX_IF_SD_DEF;
+static double g_sample_dt   = 30.0;   /* updated from rtk->tt each epoch */
+
+/* Diagnostic counters (cleared by ambupd_reset) */
+static unsigned long g_drop_if_sd  = 0UL;
+static unsigned long g_drop_arc_sh = 0UL;
+static unsigned long g_drop_arc_sd = 0UL;
+static unsigned long g_drop_outlr  = 0UL;
+static unsigned long g_arc_kept    = 0UL;
+
+typedef struct {
+    unsigned long total;
+    unsigned long full;
+    unsigned long fallback;
+    unsigned long map_fail;
+} dcb_diag_t;
+static dcb_diag_t g_dcb_diag = {0};
+
+typedef enum {
+    DCB_MODE_NONE = 0,
+    DCB_MODE_FULL,
+    DCB_MODE_FALLBACK,
+    DCB_MODE_MAP_FAIL
+} dcb_mode_t;
+
+typedef enum {
+    DSB_SRC_NONE = 0,
+    DSB_SRC_DIRECT,
+    DSB_SRC_REVERSE,
+    DSB_SRC_DERIVED
+} dsb_source_t;
+
+typedef struct {
+    char provider[8];
+    char p1p2_source[16];
+    char p1c1_source[16];
+    char p2c2_source[16];
+    double mw_dcb_bsx;
+} dcb_source_info_t;
+
+typedef struct {
+    double mjd;
+    double sod;
+    char station[32];
+    char satid[8];
+    double if_out;
+    double mw_raw;
+    double mw_dcb;
+    double mw_dcb_sat;
+    double mw_dcb_rcv;
+    dcb_mode_t dcb_mode;
+    dcb_source_info_t dcb_info;
+    int bsx_rcv_rows;
+    char code1[8];
+    char code2[8];
+    int k1, k2;
+    double f1, f2;
+} amb_epoch_row_t;
+
+typedef struct {
+    int code1;
+    int code2;
+    double bias_m;
+} rcv_dsb_t;
+
+typedef struct {
+    rcv_dsb_t *rows;
+    int n;
+    int nmax;
+    char station[32];
+    char path[1024];
+    int day_key;
+} bsx_rcv_cache_t;
+
+static amb_epoch_row_t *g_arc_rows[MAXSAT];
+static int g_arc_rows_n[MAXSAT];
+static int g_arc_rows_nmax[MAXSAT];
+
+/* Global pending buffer: arc-flushed rows wait here until file close, then are
+ * sorted by (mjd, sod, satid) and written. Keeps file in epoch order without
+ * changing the per-arc final wl_mean / sigma_wl already computed at flush. */
+typedef struct {
+    amb_epoch_row_t row;
+    double wl_mean;
+    double sigma_wl;
+} amb_pending_row_t;
+
+static amb_pending_row_t *g_pending = NULL;
+static int g_pending_n = 0;
+static int g_pending_nmax = 0;
+
+static FILE *g_fp_amb = NULL;
+static char g_amb_file[1024] = "";
+static FILE *g_fp_diag = NULL;
+static char g_diag_file[1024] = "";
+static int g_ambupd_atexit_registered = 0;
+
+static bsx_rcv_cache_t g_bsx_rcv = {0};
+static char g_bsx_path[1024] = "";
+static int g_bsx_diag_notice = 0;
+
+static void ambupd_flush_all_arcs(const char *reason);
+static void ambupd_close_outputs(void);
+static void bsx_cache_reset(bsx_rcv_cache_t *cache);
+static void pending_flush_to_file(void);
+static void upper_copy(char *dst, size_t ndst, const char *src);
 
  /* AMBFLAG --------------------------------------------------------------------- */
 #define MAX_AMB_ARCS  8192
@@ -79,51 +196,67 @@ static int time2epno(gtime_t t, const ambflag_t *af);
 static void arc_reset(int sat)
 {
     if (sat <= 0 || sat > MAXSAT) return;
-    wl_arc[sat-1].n = 0;
-    wl_arc[sat-1].mean = 0.0;
-    wl_arc[sat-1].M2 = 0.0;
-    wl_arc_init[sat-1] = 1;
+    wl_arc[sat-1].n     = 0.0;
+    wl_arc[sat-1].w_sum = 0.0;
+    wl_arc[sat-1].mean  = 0.0;
+    wl_arc[sat-1].M2    = 0.0;
+    wl_arc_init[sat-1]  = 1;
 }
 
-static void arc_update(int sat, double x)
+/* Weighted online mean & variance (West 1979) */
+static void arc_update(int sat, double x, double w)
 {
     arcstat_t *a;
-    double d, d2;
- 
-    if (sat <= 0 || sat > MAXSAT) return;
+    double d;
+
+    if (sat <= 0 || sat > MAXSAT || w <= 0.0) return;
     a = &wl_arc[sat-1];
-    a->n++;
-    d       = x - a->mean;
-    a->mean += d / (double)a->n;
-    d2      = x - a->mean;
-    a->M2  += d * d2;
+    a->w_sum += w;
+    a->n     += 1.0;
+    d         = x - a->mean;
+    a->mean  += (w / a->w_sum) * d;
+    a->M2    += w * d * (x - a->mean);
 }
 
+/* GREAT-UPD getMeanWgt() formulas (gambcommon.cpp:148-149):
+ *   sigma    = sqrt( Sum_i w_i*(x_i-xbar)^2 / (n-1) )   // unbiased by count
+ *   mean_sig = sigma / sqrt(w_sum)                       // SE of weighted mean
+ * GREAT writes mean_sig (NOT sample STD) to the *_ambupd_* file as the σ field;
+ * upd_NL then thresholds it against 0.130 cy. Empirically matches reference
+ * sample data (AIRA σ range 0.009..0.114). */
 static double arc_std(const arcstat_t *a)
 {
-    if (!a || a->n < 2) return 999.0;
-    return sqrt(a->M2 / (double)(a->n - 1));
+    double var;
+    if (!a || a->n < 2.0 || a->w_sum <= 0.0) return 999.0;
+    var = a->M2 / (a->n - 1.0);          /* GREAT divides by count-1 */
+    return var > 0.0 ? sqrt(var) : 999.0;
 }
- 
-/* Standard error of the arc mean: std / sqrt(n) */
+
+/* Standard error of the weighted arc mean — what GREAT writes to ambupd. */
 static double arc_sigma_mean(const arcstat_t *a)
 {
-    double std;
-    if (!a || a->n < 2) return 0.05;
-    std = arc_std(a);
-    return std <= 0.0 ? 0.05 : std / sqrt((double)a->n);
+    double s;
+    if (!a || a->n < 2.0 || a->w_sum <= 0.0) return 999.0;
+    s = arc_std(a);
+    if (s >= 999.0 || s <= 0.0) return 999.0;
+    return s / sqrt(a->w_sum);
 }
 
 extern void ambupd_reset(void)
 {
     int i;
+    ambupd_flush_all_arcs("reset");
     for (i = 0; i < MAXSAT; i++) {
-        wl_arc[i].n      = 0;
+        wl_arc[i].n      = 0.0;
+        wl_arc[i].w_sum  = 0.0;
         wl_arc[i].mean   = 0.0;
         wl_arc[i].M2     = 0.0;
         wl_arc_init[i]   = 0;
         wl_last_init[i]  = 0;
+        g_arc_rows_n[i]  = 0;
     }
+    g_dcb_diag.total = g_dcb_diag.full = g_dcb_diag.fallback = g_dcb_diag.map_fail = 0UL;
+    g_drop_if_sd = g_drop_arc_sh = g_drop_arc_sd = g_drop_outlr = g_arc_kept = 0UL;
     trace(3, "ambupd_reset: all arc statistics cleared\n");
 }
 
@@ -137,12 +270,10 @@ static int time2epno(gtime_t t, const ambflag_t *af)
 }
 
 /* ambflag_is_valid() — mirrors GREAT-UPD t_gambflag::isValid()
-+ *
-+ * Returns 0 (skip epoch) or 1 (use epoch), and sets *arc_reset=1
-+ * if this is the first epoch of a new AMB arc (KF state must reset).
-+ *
-+ * Priority: DEL/BAD checked first across ALL records, then AMB.
-+ * This matches GREAT-UPD exactly: a DEL overlapping an AMB wins.   */
+ * Returns 0 (skip epoch) or 1 (use epoch), and sets *arc_reset=1
+ * if this is the first epoch of a new AMB arc (KF state must reset).
+ * Priority: DEL/BAD checked first across ALL records, then AMB.
+ * This matches GREAT-UPD exactly: a DEL overlapping an AMB wins. */
 extern int ambflag_is_valid(int sat, gtime_t t,
                             const ambflag_t *af, int *arc_reset)
 {
@@ -258,271 +389,1173 @@ extern void ambflag_free(ambflag_t *af)
     af->n = af->nmax = 0;
 }
 
-extern void ambflag_load_from_opt(const prcopt_t *opt)
+static int get_day_key(gtime_t t)
+{
+    double ep[6];
+    int doy;
+    time2epoch(t, ep);
+    doy = time2doy(t);
+    return ((int)ep[0]) * 1000 + doy;
+}
+
+static void get_pppopt_path(const prcopt_t *opt, const char *token,
+                            char *path, size_t npath)
+{
+    const char *p;
+    size_t n;
+    if (!path || npath == 0) return;
+    path[0] = '\0';
+    if (!opt || !token || !*token || !opt->pppopt[0]) return;
+    p = strstr(opt->pppopt, token);
+    if (!p) return;
+    p += strlen(token);
+    for (; *p && isspace((unsigned char)*p); ++p) {
+        /* skip spaces after token */
+    }
+    if (!*p) return;
+    n = 0;
+    while (*p && !isspace((unsigned char)*p) && n + 1 < npath) {
+        path[n++] = *p++;
+    }
+    path[n] = '\0';
+}
+
+static void get_ambflag_path(const prcopt_t *opt, char *path, size_t npath)
+{
+    get_pppopt_path(opt, "-AMBFLAG=", path, npath);
+}
+
+static void get_bsx_path(const prcopt_t *opt, char *path, size_t npath)
+{
+    get_pppopt_path(opt, "-BSX_DCB=", path, npath);
+}
+
+static int pppopt_list_has_satid(const prcopt_t *opt, const char *token,
+                                 const char *satid)
+{
+    char list[256] = "";
+    char up[256] = "";
+    char sid[8] = "";
+    size_t i;
+
+    if (!opt || !token || !satid || !*satid) return 0;
+    get_pppopt_path(opt, token, list, sizeof(list));
+    if (!list[0]) return 0;
+    upper_copy(up, sizeof(up), list);
+    upper_copy(sid, sizeof(sid), satid);
+    for (i = 0; up[i]; i++) {
+        if (up[i] == ',' || up[i] == ';' || up[i] == ':') up[i] = ' ';
+    }
+    return strstr(up, sid) != NULL;
+}
+
+static int ambupd_sat_excluded(const prcopt_t *opt, int sat)
+{
+    char satid[8] = "";
+    if (sat <= 0 || sat > MAXSAT) return 1;
+    satno2id(sat, satid);
+
+    /* GREAT-UPD sample XML excludes G04; keep it out of WL/NL statistics. */
+    if (!strcmp(satid, "G04")) return 1;
+
+    if (opt && opt->exsats[sat - 1] == 1) return 1;
+    if (pppopt_list_has_satid(opt, "-AMBUPD_EXCLSAT=", satid)) return 1;
+    return 0;
+}
+
+/* Parse -AMBUPD_MAX_IF_SD=, -AMBUPD_MIN_ARC=, -AMBUPD_MIN_ARC_EPOCHS=,
+ * -AMBUPD_MAX_WL_STD= from pppopt.
+ * Re-parsed each call (cheap, runs once per epoch). */
+static void apply_gate_overrides(const prcopt_t *opt)
+{
+    char buf[64];
+    double v;
+    g_max_if_sd = MAX_IF_SD_DEF;
+    g_min_arc_sec = MIN_ARC_SEC_DEF;
+    g_min_arc_epochs = MIN_ARC_EPOCHS_DEF;
+    g_max_wl_std = MAX_WL_STD_DEF;
+    if (!opt) return;
+    get_pppopt_path(opt, "-AMBUPD_MAX_IF_SD=", buf, sizeof(buf));
+    if (buf[0] && (v = atof(buf)) > 0.0) g_max_if_sd = v;
+    get_pppopt_path(opt, "-AMBUPD_MIN_ARC=", buf, sizeof(buf));
+    if (buf[0] && (v = atof(buf)) > 0.0) g_min_arc_sec = v;
+    get_pppopt_path(opt, "-AMBUPD_MIN_ARC_EPOCHS=", buf, sizeof(buf));
+    if (buf[0] && (v = atof(buf)) > 0.0) g_min_arc_epochs = v;
+    get_pppopt_path(opt, "-AMBUPD_MAX_WL_STD=", buf, sizeof(buf));
+    if (buf[0] && (v = atof(buf)) > 0.0) g_max_wl_std = v;
+}
+
+extern void ambflag_load_from_opt(const prcopt_t *opt, gtime_t t)
 {
     static char loaded_for_station[64] = "";
-    const char *p;
+    static char loaded_afpath[1024] = "";
+    static int loaded_day_key = -1;
     char afpath[1024] = "";
     const char *sta;
+    int day_key;
+    int changed_ctx;
 
+    if (!opt) return;
     sta = opt->station_name[0] ? opt->station_name : "UNKN";
-    if (strcmp(sta, loaded_for_station) == 0) return; /* already loaded */
+    get_ambflag_path(opt, afpath, sizeof(afpath));
+    day_key = get_day_key(t);
+
+    changed_ctx = strcmp(sta, loaded_for_station) ||
+                  strcmp(afpath, loaded_afpath) ||
+                  day_key != loaded_day_key;
+    if (!changed_ctx) return;
 
     ambflag_free(&g_ambflag);
+    ambupd_reset();
+
     strncpy(loaded_for_station, sta, sizeof(loaded_for_station)-1);
     loaded_for_station[sizeof(loaded_for_station)-1] = '\0';
+    strncpy(loaded_afpath, afpath, sizeof(loaded_afpath)-1);
+    loaded_afpath[sizeof(loaded_afpath)-1] = '\0';
+    loaded_day_key = day_key;
 
-    if ((p = strstr(opt->pppopt, "-AMBFLAG="))) {
-        sscanf(p + 9, "%1023s", afpath);
+    if (afpath[0]) {
         ambflag_load(afpath, &g_ambflag);
-        trace(2, "ambupd: loaded ambflag for %s: %d records\n",
-              sta, g_ambflag.n);
+        trace(2, "ambupd: loaded ambflag for %s day=%d path=%s n=%d\n",
+              sta, day_key, afpath, g_ambflag.n);
     } else {
-        trace(3, "ambupd: no -AMBFLAG= in pppopt for %s, gap-only mode\n", sta);
+        trace(3, "ambupd: no -AMBFLAG= for %s day=%d, gap-only mode\n",
+              sta, day_key);
     }
+}
+
+static void upper_copy(char *dst, size_t ndst, const char *src)
+{
+    size_t i;
+    if (!dst || ndst == 0) return;
+    dst[0] = '\0';
+    if (!src) return;
+    for (i = 0; src[i] && i + 1 < ndst; i++) {
+        dst[i] = (char)toupper((unsigned char)src[i]);
+    }
+    dst[i] = '\0';
+}
+
+static void bsx_cache_reset(bsx_rcv_cache_t *cache)
+{
+    if (!cache) return;
+    if (cache->rows) {
+        free(cache->rows);
+        cache->rows = NULL;
+    }
+    cache->n = 0;
+    cache->nmax = 0;
+    cache->station[0] = '\0';
+    cache->path[0] = '\0';
+    cache->day_key = -1;
+}
+
+static int bsx_cache_add(bsx_rcv_cache_t *cache, int code1, int code2, double bias_m)
+{
+    int i;
+    if (!cache || code1 <= 0 || code2 <= 0) return 0;
+    for (i = 0; i < cache->n; i++) {
+        if (cache->rows[i].code1 == code1 && cache->rows[i].code2 == code2) {
+            cache->rows[i].bias_m = bias_m;
+            return 1;
+        }
+    }
+    if (cache->n >= cache->nmax) {
+        int nmax = cache->nmax + 64;
+        rcv_dsb_t *tmp = (rcv_dsb_t *)realloc(cache->rows, sizeof(rcv_dsb_t) * nmax);
+        if (!tmp) return 0;
+        cache->rows = tmp;
+        cache->nmax = nmax;
+    }
+    cache->rows[cache->n].code1 = code1;
+    cache->rows[cache->n].code2 = code2;
+    cache->rows[cache->n].bias_m = bias_m;
+    cache->n++;
+    return 1;
+}
+
+static int bsx_obs_to_code(const char *obs)
+{
+    char id[4] = "";
+    size_t n;
+    if (!obs || !*obs) return CODE_NONE;
+    n = strlen(obs);
+    if (n >= 3 && (obs[0] == 'C' || obs[0] == 'c')) {
+        id[0] = obs[1];
+        id[1] = (char)toupper((unsigned char)obs[2]);
+        id[2] = '\0';
+        return obs2code(id);
+    }
+    if (n >= 2 && isdigit((unsigned char)obs[0])) {
+        id[0] = obs[0];
+        id[1] = (char)toupper((unsigned char)obs[1]);
+        id[2] = '\0';
+        return obs2code(id);
+    }
+    return CODE_NONE;
+}
+
+static int bsx_time_to_daysec(const char *s, int *day_key, int *sec_of_day)
+{
+    int y = 0, d = 0, sod = 0;
+    if (!s || sscanf(s, "%d:%d:%d", &y, &d, &sod) < 3) return 0;
+    if (day_key) *day_key = y * 1000 + d;
+    if (sec_of_day) *sec_of_day = sod;
+    return 1;
+}
+
+static int bsx_day_in_range(int day_key, const char *start, const char *end)
+{
+    int ds = 0, de = 0, ss = 0, se = 0;
+    if (!bsx_time_to_daysec(start, &ds, &ss) || !bsx_time_to_daysec(end, &de, &se)) {
+        return 1; /* no strict time gate if parsing fails */
+    }
+    if (day_key < ds) return 0;
+    if (day_key > de) return 0;
+    if (day_key == de && se == 0) return 0; /* BSX end-time is exclusive */
+    return 1;
+}
+
+static int bsx_unit_to_m(const char *unit, double value, double *out_m)
+{
+    char up[8] = "";
+    size_t i;
+    if (!unit || !out_m) return 0;
+    for (i = 0; unit[i] && i + 1 < sizeof(up); i++) {
+        up[i] = (char)toupper((unsigned char)unit[i]);
+    }
+    up[i] = '\0';
+
+    if (!strcmp(up, "NS")) {
+        *out_m = value * 1E-9 * CLIGHT;
+        return 1;
+    }
+    if (!strcmp(up, "S")) {
+        *out_m = value * CLIGHT;
+        return 1;
+    }
+    if (!strcmp(up, "M")) {
+        *out_m = value;
+        return 1;
+    }
+    return 0;
+}
+
+static int bsx_load_receiver_dsb(const char *path, const char *station, int day_key,
+                                 bsx_rcv_cache_t *cache)
+{
+    FILE *fp;
+    char line[2048];
+    int in_solution = 0;
+    int nline = 0, nmatch = 0;
+    char station_up[32] = "";
+
+    if (!cache) return 0;
+    bsx_cache_reset(cache);
+    if (!path || !*path || !station || !*station) return 0;
+
+    if (!(fp = fopen(path, "r"))) {
+        trace(1, "ambupd: cannot open BSX DCB file: %s\n", path);
+        return 0;
+    }
+    upper_copy(station_up, sizeof(station_up), station);
+
+    while (fgets(line, sizeof(line), fp)) {
+        char type[8] = "", c2[8] = "", c3[8] = "", sta[16] = "", sta_up[16] = "";
+        char obs1[8] = "", obs2[8] = "", tstart[32] = "", tend[32] = "", unit[8] = "";
+        double value = 0.0, bias_m = 0.0;
+        int code1, code2;
+        int ntok;
+
+        if (!in_solution) {
+            if (strstr(line, "+BIAS/SOLUTION")) in_solution = 1;
+            continue;
+        }
+        if (strstr(line, "-BIAS/SOLUTION")) break;
+        if (line[0] == '*') continue;
+
+        ntok = sscanf(line, "%7s %7s %7s %15s %7s %7s %31s %31s %7s %lf",
+                      type, c2, c3, sta, obs1, obs2, tstart, tend, unit, &value);
+        if (ntok < 10) continue;
+        if (strcmp(type, "DSB")) continue;
+        if (strcmp(c2, "G") || strcmp(c3, "G")) continue; /* receiver GPS block */
+        nline++;
+        upper_copy(sta_up, sizeof(sta_up), sta);
+        if (strcmp(sta_up, station_up)) continue;
+        if (!bsx_day_in_range(day_key, tstart, tend)) continue;
+
+        code1 = bsx_obs_to_code(obs1);
+        code2 = bsx_obs_to_code(obs2);
+        if (code1 <= 0 || code2 <= 0) continue;
+        if (!bsx_unit_to_m(unit, value, &bias_m)) continue;
+        if (!bsx_cache_add(cache, code1, code2, bias_m)) continue;
+        nmatch++;
+    }
+    fclose(fp);
+
+    strncpy(cache->path, path, sizeof(cache->path) - 1);
+    cache->path[sizeof(cache->path) - 1] = '\0';
+    strncpy(cache->station, station_up, sizeof(cache->station) - 1);
+    cache->station[sizeof(cache->station) - 1] = '\0';
+    cache->day_key = day_key;
+
+    trace(2,
+          "ambupd: BSX receiver DSB station=%s day=%d path=%s rows=%d matches=%d\n",
+          cache->station, day_key, path, nline, nmatch);
+    return cache->n;
+}
+
+static void bsx_prepare_from_opt(const prcopt_t *opt, gtime_t t, const char *station)
+{
+    static char loaded_station[32] = "";
+    static char loaded_path[1024] = "";
+    static int loaded_day_key = -1;
+    char path[1024] = "";
+    char station_up[32] = "";
+    int day_key;
+
+    if (!opt || !station) return;
+    day_key = get_day_key(t);
+    upper_copy(station_up, sizeof(station_up), station);
+    get_bsx_path(opt, path, sizeof(path));
+
+    if (!strcmp(loaded_station, station_up) &&
+        !strcmp(loaded_path, path) &&
+        loaded_day_key == day_key) {
+        return;
+    }
+
+    bsx_cache_reset(&g_bsx_rcv);
+    g_bsx_path[0] = '\0';
+    if (path[0]) {
+        (void)bsx_load_receiver_dsb(path, station_up, day_key, &g_bsx_rcv);
+        strncpy(g_bsx_path, path, sizeof(g_bsx_path) - 1);
+        g_bsx_path[sizeof(g_bsx_path) - 1] = '\0';
+        if (!g_bsx_diag_notice) {
+            trace(2,
+                  "ambupd: WL DCB uses sat-only mode; receiver BSX is diagnostics-only\n");
+            g_bsx_diag_notice = 1;
+        }
+    } else {
+        trace(3, "ambupd: no -BSX_DCB= for station=%s day=%d\n", station_up, day_key);
+    }
+
+    strncpy(loaded_station, station_up, sizeof(loaded_station) - 1);
+    loaded_station[sizeof(loaded_station) - 1] = '\0';
+    strncpy(loaded_path, path, sizeof(loaded_path) - 1);
+    loaded_path[sizeof(loaded_path) - 1] = '\0';
+    loaded_day_key = day_key;
+}
+
+static char code_attr(uint8_t code)
+{
+    char *obsid = code2obs(code);  /* ex: "1C", "2W" */
+    if (!obsid || !obsid[0] || !obsid[1]) return '\0';
+    return (char)toupper((unsigned char)obsid[1]);
+}
+
+static int code_band(uint8_t code)
+{
+    char *obsid = code2obs(code);  /* ex: "1C", "2W" */
+    if (!obsid || !obsid[0]) return 0;
+    if (obsid[0] == '1') return 1;
+    if (obsid[0] == '2') return 2;
+    return 0;
+}
+
+/* Match GREAT select_range/select_phase priority for GPS.
+ * Note: GREAT picks the highest index in these strings. */
+static int gps_attr_rank(int band, char attr)
+{
+    const char *order = NULL, *p = NULL;
+    attr = (char)toupper((unsigned char)attr);
+    if (band == 1) order = "CSLXPWYM";
+    else if (band == 2) order = "CDLXPWYM";
+    else return -1;
+    p = strchr(order, attr);
+    return p ? (int)(p - order) : -1;
+}
+
+static int select_l1_l2_indices(const obsd_t *obs, const nav_t *nav, int sat,
+                                int *k1, int *k2, double *f1, double *f2)
+{
+    int i;
+    int best1 = -1, best2 = -1;
+    int best1_fb = -1, best2_fb = -1;
+    int rank1 = -1, rank2 = -1;
+    double f1_fb = 0.0, f2_fb = 0.0;
+    double fi;
+
+    if (!obs || !nav || !k1 || !k2 || !f1 || !f2) return 0;
+
+    for (i = 0; i < NFREQ + NEXOBS; i++) {
+        int r;
+        if (!obs->code[i] || obs->L[i] == 0.0 || obs->P[i] == 0.0) continue;
+        fi = sat2freq(sat, obs->code[i], nav);
+        if (fi <= 0.0) continue;
+
+        /* Keep fallback to avoid holes if code attr is unknown. */
+        if (fabs(fi - FREQ1) <= 1e6) {
+            if (best1_fb < 0) { best1_fb = i; f1_fb = fi; }
+            r = gps_attr_rank(1, code_attr(obs->code[i]));
+            if (r > rank1 || (r == rank1 && best1 >= 0 && i < best1)) {
+                rank1 = r;
+                best1 = i;
+                *f1 = fi;
+            }
+        }
+        else if (fabs(fi - FREQ2) <= 1e6) {
+            if (best2_fb < 0) { best2_fb = i; f2_fb = fi; }
+            r = gps_attr_rank(2, code_attr(obs->code[i]));
+            if (r > rank2 || (r == rank2 && best2 >= 0 && i < best2)) {
+                rank2 = r;
+                best2 = i;
+                *f2 = fi;
+            }
+        }
+    }
+
+    if (best1 < 0 && best1_fb >= 0) { best1 = best1_fb; *f1 = f1_fb; }
+    if (best2 < 0 && best2_fb >= 0) { best2 = best2_fb; *f2 = f2_fb; }
+    if (best1 < 0 || best2 < 0) return 0;
+    *k1 = best1;
+    *k2 = best2;
+    return 1;
+}
+
+enum {
+    DCB_REQ_P1P2 = 1 << 0,
+    DCB_REQ_P1C1 = 1 << 1,
+    DCB_REQ_P2C2 = 1 << 2
+};
+
+static const char *dsb_source_str(dsb_source_t src)
+{
+    switch (src) {
+    case DSB_SRC_DIRECT:  return "direct";
+    case DSB_SRC_REVERSE: return "reverse";
+    case DSB_SRC_DERIVED: return "derived";
+    default:              return "none";
+    }
+}
+
+static void dcb_source_info_init(dcb_source_info_t *info)
+{
+    if (!info) return;
+    memset(info, 0, sizeof(*info));
+    strncpy(info->provider, "bsx", sizeof(info->provider) - 1);
+    strncpy(info->p1p2_source, "none", sizeof(info->p1p2_source) - 1);
+    strncpy(info->p1c1_source, "none", sizeof(info->p1c1_source) - 1);
+    strncpy(info->p2c2_source, "none", sizeof(info->p2c2_source) - 1);
+}
+
+static void dcb_source_set(char *dst, size_t ndst, dsb_source_t src)
+{
+    if (!dst || ndst == 0) return;
+    strncpy(dst, dsb_source_str(src), ndst - 1);
+    dst[ndst - 1] = '\0';
+}
+
+static int get_dsb_src(const nav_t *nav, int sat, int code1, int code2,
+                       double *bias, dsb_source_t *src)
+{
+    double v;
+    if (src) *src = DSB_SRC_NONE;
+    if (!nav || !bias || sat <= 0 || sat > MAXSAT ||
+        code1 <= 0 || code1 >= MAXCODE || code2 <= 0 || code2 >= MAXCODE) {
+        if (bias) *bias = 0.0;
+        return 0;
+    }
+    v = nav->cbias[sat-1][code1][code2];
+    if (fabs(v) > 1E-12) {
+        *bias = v;
+        if (src) *src = DSB_SRC_DIRECT;
+        return 1;
+    }
+    v = nav->cbias[sat-1][code2][code1];
+    if (fabs(v) > 1E-12) {
+        *bias = -v;
+        if (src) *src = DSB_SRC_REVERSE;
+        return 1;
+    }
+    *bias = 0.0;
+    return 0;
+}
+
+static int resolve_gps_l1l2_bsx_dcb(const nav_t *nav, int sat,
+                                    double *p1p2, double *p1c1, double *p2c2,
+                                    dsb_source_t *p1p2_src,
+                                    dsb_source_t *p1c1_src,
+                                    dsb_source_t *p2c2_src)
+{
+    double c1c_c2w = 0.0, c1c_c1w = 0.0;
+    dsb_source_t s_p1p2 = DSB_SRC_NONE;
+    dsb_source_t s_p1c1 = DSB_SRC_NONE;
+    dsb_source_t s_p2c2 = DSB_SRC_NONE;
+    dsb_source_t s_tmp = DSB_SRC_NONE;
+    int has_p1p2, has_p1c1, has_p2c2;
+
+    if (p1p2) *p1p2 = 0.0;
+    if (p1c1) *p1c1 = 0.0;
+    if (p2c2) *p2c2 = 0.0;
+
+    has_p1c1 = get_dsb_src(nav, sat, CODE_L1W, CODE_L1C, p1c1, &s_p1c1);
+    has_p2c2 = get_dsb_src(nav, sat, CODE_L2W, CODE_L2C, p2c2, &s_p2c2);
+    has_p1p2 = get_dsb_src(nav, sat, CODE_L1W, CODE_L2W, p1p2, &s_p1p2);
+
+    if (!has_p1p2) {
+        int has_c1c_c2w = get_dsb_src(nav, sat, CODE_L1C, CODE_L2W,
+                                      &c1c_c2w, &s_tmp);
+        int has_c1c_c1w = get_dsb_src(nav, sat, CODE_L1C, CODE_L1W,
+                                      &c1c_c1w, &s_tmp);
+        if (has_c1c_c2w && has_c1c_c1w && p1p2) {
+            *p1p2 = c1c_c2w - c1c_c1w; /* C1W-C2W via common C1C reference */
+            s_p1p2 = DSB_SRC_DERIVED;
+            has_p1p2 = 1;
+        }
+    }
+
+    if (p1p2_src) *p1p2_src = s_p1p2;
+    if (p1c1_src) *p1c1_src = s_p1c1;
+    if (p2c2_src) *p2c2_src = s_p2c2;
+
+    return (has_p1p2 ? DCB_REQ_P1P2 : 0) |
+           (has_p1c1 ? DCB_REQ_P1C1 : 0) |
+           (has_p2c2 ? DCB_REQ_P2C2 : 0);
+}
+
+static int map_code_to_corr_req(uint8_t code, const double cor[5], double *corr, int *req_mask)
+{
+    int band;
+    char attr;
+    if (!corr || !req_mask) return 0;
+    *req_mask = 0;
+    band = code_band(code);
+    attr = code_attr(code);
+
+    if (band == 1) {
+        if (attr == 'C') {                                      /* C1C */
+            *corr = cor[2];
+            *req_mask = DCB_REQ_P1P2 | DCB_REQ_P1C1;
+            return 1;
+        }
+        if (attr == 'P' || attr == 'Y' || attr == 'W') {       /* C1P/C1Y/C1W */
+            *corr = cor[0];
+            *req_mask = DCB_REQ_P1P2;
+            return 1;
+        }
+        *corr = 0.0;
+        return 0;
+    }
+    if (band == 2) {
+        if (attr == 'C') {                                      /* C2C */
+            *corr = cor[3];
+            *req_mask = DCB_REQ_P1P2 | DCB_REQ_P2C2;
+            return 1;
+        }
+        if (attr == 'P' || attr == 'Y' || attr == 'W') {       /* C2P/C2Y/C2W */
+            *corr = cor[1];
+            *req_mask = DCB_REQ_P1P2;
+            return 1;
+        }
+        if (attr == 'X') {                                      /* C2X */
+            *corr = cor[4];
+            *req_mask = DCB_REQ_P1P2 | DCB_REQ_P1C1;
+            return 1;
+        }
+        if (attr == 'D') { *corr = 0.0; return 1; }            /* C2D */
+        *corr = 0.0;
+        return 0;
+    }
+    *corr = 0.0;
+    return 0;
+}
+
+static int mw_dcb_corr_cycles(const obsd_t *obs, const nav_t *nav, int sat,
+                              int k1, int k2, double lam1, double lam2,
+                              double *corr_cyc, double *corr_sat_cyc,
+                              double *corr_rcv_cyc, dcb_mode_t *mode,
+                              dcb_source_info_t *dcb_info)
+{
+    double p1p2 = 0.0, p1c1 = 0.0, p2c2 = 0.0;
+    double cor[5];
+    double corr1 = 0.0, corr2 = 0.0;
+    double fact, c1, c2;
+    dsb_source_t p1p2_src = DSB_SRC_NONE;
+    dsb_source_t p1c1_src = DSB_SRC_NONE;
+    dsb_source_t p2c2_src = DSB_SRC_NONE;
+    int ok1, ok2;
+    int req1 = 0, req2 = 0;
+    int req_mask = 0, have_mask = 0;
+
+    if (mode) *mode = DCB_MODE_NONE;
+    dcb_source_info_init(dcb_info);
+    if (!obs || !nav || !corr_cyc || lam1 <= 0.0 || lam2 <= 0.0) return 0;
+    *corr_cyc = 0.0;
+    if (corr_sat_cyc) *corr_sat_cyc = 0.0;
+    if (corr_rcv_cyc) *corr_rcv_cyc = 0.0;
+
+    /* Strict GREAT sat-only DCB for MW correction, resolved from CAS.BSX DSB:
+     * P1=C1W, P2=C2W, C1=C1C, C2=C2C. Receiver DSB is diagnostics-only. */
+    have_mask = resolve_gps_l1l2_bsx_dcb(nav, sat, &p1p2, &p1c1, &p2c2,
+                                         &p1p2_src, &p1c1_src, &p2c2_src);
+    if (dcb_info) {
+        dcb_source_set(dcb_info->p1p2_source, sizeof(dcb_info->p1p2_source),
+                       p1p2_src);
+        dcb_source_set(dcb_info->p1c1_source, sizeof(dcb_info->p1c1_source),
+                       p1c1_src);
+        dcb_source_set(dcb_info->p2c2_source, sizeof(dcb_info->p2c2_source),
+                       p2c2_src);
+    }
+
+    fact = lam1 / lam2;
+    if (fabs(1.0 - fact * fact) < 1E-12) return 0;
+    c1 = 1.0 / (1.0 - fact * fact);
+    c2 = fact * fact * c1;
+
+    cor[0] = c2 * p1p2;
+    cor[1] = c1 * p1p2;
+    cor[2] = cor[0] + p1c1;
+    cor[3] = cor[1] + p2c2;
+    cor[4] = cor[1] + p1c1;
+
+    ok1 = map_code_to_corr_req(obs->code[k1], cor, &corr1, &req1);
+    ok2 = map_code_to_corr_req(obs->code[k2], cor, &corr2, &req2);
+    g_dcb_diag.total++;
+    if (!ok1 || !ok2) {
+        g_dcb_diag.map_fail++;
+        if (mode) *mode = DCB_MODE_MAP_FAIL;
+        return 0;
+    }
+
+    req_mask = req1 | req2;
+    if ((req_mask & have_mask) == req_mask) {
+        g_dcb_diag.full++;
+        if (mode) *mode = DCB_MODE_FULL;
+    }
+    else {
+        g_dcb_diag.fallback++;
+        if (mode) *mode = DCB_MODE_FALLBACK;
+    }
+
+    *corr_cyc = -(corr1 / lam1 + corr2 / lam2) * (1.0 - fact) / (1.0 + fact);
+    if (dcb_info) dcb_info->mw_dcb_bsx = *corr_cyc;
+    if (corr_sat_cyc) {
+        *corr_sat_cyc = *corr_cyc;
+    }
+    if (corr_rcv_cyc) {
+        *corr_rcv_cyc = 0.0;
+    }
+    return 1;
 }
 
 /* ---------------------------------------------------------------------------
  * mw_raw() — compute Melbourne-Wübbena combination from RAW observations.
  *
- * Uses obs->L[] (cycles) and obs->P[] (metres) WITHOUT any PCO/PCV/phw
- * corrections.  The MW combination is geometry-free and ionosphere-free,
- * so antenna phase-centre offsets cancel to first order between L1 and L2.
- * Applying corr_meas() before MW would inject elevation-dependent PCO/PCV
- * differences between the two frequencies and corrupt the integer nature
- * of the wide-lane ambiguity.
- *
- * DCB correction: GREAT-UPD expects P1/P2 pseudoranges (not C1).  If the
- * receiver tracks C1 instead of P1 we apply the P1-C1 DCB so that the
- * code-phase part of MW is consistent with what PreEdit used.
+ * Implements the same structure as GREAT-UPD:
+ *   1) MW from raw code/phase
+ *   2) additional satellite-only DCB correction term based on P1P2/P1C1/P2C2 model.
  *
  * Returns MW in cycles, or 0.0 on failure (sets *ok=0).
  * --------------------------------------------------------------------------*/
 static double mw_raw(const obsd_t *obs, const nav_t *nav,
                      int sat, int k1, int k2,
-                     double f1, double f2, int *ok)
+                     double f1, double f2, int *ok,
+                     double *mw_base, double *mw_dcb,
+                     double *mw_dcb_sat, double *mw_dcb_rcv,
+                     dcb_mode_t *dcb_mode,
+                     dcb_source_info_t *dcb_info)
 {
-    double lam1, lam2, lam_w;
-    double L1, L2, P1, P2;
-    double Pn, Nwl;
-    double dcb_p1 = 0.0, dcb_p2 = 0.0;
-    int    sys;
-    int    prn;
-    
+    double lam1, lam2, fact;
+    double C1, C2, L1, L2;
+    double mw, dcb_corr = 0.0, dcb_sat = 0.0, dcb_rcv = 0.0;
+
     *ok = 0;
- 
-    /* wavelengths */
+    if (mw_base) *mw_base = 0.0;
+    if (mw_dcb) *mw_dcb = 0.0;
+    if (mw_dcb_sat) *mw_dcb_sat = 0.0;
+    if (mw_dcb_rcv) *mw_dcb_rcv = 0.0;
+    if (dcb_mode) *dcb_mode = DCB_MODE_NONE;
+    dcb_source_info_init(dcb_info);
+
+    if (f1 <= 0.0 || f2 <= 0.0 || fabs(f1 - f2) < 1.0) return 0.0;
     lam1 = CLIGHT / f1;
     lam2 = CLIGHT / f2;
-    lam_w = CLIGHT / (f1 - f2);
- 
-    /* raw phase in metres */
-    if (obs->L[k1] == 0.0 || obs->L[k2] == 0.0) return 0.0;
-    L1 = obs->L[k1] * lam1;   /* cycles → metres */
-    L2 = obs->L[k2] * lam2;
- 
-    /* raw pseudorange — prefer P-code, fall back to C-code */
-    P1 = (obs->P[k1] != 0.0) ? obs->P[k1] : 0.0;
-    P2 = (obs->P[k2] != 0.0) ? obs->P[k2] : 0.0;
-    if (P1 == 0.0 || P2 == 0.0) return 0.0;
- 
-    sys = satsys(sat, &prn); (void)prn;
+    if (lam1 <= 0.0 || lam2 <= 0.0) return 0.0;
 
-    /* Mirror the DCB logic from corr_meas() in ppp.c exactly.
-     * nav->cbias[sat-1][CODE_L1C][CODE_L1W] is filled by readdcbf()
-     * from the CAS BSX file (C1C-C1W DSB records, unit ns → metres).
-     * We need pseudoranges on C1W/C2W for MW to match PreEdit's reference. */
-    if (sys == SYS_GPS) {
-        /* L1: C1C → C1W */
-        if (obs->code[k1] == CODE_L1C) {
-            dcb_p1 = nav->cbias[sat-1][CODE_L1C][CODE_L1W];
-            if (dcb_p1 != 0.0) {
-                P1 += dcb_p1;
-                trace(3, "ambupd: sat=%d C1C->C1W dcb=%.4f m\n", sat, dcb_p1);
-            }
-        }
-        /* L2: C2C/C2S/C2L/C2X → C2W */
-        if (obs->code[k2] == CODE_L2C || obs->code[k2] == CODE_L2S ||
-            obs->code[k2] == CODE_L2L || obs->code[k2] == CODE_L2X) {
-            dcb_p2 = nav->cbias[sat-1][CODE_L2C][CODE_L2W];
-            if (dcb_p2 != 0.0) {
-                P2 += dcb_p2;
-                trace(3, "ambupd: sat=%d C2->C2W dcb=%.4f m\n", sat, dcb_p2);
-            }
+    C1 = obs->P[k1];
+    C2 = obs->P[k2];
+    L1 = obs->L[k1];
+    L2 = obs->L[k2];
+    if (C1 == 0.0 || C2 == 0.0 || L1 == 0.0 || L2 == 0.0) return 0.0;
+
+    fact = lam1 / lam2;
+    mw = L1 - L2 - (C1 / lam1 + C2 / lam2) * (1.0 - fact) / (1.0 + fact);
+    if (mw_base) *mw_base = mw;
+
+    /* GREAT-like DCB term (if required pairs are available). */
+    (void)mw_dcb_corr_cycles(obs, nav, sat, k1, k2, lam1, lam2,
+                             &dcb_corr, &dcb_sat, &dcb_rcv, dcb_mode,
+                             dcb_info);
+    if (mw_dcb) *mw_dcb = dcb_corr;
+    if (mw_dcb_sat) *mw_dcb_sat = dcb_sat;
+    if (mw_dcb_rcv) *mw_dcb_rcv = dcb_rcv;
+    mw += dcb_corr;
+
+    *ok = 1;
+    return mw;
+}
+
+static gtime_t normalize_epoch_time(gtime_t t)
+{
+    double ep[6], sod;
+    time2epoch(t, ep);
+    sod = ep[3] * 3600.0 + ep[4] * 60.0 + ep[5];
+    if (sod >= 86399.9995) {
+        /* Prevent 24:00:00 style carry-over into previous file/day key. */
+        t = timeadd(t, 0.001);
+    }
+    return t;
+}
+
+static void trace_dcb_diag(const char *tag)
+{
+    trace(3,
+          "ambupd: DCB diag [%s] total=%lu full=%lu fallback=%lu map_fail=%lu\n",
+          tag ? tag : "-", g_dcb_diag.total, g_dcb_diag.full,
+          g_dcb_diag.fallback, g_dcb_diag.map_fail);
+}
+
+static const char *dcb_mode_str(dcb_mode_t mode)
+{
+    switch (mode) {
+    case DCB_MODE_FULL:     return "full";
+    case DCB_MODE_FALLBACK: return "fallback";
+    case DCB_MODE_MAP_FAIL: return "map_fail";
+    default:                return "none";
+    }
+}
+
+static int arc_rows_push(int sat, const amb_epoch_row_t *row)
+{
+    int idx, nmax;
+    amb_epoch_row_t *tmp;
+    if (!row || sat <= 0 || sat > MAXSAT) return 0;
+    idx = sat - 1;
+    if (g_arc_rows_n[idx] >= g_arc_rows_nmax[idx]) {
+        nmax = g_arc_rows_nmax[idx] + 128;
+        tmp = (amb_epoch_row_t *)realloc(g_arc_rows[idx], sizeof(amb_epoch_row_t) * nmax);
+        if (!tmp) return 0;
+        g_arc_rows[idx] = tmp;
+        g_arc_rows_nmax[idx] = nmax;
+    }
+    g_arc_rows[idx][g_arc_rows_n[idx]++] = *row;
+    return 1;
+}
+
+static int pending_push(const amb_epoch_row_t *row, double wl_mean, double sigma_wl)
+{
+    amb_pending_row_t *tmp;
+    int nmax;
+    if (!row) return 0;
+    if (g_pending_n >= g_pending_nmax) {
+        nmax = g_pending_nmax + 4096;
+        tmp = (amb_pending_row_t *)realloc(g_pending, sizeof(amb_pending_row_t) * nmax);
+        if (!tmp) return 0;
+        g_pending = tmp;
+        g_pending_nmax = nmax;
+    }
+    g_pending[g_pending_n].row      = *row;
+    g_pending[g_pending_n].wl_mean  = wl_mean;
+    g_pending[g_pending_n].sigma_wl = sigma_wl;
+    g_pending_n++;
+    return 1;
+}
+
+static int pending_cmp(const void *a, const void *b)
+{
+    const amb_pending_row_t *pa = (const amb_pending_row_t *)a;
+    const amb_pending_row_t *pb = (const amb_pending_row_t *)b;
+    if (pa->row.mjd < pb->row.mjd) return -1;
+    if (pa->row.mjd > pb->row.mjd) return  1;
+    if (pa->row.sod < pb->row.sod) return -1;
+    if (pa->row.sod > pb->row.sod) return  1;
+    return strcmp(pa->row.satid, pb->row.satid);
+}
+
+static void pending_flush_to_file(void)
+{
+    int i;
+    if (g_pending_n <= 0) return;
+    if (!g_fp_amb) { g_pending_n = 0; return; }
+
+    qsort(g_pending, g_pending_n, sizeof(amb_pending_row_t), pending_cmp);
+    for (i = 0; i < g_pending_n; i++) {
+        const amb_epoch_row_t *r = &g_pending[i].row;
+        double wl_mean  = g_pending[i].wl_mean;
+        double sigma_wl = g_pending[i].sigma_wl;
+        fprintf(g_fp_amb, "%8.0f%10.1f%5s%4s%19.3f%19.3f%10.3f\n",
+                floor(r->mjd), r->sod, r->station, r->satid,
+                r->if_out, wl_mean, sigma_wl);
+        if (g_fp_diag) {
+            fprintf(g_fp_diag,
+                    "%s,%.1f,%s,%s,%s,%d,%d,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%d,%.6f,%.6f,%.6f\n",
+                    r->station, r->sod, r->satid, r->code1, r->code2,
+                    r->k1, r->k2, r->f1, r->f2, r->mw_raw, r->mw_dcb,
+                    r->mw_dcb_sat, r->mw_dcb_rcv, dcb_mode_str(r->dcb_mode),
+                    r->dcb_info.provider[0] ? r->dcb_info.provider : "bsx",
+                    r->dcb_info.p1p2_source[0] ? r->dcb_info.p1p2_source : "none",
+                    r->dcb_info.p1c1_source[0] ? r->dcb_info.p1c1_source : "none",
+                    r->dcb_info.p2c2_source[0] ? r->dcb_info.p2c2_source : "none",
+                    "sat-only", r->bsx_rcv_rows, r->dcb_info.mw_dcb_bsx,
+                    wl_mean, r->if_out);
         }
     }
- 
-    /* Melbourne-Wübbena:
-     *   N_WL = (f1*L1 - f2*L2)/(f1-f2)  -  (f1*P1 + f2*P2)/(f1+f2)
-     *          [wide-lane phase, m]          [narrow-lane code, m]
-     *   divided by lambda_w to get cycles */
-    Pn  = (f1*P1 + f2*P2) / (f1 + f2);
-    Nwl = ((f1*L1 - f2*L2) / (f1 - f2) - Pn) / lam_w;
- 
-    *ok = 1;
-    return Nwl;
+    g_pending_n = 0;
+}
+
+static void ambupd_flush_sat_arc(int sat, const char *reason)
+{
+    int idx, i;
+    double wl_mean, sigma_wl, arc_sec, arc_epochs;
+    if (sat <= 0 || sat > MAXSAT) return;
+    idx = sat - 1;
+    if (g_arc_rows_n[idx] <= 0) return;
+
+    if (!g_fp_amb) {
+        g_arc_rows_n[idx] = 0;
+        return;
+    }
+
+    wl_mean  = wl_arc[idx].mean;
+    sigma_wl = arc_sigma_mean(&wl_arc[idx]);    /* GREAT writes SE-of-mean */
+    arc_epochs = wl_arc[idx].n;
+    arc_sec  = wl_arc[idx].n * g_sample_dt;
+
+    /* Ge 2008 quality gates: drop short or noisy arcs entirely */
+    if (arc_epochs < g_min_arc_epochs || arc_sec < g_min_arc_sec) {
+        g_drop_arc_sh++;
+        trace(2, "ambupd: drop arc sat=%d n=%.0f arc=%.0fs std=%.3f cy reason=%s "
+                 "(min_epochs=%.0f min_arc=%.0fs)\n",
+              sat, arc_epochs, arc_sec, sigma_wl, reason ? reason : "-",
+              g_min_arc_epochs, g_min_arc_sec);
+        g_arc_rows_n[idx] = 0;
+        return;
+    }
+    if (sigma_wl > g_max_wl_std) {
+        g_drop_arc_sd++;
+        trace(2, "ambupd: drop arc sat=%d arc=%.0fs std=%.3f cy reason=%s "
+                 "(max_std=%.3f)\n",
+              sat, arc_sec, sigma_wl, reason ? reason : "-", g_max_wl_std);
+        g_arc_rows_n[idx] = 0;
+        return;
+    }
+    g_arc_kept++;
+
+    for (i = 0; i < g_arc_rows_n[idx]; i++) {
+        if (!pending_push(&g_arc_rows[idx][i], wl_mean, sigma_wl)) {
+            trace(1, "ambupd: pending buffer alloc failed sat=%d\n", sat);
+            break;
+        }
+    }
+    trace(4, "ambupd: pend sat=%d rows=%d reason=%s wl=%.4f sig=%.4f\n",
+          sat, g_arc_rows_n[idx], reason ? reason : "-", wl_mean, sigma_wl);
+    g_arc_rows_n[idx] = 0;
+}
+
+static void ambupd_flush_all_arcs(const char *reason)
+{
+    int sat;
+    for (sat = 1; sat <= MAXSAT; sat++) {
+        ambupd_flush_sat_arc(sat, reason);
+    }
+    pending_flush_to_file();
+    if (g_fp_amb) fflush(g_fp_amb);
+    if (g_fp_diag) fflush(g_fp_diag);
+}
+
+static void ambupd_close_outputs(void)
+{
+    if (g_fp_diag) {
+        fclose(g_fp_diag);
+        g_fp_diag = NULL;
+    }
+    if (g_fp_amb) {
+        fclose(g_fp_amb);
+        g_fp_amb = NULL;
+    }
+    g_amb_file[0] = '\0';
+    g_diag_file[0] = '\0';
+}
+
+static void ambupd_gate_diag(const char *tag)
+{
+    trace(2,
+          "ambupd: gate diag [%s] kept=%lu drop_if=%lu drop_short=%lu "
+          "drop_std=%lu drop_outlier=%lu  (max_if_sd=%.3f m, min_epochs=%.0f, "
+          "min_arc=%.0fs, max_wl_std=%.3f cy, dt=%.1fs)\n",
+          tag ? tag : "-",
+          g_arc_kept, g_drop_if_sd, g_drop_arc_sh, g_drop_arc_sd, g_drop_outlr,
+          g_max_if_sd, g_min_arc_epochs, g_min_arc_sec, g_max_wl_std, g_sample_dt);
+}
+
+static void ambupd_atexit_hook(void)
+{
+    int i;
+    ambupd_flush_all_arcs("atexit");
+    trace_dcb_diag("atexit");
+    ambupd_gate_diag("atexit");
+    ambupd_close_outputs();
+    bsx_cache_reset(&g_bsx_rcv);
+    for (i = 0; i < MAXSAT; i++) {
+        if (g_arc_rows[i]) {
+            free(g_arc_rows[i]);
+            g_arc_rows[i] = NULL;
+        }
+        g_arc_rows_n[i] = 0;
+        g_arc_rows_nmax[i] = 0;
+    }
+    if (g_pending) {
+        free(g_pending);
+        g_pending = NULL;
+    }
+    g_pending_n = 0;
+    g_pending_nmax = 0;
 }
 
 /* ---------------------------------------------------------------- */
 extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
                                const nav_t *nav)
 {
-    int    week, year, doy;
+    int week, year, doy, dow;
     double tow, mjd;
     double ep[6], time_of_day;
- 
-    char        station_name[32];
+    gtime_t t_epoch;
+
+    char station_name[32];
     const char *src_name;
-    char       *p;
- 
+    char *p;
+
     char temp_amb_file[1024];
+    char temp_diag_file[1024];
     char satid[8];
- 
-    static FILE *fp_amb   = NULL;
-    static char  amb_file[1024] = "";
- 
-    int    iobs;
-    int    sat, sys;
-    int    k1, k2;
-    double f1, f2;
+
+    int iobs;
+    int sat, sys;
+    int k1, k2;
+    double f1 = 0.0, f2 = 0.0;
     double gap_reset;
     double Nwl_mw;
-    double wl_out, sigma_wl, if_out;
+    double Nwl_mw_base = 0.0, Nwl_mw_dcb = 0.0, Nwl_mw_dcb_sat = 0.0, Nwl_mw_dcb_rcv = 0.0;
     double N_if;
-    int    idx_if;
-    int    mw_ok;
- 
-    /* Requires IFLC dual-frequency PPP */
+    int idx_if;
+    int mw_ok;
+    dcb_mode_t dcb_mode = DCB_MODE_NONE;
+    dcb_source_info_t dcb_info;
+    amb_epoch_row_t row;
+    const char *c1, *c2;
+
     if (!(rtk->opt.ionoopt == IONOOPT_IFLC && rtk->opt.nf >= 2)) return;
     if (n <= 0) return;
- 
-    /* ---- station name (upper-case, 4 chars for GREAT-UPD format) ---------- */
+    t_epoch = normalize_epoch_time(obs[0].time);
+
+    /* Track actual sampling interval for arc-length gate */
+    {
+        double dt = fabs(rtk->tt);
+        if (dt > 0.001 && dt < 3600.0) g_sample_dt = dt;
+    }
+    apply_gate_overrides(&rtk->opt);
+
+    if (!g_ambupd_atexit_registered) {
+        if (atexit(ambupd_atexit_hook) == 0) {
+            g_ambupd_atexit_registered = 1;
+        }
+    }
+
     src_name = rtk->opt.station_name[0] ? rtk->opt.station_name : "UNKN";
-    strncpy(station_name, src_name, sizeof(station_name)-1);
-    station_name[sizeof(station_name)-1] = '\0';
-    for (p = station_name; *p; p++) *p = (char)toupper((unsigned char)*p);
- 
-    /* ---- output filename -------------------------------------------------- */
-    tow = time2gpst(rtk->sol.time, &week);
-    time2epoch(rtk->sol.time, ep);
+    strncpy(station_name, src_name, sizeof(station_name) - 1);
+    station_name[sizeof(station_name) - 1] = '\0';
+    for (p = station_name; *p; p++) {
+        *p = (char)toupper((unsigned char)*p);
+    }
+
+    tow = time2gpst(t_epoch, &week);
+    time2epoch(t_epoch, ep);
     year = (int)ep[0];
-    doy  = time2doy(rtk->sol.time);
+    doy = time2doy(t_epoch);
     sprintf(temp_amb_file, "%s_ambupd_%4d%03d", station_name, year, doy);
- 
-    if (fp_amb == NULL || strcmp(temp_amb_file, amb_file) != 0) {
-        if (fp_amb) { fclose(fp_amb); fp_amb = NULL; }
-        strcpy(amb_file, temp_amb_file);
-        fp_amb = fopen(amb_file, "w");
-        if (!fp_amb) {
-            trace(1, "ambupd: cannot create file: %s\n", amb_file);
+    sprintf(temp_diag_file, "%s_ambdiag_%4d%03d.csv", station_name, year, doy);
+
+    bsx_prepare_from_opt(&rtk->opt, t_epoch, station_name);
+
+    if (g_fp_amb == NULL || strcmp(temp_amb_file, g_amb_file) != 0) {
+        if (g_fp_amb) {
+            trace_dcb_diag("close-file");
+            ambupd_reset();
+            ambupd_close_outputs();
+        }
+        strncpy(g_amb_file, temp_amb_file, sizeof(g_amb_file) - 1);
+        g_amb_file[sizeof(g_amb_file) - 1] = '\0';
+        g_fp_amb = fopen(g_amb_file, "w");
+        if (!g_fp_amb) {
+            trace(1, "ambupd: cannot create file: %s\n", g_amb_file);
+            g_amb_file[0] = '\0';
             return;
         }
-        trace(1, "ambupd: creating file: %s\n", amb_file);
+
+        strncpy(g_diag_file, temp_diag_file, sizeof(g_diag_file) - 1);
+        g_diag_file[sizeof(g_diag_file) - 1] = '\0';
+        g_fp_diag = fopen(g_diag_file, "w");
+        if (!g_fp_diag) {
+            trace(1, "ambupd: cannot create debug file: %s\n", g_diag_file);
+            g_diag_file[0] = '\0';
+        }
+        else {
+            fprintf(g_fp_diag,
+                    "station,sod,sat,code1,code2,k1,k2,f1,f2,mw_raw,mw_dcb,mw_dcb_sat,mw_dcb_rcv,dcb_mode,dcb_provider,p1p2_source,p1c1_source,p2c2_source,mw_dcb_source,bsx_rcv_rows,mw_dcb_bsx,wl_mean,if_state\n");
+        }
+        trace(1, "ambupd: creating file: %s\n", g_amb_file);
     }
- 
-    /* ---- time tags -------------------------------------------------------- */
-    mjd         = 44244.0 + (week * 7.0) + (tow / 86400.0);
-    time_of_day = ep[3]*3600.0 + ep[4]*60.0 + ep[5];
- 
-    /* ---- gap threshold: 3× nominal interval, but at least MIN_GAP_RESET_S --
-     * rtk->tt is the time difference to the previous epoch in seconds.
-     * At startup it may be 0 or very small, so we clamp from below.        */
+
+    dow = (int)floor(tow / 86400.0);
+    time_of_day = tow - dow * 86400.0;
+    if (time_of_day >= 86399.9995) {
+        time_of_day = 0.0;
+        dow += 1;
+    }
+    while (time_of_day < 0.0) {
+        time_of_day += 86400.0;
+        dow -= 1;
+    }
+    while (dow < 0) {
+        dow += 7;
+        week -= 1;
+    }
+    while (dow > 6) {
+        dow -= 7;
+        week += 1;
+    }
+    mjd = 44244.0 + (week * 7.0) + dow;
+
     gap_reset = MAX(3.0 * fabs(rtk->tt), MIN_GAP_RESET_S);
- 
-    /* ---- per-satellite loop ----------------------------------------------- */
+
     for (iobs = 0; iobs < n; iobs++) {
- 
         sat = obs[iobs].sat;
         if (sat <= 0 || sat > MAXSAT) continue;
- 
-        /* satellite must be active in the PPP solution */
-        if (!rtk->ssat[sat-1].vsat[0]) continue;
- 
+
         sys = satsys(sat, NULL);
-        if (sys != SYS_GPS) continue;   /* GPS L1/L2 only for now */
- 
-        k1 = 0; k2 = 1;
-        if (obs[iobs].code[k1] == 0 || obs[iobs].code[k2] == 0) continue;
- 
-        /* frequencies */
-        f1 = sat2freq(sat, obs[iobs].code[k1], nav);
-        f2 = sat2freq(sat, obs[iobs].code[k2], nav);
-        if (f1 <= 0.0 || f2 <= 0.0)                    continue;
-        if (fabs(f1 - FREQ1) > 1e6 || fabs(f2 - FREQ2) > 1e6) {
-            trace(3, "ambupd: skip sat=%d non-L1/L2 f1=%.3e f2=%.3e\n",
-                  sat, f1, f2);
+        if (sys != SYS_GPS) continue;
+        if (ambupd_sat_excluded(&rtk->opt, sat)) {
+            trace(4, "ambupd: sat=%d excluded by AMBUPD satellite filter\n", sat);
             continue;
         }
-        if (fabs(f1 - f2) < 1.0) continue; /* degenerate */
- 
-        /* ---- IF ambiguity from KF state (metres) --------------------------
-         * IB() indexes the IFLC phase-bias state, which in RTKLIB ppp.c
-         * absorbs: lambda_IF * N_IF + receiver_bias - satellite_bias.
-         * GREAT-UPD handles the bias datum itself; we just pass the raw
-         * KF float value.  Reject uninitialized (zero) states.            */
+
+        if (!select_l1_l2_indices(obs + iobs, nav, sat, &k1, &k2, &f1, &f2)) {
+            trace(4, "ambupd: skip sat=%d no valid L1/L2 pair in obs record\n", sat);
+            continue;
+        }
+        if (fabs(f1 - f2) < 1.0) continue;
+
         idx_if = IB(sat, 0, &rtk->opt);
         if (idx_if < 0 || idx_if >= rtk->nx) continue;
         N_if = rtk->x[idx_if];
         if (fabs(N_if) < 1e-12) continue;
-        
-        /* ---- ambflag gate (mirrors GREAT-UPD isValid()) ---------------
-         * DEL/BAD: skip epoch entirely.
-         * AMB at arc start: reset WL accumulator so MW arc boundaries
-         *   match what GREAT-UPD NL will see in ambflag.              */
+
         {
             int arc_reset_flag = 0;
-            if (!ambflag_is_valid(sat, obs[iobs].time,
-                                  &g_ambflag, &arc_reset_flag)) {
+            if (!ambflag_is_valid(sat, obs[iobs].time, &g_ambflag, &arc_reset_flag)) {
                 trace(4, "ambupd: sat=%d excluded by ambflag DEL/BAD\n", sat);
                 continue;
             }
             if (arc_reset_flag) {
+                ambupd_flush_sat_arc(sat, "ambflag-reset");
                 arc_reset(sat);
+                wl_last_init[sat - 1] = 0;
                 trace(3, "ambupd: WL arc reset by ambflag AMB sat=%d\n", sat);
             }
         }
-        
-        /* ---- fallback: gap-based reset if no ambflag loaded ----------- */
-        if (!wl_arc_init[sat-1]) arc_reset(sat);
-        if (wl_last_init[sat-1] &&
-            fabs(timediff(obs[iobs].time, wl_last_obs[sat-1])) > gap_reset) {
-            if (g_ambflag.n == 0) { /* only if ambflag not loaded */
-                arc_reset(sat);
+
+        if (!wl_arc_init[sat - 1]) arc_reset(sat);
+        if (wl_last_init[sat - 1] &&
+            fabs(timediff(obs[iobs].time, wl_last_obs[sat - 1])) > gap_reset &&
+            g_ambflag.n == 0) {
+            ambupd_flush_sat_arc(sat, "gap-reset");
+            arc_reset(sat);
+            wl_last_init[sat - 1] = 0;
+        }
+
+        Nwl_mw = mw_raw(obs + iobs, nav, sat, k1, k2, f1, f2, &mw_ok,
+                        &Nwl_mw_base, &Nwl_mw_dcb,
+                        &Nwl_mw_dcb_sat, &Nwl_mw_dcb_rcv, &dcb_mode,
+                        &dcb_info);
+        if (!mw_ok) continue;
+
+        /* --- IF maturity check (Song et al. 2026; avoids leaking
+         *     unconverged float-PPP IF state into ambupd output). */
+        {
+            int idx_p = idx_if + idx_if * rtk->nx;
+            double sd_if = (idx_p >= 0 && idx_p < rtk->nx * rtk->nx)
+                           ? sqrt(MAX(rtk->P[idx_p], 0.0)) : 1e9;
+            if (sd_if > g_max_if_sd) {
+                g_drop_if_sd++;
+                trace(4, "ambupd: sat=%d IF not mature sd=%.3f m (limit=%.3f)\n",
+                      sat, sd_if, g_max_if_sd);
+                continue;   /* don't write this epoch yet */
             }
         }
- 
-        /* ---- Melbourne-Wübbena from RAW observations ----------------------
-         * Key change v2: we do NOT call corr_meas() here.
-         * Antenna PCO/PCV corrections are frequency-dependent; applying them
-         * before MW would introduce an elevation-varying bias into the
-         * geometry-free combination and corrupt the integer WL.            */
-        Nwl_mw = mw_raw(obs+iobs, nav, sat, k1, k2, f1, f2, &mw_ok);
-        if (!mw_ok) continue;
- 
-        arc_update(sat, Nwl_mw);
-        wl_last_obs[sat-1]  = obs[iobs].time;
-        wl_last_init[sat-1] = 1;
- 
-        /* wait for enough epochs to converge */
-        if (wl_arc[sat-1].n < MIN_ARC_EPOCHS) continue;
- 
-        if_out   = N_if;
-        wl_out   = wl_arc[sat-1].mean;
-        sigma_wl = arc_sigma_mean(&wl_arc[sat-1]);
- 
+
+        /* GREAT-compatible MW statistics: unweighted samples, outlier handling
+         * is left to arc-level mean_sig and later UPD residual diagnostics. */
+        {
+            if (Nwl_mw != Nwl_mw || fabs(Nwl_mw) > 200.0) {
+                g_drop_outlr++;
+                trace(4, "ambupd: sat=%d MW sanity rejected raw=%.3f\n",
+                      sat, Nwl_mw);
+                continue;
+            }
+            arc_update(sat, Nwl_mw, 1.0);
+        }
+        wl_last_obs[sat - 1] = obs[iobs].time;
+        wl_last_init[sat - 1] = 1;
+
         satno2id(sat, satid);
         trace(3, "ambupd: sat=%-4s idx_if=%3d IF=%10.4f m  "
-              "WL_raw=%7.4f cy  WL_mean=%7.4f cy  sig=%6.4f cy  n=%d\n",
-              satid, idx_if, if_out, Nwl_mw, wl_out, sigma_wl,
-              wl_arc[sat-1].n);
- 
-        /* GREAT-UPD ambupd format (A.3):
-         *   I8   F10.1   A5   A4   F19.3   F19.3   F10.3
-         *   MJD  tod(s)  site prn  IF(m)   WL(cy)  sig(cy) */
-        fprintf(fp_amb, "%8.0f%10.1f%5s%4s%19.3f%19.3f%10.3f\n",
-                floor(mjd), time_of_day, station_name, satid,
-                if_out, wl_out, sigma_wl);
+              "WL_raw=%7.4f cy WL_dcb=%7.4f cy sat=%7.4f cy rcv=%7.4f cy dcb=%s n=%.0f\n",
+              satid, idx_if, N_if, Nwl_mw_base, Nwl_mw_dcb,
+              Nwl_mw_dcb_sat, Nwl_mw_dcb_rcv, dcb_mode_str(dcb_mode),
+              wl_arc[sat - 1].n);
+
+        memset(&row, 0, sizeof(row));
+        row.mjd = floor(mjd);
+        row.sod = time_of_day;
+        row.if_out = N_if;
+        row.mw_raw = Nwl_mw_base;
+        row.mw_dcb = Nwl_mw_dcb;
+        row.mw_dcb_sat = Nwl_mw_dcb_sat;
+        row.mw_dcb_rcv = Nwl_mw_dcb_rcv;
+        row.dcb_mode = dcb_mode;
+        row.dcb_info = dcb_info;
+        row.bsx_rcv_rows = g_bsx_rcv.n;
+        row.k1 = k1;
+        row.k2 = k2;
+        row.f1 = f1;
+        row.f2 = f2;
+        strncpy(row.station, station_name, sizeof(row.station) - 1);
+        row.station[sizeof(row.station) - 1] = '\0';
+        strncpy(row.satid, satid, sizeof(row.satid) - 1);
+        row.satid[sizeof(row.satid) - 1] = '\0';
+        c1 = code2obs(obs[iobs].code[k1]);
+        c2 = code2obs(obs[iobs].code[k2]);
+        strncpy(row.code1, (c1 && *c1) ? c1 : "", sizeof(row.code1) - 1);
+        row.code1[sizeof(row.code1) - 1] = '\0';
+        strncpy(row.code2, (c2 && *c2) ? c2 : "", sizeof(row.code2) - 1);
+        row.code2[sizeof(row.code2) - 1] = '\0';
+        if (!arc_rows_push(sat, &row)) {
+            trace(1, "ambupd: arc buffer allocation failed sat=%d\n", sat);
+        }
     }
- 
-    fflush(fp_amb);
+
+    if (g_dcb_diag.total > 0UL && (g_dcb_diag.total % 50000UL) == 0UL) {
+        trace_dcb_diag("periodic");
+    }
 }

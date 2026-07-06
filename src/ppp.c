@@ -123,7 +123,106 @@
 /* write ambupd file from the PPP state -----------------------------------*/
 extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
 extern void ambupd_reset(void);
-extern void ambflag_load_from_opt(const prcopt_t *opt);
+extern void ambflag_load_from_opt(const prcopt_t *opt, gtime_t t);
+
+typedef struct {
+    unsigned long total_calls;
+    unsigned long iflc_calls;
+    unsigned long osb_applied_calls;
+    unsigned long gps_dcb_ssr_branch;
+    unsigned long gps_dcb_bsx_branch;
+    unsigned long gps_pair[MAXCODE + 1][MAXCODE + 1];
+} ppp_diag_t;
+
+static ppp_diag_t g_ppp_diag = {0};
+
+static void ppp_diag_trace_periodic(void)
+{
+    int i, j, best_i = 0, best_j = 0;
+    unsigned long best_n = 0UL;
+    for (i = 1; i <= MAXCODE; i++) {
+        for (j = 1; j <= MAXCODE; j++) {
+            if (g_ppp_diag.gps_pair[i][j] > best_n) {
+                best_n = g_ppp_diag.gps_pair[i][j];
+                best_i = i;
+                best_j = j;
+            }
+        }
+    }
+    trace(2,
+          "ppp-diag: iflc=%lu osb=%lu gps_ssr=%lu gps_bsx=%lu top_pair=%s/%s n=%lu\n",
+          g_ppp_diag.iflc_calls, g_ppp_diag.osb_applied_calls,
+          g_ppp_diag.gps_dcb_ssr_branch, g_ppp_diag.gps_dcb_bsx_branch,
+          code2obs((uint8_t)best_i), code2obs((uint8_t)best_j), best_n);
+}
+
+static void ppp_diag_update(const prcopt_t *opt, int sys, int code1, int code2,
+                            int osb_applied, int gps_ssr_branch, int gps_bsx_branch)
+{
+    g_ppp_diag.total_calls++;
+    if (!opt || opt->ionoopt != IONOOPT_IFLC) return;
+    g_ppp_diag.iflc_calls++;
+    if (osb_applied) g_ppp_diag.osb_applied_calls++;
+    if (sys == SYS_GPS) {
+        if (gps_ssr_branch) g_ppp_diag.gps_dcb_ssr_branch++;
+        if (gps_bsx_branch) g_ppp_diag.gps_dcb_bsx_branch++;
+        if (code1 > 0 && code1 <= MAXCODE && code2 > 0 && code2 <= MAXCODE) {
+            g_ppp_diag.gps_pair[code1][code2]++;
+        }
+    }
+    if (g_ppp_diag.iflc_calls > 0UL && (g_ppp_diag.iflc_calls % 50000UL) == 0UL) {
+        ppp_diag_trace_periodic();
+    }
+}
+
+static int pppopt_has_token(const prcopt_t *opt, const char *token)
+{
+    return opt && token && *token && opt->pppopt[0] &&
+           strstr(opt->pppopt, token) != NULL;
+}
+
+static int ambupd_bsx_dcb_mode(const prcopt_t *opt)
+{
+    return pppopt_has_token(opt, "-AMBFLAG=") ||
+           pppopt_has_token(opt, "-BSX_DCB=") ||
+           pppopt_has_token(opt, "-AMBUPD");
+}
+
+static int gps_l1l2_dcb_loaded(const nav_t *nav, int sat)
+{
+    if (!nav || sat <= 0 || sat > MAXSAT) return 0;
+    return fabs(nav->cbias[sat-1][CODE_L1C][CODE_L1W]) > 1E-12 ||
+           fabs(nav->cbias[sat-1][CODE_L1W][CODE_L1C]) > 1E-12 ||
+           fabs(nav->cbias[sat-1][CODE_L1W][CODE_L2W]) > 1E-12 ||
+           fabs(nav->cbias[sat-1][CODE_L2W][CODE_L1W]) > 1E-12;
+}
+
+static int ppp_get_dsb(const nav_t *nav, int sat, int code1, int code2,
+                       double *bias)
+{
+    double v;
+    if (!nav || !bias || sat <= 0 || sat > MAXSAT ||
+        code1 <= 0 || code1 >= MAXCODE || code2 <= 0 || code2 >= MAXCODE) {
+        if (bias) *bias = 0.0;
+        return 0;
+    }
+    if (code1 == code2) {
+        *bias = 0.0;
+        return 1;
+    }
+    v = nav->cbias[sat-1][code1][code2];
+    if (fabs(v) > 1E-12) {
+        *bias = v;
+        return 1;
+    }
+    v = nav->cbias[sat-1][code2][code1];
+    if (fabs(v) > 1E-12) {
+        *bias = -v;
+        return 1;
+    }
+    *bias = 0.0;
+    return 0;
+}
 
 /* standard deviation of state -----------------------------------------------*/
 static double STD(rtk_t *rtk, int i)
@@ -459,8 +558,14 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     double freq[NFREQ]={0},C1,C2;
     int *codes;
     int i,sys=satsys(obs->sat,NULL),frq2;
+    int osb_applied_flag = 0;
+    int gps_dcb_ssr_branch = 0, gps_dcb_bsx_branch = 0;
+    int pair_code1 = 0, pair_code2 = 0;
+    int ambupd_mode = ambupd_bsx_dcb_mode(opt) ||
+                      (sys == SYS_GPS && gps_l1l2_dcb_loaded(nav, obs->sat));
     
-    codes = (int *)malloc(NFREQ * sizeof(int));
+    codes = (int *)calloc(NFREQ, sizeof(int));
+    if (!codes) return;
     
     for (i=0;i<NFREQ;i++) {
         
@@ -475,11 +580,13 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
 
          
         /* apply OSB corrections for PPP-AR */
-        if (opt->modear==ARMODE_CONT&&opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
+        if (!ambupd_mode &&
+            opt->modear==ARMODE_CONT&&opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
             double cosb=0.0,posb=0.0;
             matchcposb(obs,nav,i,&cosb,&posb);
             L[i]-=posb;
             P[i]-=cosb;
+            osb_applied_flag = 1;
         }
 
         codes[i] = obs->code[i];
@@ -491,34 +598,46 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     if (sys==SYS_GPS) 
     {
         
-        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
+        if (!gps_l1l2_dcb_loaded(nav, obs->sat))
         {
-            if (codes[0]==CODE_L1C)
-            {   
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];   
-                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+            if (!ambupd_mode) {
+                gps_dcb_ssr_branch = 1;
+                if (codes[0]==CODE_L1C)
+                {
+                    P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];
+                    L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+                }
+                if (codes[1]==CODE_L2C||codes[1]==CODE_L2S||
+                    codes[1]==CODE_L2L||codes[1]==CODE_L2X||
+                    codes[1]==CODE_L2W)
+                {
+                    P[1]+=nav->ssr[obs->sat-1].cbias[codes[1]-1]-
+                          nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
+                    L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
+                }
+                if (codes[2]==CODE_L5Q)
+                {
+                    P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
+                    L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
+
+                }
             }
-            if (codes[1]==CODE_L2W)
-            {
-                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
-                L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
-            }
-            if (codes[2]==CODE_L5Q)
-            {
-                P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
-                L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
-                
+            else {
+                trace(4, "corr_meas: AMBUPD BSX mode skips GPS SSR/phase biases sat=%d\n",
+                      obs->sat);
             }
         }
         else
         {
-            if (codes[0]==CODE_L1C)
-            {   
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];   
-            }
-            if (codes[1]==CODE_L2W)
+            double dsb = 0.0;
+            gps_dcb_bsx_branch = 1;
+            if (codes[0] && ppp_get_dsb(nav, obs->sat, CODE_L1W, codes[0], &dsb))
             {
-                P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
+                P[0]+=dsb;
+            }
+            if (codes[1] && ppp_get_dsb(nav, obs->sat, CODE_L2W, codes[1], &dsb))
+            {
+                P[1]+=dsb;
             }
             if (codes[2]==CODE_L5Q)
             {
@@ -594,9 +713,12 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                 P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];   
                 L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
             }
-            if (codes[1]==CODE_L2W)
+            if (codes[1]==CODE_L2C||codes[1]==CODE_L2S||
+                codes[1]==CODE_L2L||codes[1]==CODE_L2X||
+                codes[1]==CODE_L2W)
             {
-                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
+                P[1]+=nav->ssr[obs->sat-1].cbias[codes[1]-1]-
+                      nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
                 L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
             }
             if (codes[2]==CODE_L5Q)
@@ -611,9 +733,17 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             {   
                 P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];   
             }
-            if (codes[1]==CODE_L2W)
-            {
+            if (codes[1]==CODE_L2C) {
                 P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
+            }
+            else if (codes[1]==CODE_L2S) {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L2W][CODE_L2S];
+            }
+            else if (codes[1]==CODE_L2L) {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L2W][CODE_L2L];
+            }
+            else if (codes[1]==CODE_L2X) {
+                P[1]+=nav->cbias[obs->sat-1][CODE_L2W][CODE_L2X];
             }
             if (codes[2]==CODE_L5Q)
             {
@@ -646,14 +776,29 @@ extern void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     
     /* iono-free LC */
     *Lc=*Pc=0.0;
-    frq2=L[1]==0.0?2:1;  /* if L[1]==0, try L[2] */
+    frq2=(ambupd_mode && sys==SYS_GPS)?1:(L[1]==0.0?2:1);
+    if (ambupd_mode && sys==SYS_GPS && (L[1]==0.0 || P[1]==0.0)) {
+        ppp_diag_update(opt, sys, codes[0], codes[1], osb_applied_flag,
+                        gps_dcb_ssr_branch, gps_dcb_bsx_branch);
+        free(codes);
+        return;
+    }
     
-    if (freq[0]==0.0||freq[frq2]==0.0) return;
+    if (freq[0]==0.0||freq[frq2]==0.0) {
+        ppp_diag_update(opt, sys, codes[0], codes[frq2], osb_applied_flag,
+                        gps_dcb_ssr_branch, gps_dcb_bsx_branch);
+        free(codes);
+        return;
+    }
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
     C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
     if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
     if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
-    trace(3, "L1: %f L5: %f SYS: %d SAT: %d\n\r", L[0], L[2], sys, satno(sys, obs->sat));
+    trace(3, "L1: %f L2: %f SYS: %d SAT: %d\n\r", L[0], L[1], sys, satno(sys, obs->sat));
+    pair_code1 = codes[0];
+    pair_code2 = codes[frq2];
+    ppp_diag_update(opt, sys, pair_code1, pair_code2, osb_applied_flag,
+                    gps_dcb_ssr_branch, gps_dcb_bsx_branch);
     
     free(codes);
 }
@@ -1544,7 +1689,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     time2str(obs[0].time,str,2);
     trace(3,"pppos   : time=%s nx=%d n=%d\n",str,rtk->nx,n);
 
-    ambflag_load_from_opt(&rtk->opt);
+    ambflag_load_from_opt(&rtk->opt, n > 0 ? obs[0].time : rtk->sol.time);
     
     rs=mat(6,n); dts=mat(2,n); var=mat(1,n); azel=zeros(2,n);
     

@@ -58,8 +58,6 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
-#define MAXCODE 136
-
 typedef struct {
     int sat;
     gtime_t ts,te;
@@ -489,7 +487,10 @@ static int code2idx_obs(const char *obs)
     };
     int i;
     for (i = 1; i < (int)(sizeof(codes)/sizeof(codes[0])); i++) {
-        if (strcmp(codes[i], obs) == 0) return i;
+        if (strcmp(codes[i], obs) == 0) {
+            int ncode = ((int)(sizeof(codes)/sizeof(codes[0])) - 1) / 2;
+            return i <= ncode ? i : i - ncode;
+        }
     }
     return 0;
 }
@@ -715,21 +716,38 @@ extern int readsap(const char *file, gtime_t time, nav_t *nav)
     return 1;
 }
 /* read DCB parameters file --------------------------------------------------*/
+static int dcb_unit_to_m(const char *unit, double value, double *bias_m)
+{
+    char up[8] = "";
+    int i;
+
+    if (!unit || !bias_m) return 0;
+    for (i = 0; unit[i] && i < (int)sizeof(up) - 1; i++) {
+        up[i] = (char)toupper((unsigned char)unit[i]);
+    }
+    up[i] = '\0';
+
+    if (!strcmp(up, "NS")) {
+        *bias_m = value * 1E-9 * CLIGHT;
+        return 1;
+    }
+    if (!strcmp(up, "S")) {
+        *bias_m = value * CLIGHT;
+        return 1;
+    }
+    if (!strcmp(up, "M")) {
+        *bias_m = value;
+        return 1;
+    }
+    return 0;
+}
+
 static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 {
     FILE *fp;
-    double cbias;
-     /*
-     str1 -> BIAS, str2 -> SVN, str3 -> PRN, str4 -> OBS1, 
-     str5 -> OBS2, str6 -> BIAS_START, str7 -> BIAS_END, 
-     str8 -> UNIT, str9 -> VALUE, str10 -> STD
-     */
-    char buff[2048],str1[32]="",str2[32]="",str3[32]="";
-    char str4[32],str5[32]="",str6[32]="",str7[32],str8[32]="";
-    char str9[32]="",str10[32]="",str11[32]="",str12[32]="",target_code1[4]="",target_code2[4]="";    
-    int sat,start=0;
-
-    
+    char buff[2048];
+    int in_solution = 0;
+    int nread = 0;
 
     trace(3,"readdcbf: file=%s\n",file);
     
@@ -738,34 +756,45 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
         return 0;
     }
 
-
-    
     while (fgets(buff,sizeof(buff),fp)) {
-        if (strstr(buff, "*BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ BIAS_END______ UNIT __ESTIMATED_VALUE____ _STD_DEV___")) start=1;
-        if (strstr(buff,"POINTS")) start=0;
-        if (strstr(buff,"DSB  G    G")) start=3;
-        if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12)<0) continue;
-        trace(3,"%s %s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12);
-        if(start == 3) {
-            fclose(fp);
-            return 1;
+        char type[8] = "", svn[16] = "", prn[16] = "";
+        char obs1[16] = "", obs2[16] = "", tstart[32] = "", tend[32] = "";
+        char unit[8] = "";
+        double value = 0.0, std = 0.0, bias_m = 0.0;
+        int sat, code1, code2, ntok;
+
+        if (!in_solution) {
+            if (strstr(buff, "+BIAS/SOLUTION")) in_solution = 1;
+            continue;
         }
-        if (start == 2)
-        {   
-            strcpy(target_code1, str4);
-            strcpy(target_code2, str5);
-            if(!strcmp(target_code1, str4) && !strcmp(target_code2, str5))
-            {
-                cbias = atof(str9); /*DCB*/
-                sat=satid2no(str3);
-                nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=(cbias*1E-9*CLIGHT);
-            }   
-            trace(2, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
+        if (strstr(buff, "-BIAS/SOLUTION")) break;
+        if (buff[0] == '*') continue;
+
+        /* Satellite DSB row has no station token:
+         * DSB  SVN  PRN  OBS1 OBS2 START END UNIT VALUE STD */
+        ntok = sscanf(buff, "%7s %15s %15s %15s %15s %31s %31s %7s %lf %lf",
+                      type, svn, prn, obs1, obs2, tstart, tend, unit,
+                      &value, &std);
+        if (ntok < 9) continue;
+        if (strcmp(type, "DSB")) continue;
+
+        sat = satid2no(prn);
+        if (sat <= 0 || sat > MAXSAT) continue; /* skip receiver DSB rows */
+
+        code1 = codeconv(obs1);
+        code2 = codeconv(obs2);
+        if (code1 <= 0 || code1 >= MAXCODE || code2 <= 0 || code2 >= MAXCODE) {
+            continue;
         }
-        start=2;
+        if (!dcb_unit_to_m(unit, value, &bias_m)) continue;
+
+        nav->cbias[sat - 1][code1][code2] = bias_m;
+        nread++;
+        trace(4, "readdcbf: %s %s-%s %.6f m\n", prn, obs1, obs2, bias_m);
     }
     
     fclose(fp);
+    trace(2, "readdcbf: loaded %d satellite BSX DSB rows from %s\n", nread, file);
     
     return 1;
 }
