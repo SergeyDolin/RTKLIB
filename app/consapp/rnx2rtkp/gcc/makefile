@@ -35,7 +35,7 @@ all        : rnx2rtkp
 debug	   : rnx2rtkp
 rnx2rtkp   : rnx2rtkp.o rtkcmn.o rinex.o rtkpos.o postpos.o solution.o
 rnx2rtkp   : lambda.o geoid.o sbas.o preceph.o pntpos.o ephemeris.o options.o
-rnx2rtkp   : ppp.o ppp_ar.o rtcm.o rtcm2.o rtcm3.o rtcm3e.o ionex.o tides.o gpt3.o
+rnx2rtkp   : ppp.o ppp_ar.o rtcm.o rtcm2.o rtcm3.o rtcm3e.o ionex.o tides.o ambupd.o gpt3.o
 
 rnx2rtkp.o : ../rnx2rtkp.c
 	$(CC) -c $(CFLAGS) ../rnx2rtkp.c
@@ -65,6 +65,10 @@ options.o  : $(SRC)/options.c
 	$(CC) -c $(CFLAGS) $(SRC)/options.c
 ppp.o      : $(SRC)/ppp.c
 	$(CC) -c $(CFLAGS) $(SRC)/ppp.c
+# AMBUPD FUNCTION
+ambupd.o   : $(SRC)/ambupd.c
+	$(CC) -c $(CFLAGS) $(SRC)/ambupd.c
+# ---------------------------------------
 ppp_ar.o   : $(SRC)/ppp_ar.c
 	$(CC) -c $(CFLAGS) $(SRC)/ppp_ar.c
 rtcm.o     : $(SRC)/rtcm.c
@@ -96,6 +100,7 @@ pntpos.o   : $(SRC)/rtklib.h
 ephemeris.o: $(SRC)/rtklib.h
 options.o  : $(SRC)/rtklib.h
 ppp.o      : $(SRC)/rtklib.h
+ambupd.o   : $(SRC)/rtklib.h # AMBUPD FUNCTION
 ppp_ar.o   : $(SRC)/rtklib.h
 rtcm.o     : $(SRC)/rtklib.h
 rtcm2.o    : $(SRC)/rtklib.h
