@@ -3876,7 +3876,13 @@ extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias
 
     i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
     if(i<0) return;
-
+    /* clamp to the last allocated window (nb-1, see readosb()): biases are
+     * near-constant over a day, so reuse the last window past tmax instead of
+     * reading beyond the array */
+    {
+        int imax=(int)(timediff(nav->osbs->tmax,nav->osbs->tmin)/nav->osbs->dt);
+        if(i>imax) i=imax;
+    }
     /* try exact code first */
     if(nav->osbs->sat_osb[i].code[sat-1][code]!=0.0||
        nav->osbs->sat_osb[i].phase[sat-1][code]!=0.0) {

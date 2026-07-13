@@ -1380,9 +1380,9 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             
             /* Если был slip или bias невалидный - сбрасываем состояние */
             if (slip_detected[i] || bias[i]==0.0) {
-                if (slip_detected[i] && rtk->x[j]!=0.0) {
+                if (slip_detected[i]) {
                     /* Сброс ambiguity state при обнаружении slip */
-                    initx(rtk, 0.0, 0.0, j);
+                    if (rtk->x[j]!=0.0) initx(rtk, 0.0, 0.0, j);
                     /* Сброс MW smoothing state */
                     rtk->ssat[sat-1].mw[1] = 0.0;
                     rtk->ssat[sat-1].mw[2] = 0;
@@ -1829,9 +1829,11 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
             }
             rtk->ssat[i].outc[j]=0;
 
-            if(rtk->ssat[i].lock[j]<0||(rtk->nfix>0&&rtk->ssat[i].fix[j]==2)){
-                rtk->ssat[i].lock[j]++;
-            }
+            /* lock counts continuous valid epochs without slip; it must grow
+             * every valid epoch (not only after a fix), otherwise pos2-arlockcnt
+             * (rtk->opt.minlock) can never be reached and AR is permanently
+             * disabled */
+            rtk->ssat[i].lock[j]++;
             if (j==0) rtk->sol.ns++;
         }
     }
@@ -1869,7 +1871,7 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
         rtk->ssat[obs[i].sat-1].snr_rover[j]=obs[i].SNR[j];
         rtk->ssat[obs[i].sat-1].snr_base[j] =0;
     }
-    for (i=0;i<n;i++) for (j=0;j<opt->nf;j++) {
+    for (i=0;i<MAXSAT;i++) for (j=0;j<opt->nf;j++) {
         if (rtk->ssat[i].slip[j]&3) rtk->ssat[i].slipc[j]++;
         else rtk->ssat[i].slipc[j]=0;
 
@@ -1982,7 +1984,6 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     post_v=mat(nv,1);
     norm_v=mat(nv,1);
     bias=mat(rtk->nx,1);
-    matcpy(xa, rtk->x, rtk->nx, 1);
     
     for (i=0;i<MAX_ITER;i++) {
         for(j=0;j<3;j++) rr[j]=rtk->x[j];
@@ -2053,6 +2054,9 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
     if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */
+        /* start AR from the filtered float states: fix_sol/resetamb overwrite
+         * only the fixed entries of xa, the rest must be the float solution */
+        matcpy(xa,rtk->x,rtk->nx,1);
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc)){
             if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xa,rtk,v,H,R,azel,vflg)) {
 
@@ -2063,8 +2067,10 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 rtk->fix_epoch++;
                 rtk->nfix++;
                 m=1; prior_std=0.0;   /* restart Bertrand's counter for post-fix monitoring */
-                matcpy(rtk->xa,xa,rtk->nx,1);
-                matcpy(rtk->Pa,Pa,rtk->na,rtk->na);
+                /* rtk->xa (na x 1) and rtk->Pa (na x na) are already filled by
+                 * fix_sol(); copying the local nx-sized xa here overflowed
+                 * rtk->xa, and the local Pa is never written by the AR (all
+                 * zeros), so copying it wiped the fixed covariance */
                 /* notify partner that PPP has fixed */
                 strcpy(checkbuff, "stop");
                 strcat(checkbuff, namePoint);
