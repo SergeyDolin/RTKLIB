@@ -196,6 +196,9 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
             if(exc[j]||!rtk->ssat[obs[j].sat-1].vsat[frq]||rtk->ssat[obs[j].sat-1].azel[1]<elmask
                 ||rtk->ssat[obs[j].sat-1].lock[f]<0){continue;}
 
+            if (rtk->ssat[obs[j].sat-1].lock[f] < MIN_LOCK_AR) {
+                continue;
+            }
 #if 0
         int iamb=0;
         iamb=rtk->tc?xiAmb(&rtk->opt.insopt,obs[j].sat,0):IB(obs[j].sat,0,&rtk->opt);

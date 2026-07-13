@@ -125,10 +125,11 @@
 #define IIFCB(s,opt) (NP(opt)+NC(opt)+(s))
 
 /* standard deviation of state -----------------------------------------------*/
-static double STD(rtk_t *rtk, int i)
-{
-    if (rtk->sol.stat==SOLQ_FIX) return SQRT(rtk->Pa[i+i*rtk->nx]);
-    return SQRT(rtk->P[i+i*rtk->nx]);
+static double STD(rtk_t *rtk, int i) {
+    if (rtk->sol.stat == SOLQ_FIX && i < rtk->na) {
+        return SQRT(rtk->Pa[i + i * rtk->na]);
+    }
+    return SQRT(rtk->P[i + i * rtk->nx]);
 }
 /* index of ambiguity */
 extern int iamb_ppp(const prcopt_t *opt, int sat, int f){
@@ -1324,18 +1325,16 @@ static void uddcb_ppp(rtk_t *rtk)
 /* temporal update of phase biases -------------------------------------------*/
 static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS]={0},offset=0.0,pos[3]={0};
+    double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS],offset=0.0,pos[3]={0};
     double freq1,freq2,ion,dantr[NFREQ]={0},dants[NFREQ]={0};
-    int i,j,k,f,sat,slip[MAXOBS]={0},clk_jump=0;
+    int i,j,k,f,sat,clk_jump=0;
+    int slip_detected[MAXOBS] = {0};
     
     trace(3,"udbias  : n=%d\n",n);
     
     /* handle day-boundary clock jump */
     if (rtk->opt.posopt[5]) {
         clk_jump=ROUND(time2gpst(obs[0].time,NULL)*10)%864000==0;
-    }
-    for (i=0;i<MAXSAT;i++) for (j=0;j<rtk->opt.nf;j++) {
-        rtk->ssat[i].slip[j]=0;
     }
     
     ecef2pos(rtk->sol.rr,pos);
@@ -1349,6 +1348,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 initx(rtk,0.0,0.0,IB(i+1,f,&rtk->opt));
             }
         }
+        
         for (i=k=0;i<n&&i<MAXOBS;i++) {
             sat=obs[i].sat;
             if(rtk->ssat[sat-1].azel[1]<rtk->opt.elmin) continue;
@@ -1357,36 +1357,67 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                       0.0,L,P,&Lc,&Pc);
             
             bias[i]=0.0;
+            slip_detected[i] = 0;
+            
+            /* Проверяем наличие slip ДО того, как флаги будут сброшены */
+            if (rtk->ssat[sat-1].slip[f] || 
+                (f==0 && rtk->ssat[sat-1].slip[1])) {
+                slip_detected[i] = 1;
+            }
             
             if (rtk->opt.ionoopt==IONOOPT_IFLC) {
                 bias[i]=Lc-Pc;
-                slip[i]=rtk->ssat[sat-1].slip[0]||rtk->ssat[sat-1].slip[1];
             }
             else if (L[f]!=0.0&&P[f]!=0.0) {
                 freq1=sat2freq(sat,obs[i].code[0],nav);
                 freq2=sat2freq(sat,obs[i].code[f],nav);
-                slip[i]=rtk->ssat[sat-1].slip[f];
-                if (obs[i].P[0]==0.0||obs[i].P[1]==0.0||freq1==0.0||freq2==0.0) {
+                if (obs[i].P[0]==0.0||obs[i].P[f]==0.0||freq1==0.0||freq2==0.0) {
                     continue;
                 }
                 ion=(obs[i].P[0]-obs[i].P[f])/(1.0-SQR(freq1/freq2));
                 bias[i]=L[f]-P[f]+2.0*ion*SQR(freq1/freq2);
             }
-            if (rtk->x[j]==0.0||slip[i]||bias[i]==0.0) continue;
-            /*HERE*/
-            offset+=(bias[i])-rtk->x[j];
+            
+            /* Если был slip или bias невалидный - сбрасываем состояние */
+            if (slip_detected[i] || bias[i]==0.0) {
+                if (slip_detected[i] && rtk->x[j]!=0.0) {
+                    /* Сброс ambiguity state при обнаружении slip */
+                    initx(rtk, 0.0, 0.0, j);
+                    /* Сброс MW smoothing state */
+                    rtk->ssat[sat-1].mw[1] = 0.0;
+                    rtk->ssat[sat-1].mw[2] = 0;
+                    rtk->ssat[sat-1].mw[3] = 0.0;
+                    /* Сброс lock counter (отрицательное значение запрещает AR) */
+                    rtk->ssat[sat-1].lock[f] = -rtk->opt.minlock;
+                    /* Сброс Hatch filter state */
+                    rtk->ssat[sat-1].hatch_n[f] = 0;
+                    rtk->ssat[sat-1].hatch_P[f] = 0.0;
+                    rtk->ssat[sat-1].hatch_L[f] = 0.0;
+                    
+                    trace(3,"udbias_ppp: reset ambiguity sat=%d f=%d due to slip\n", sat, f);
+                }
+                continue;
+            }
+            
+            /* Накопление offset для коррекции phase-code jump */
+            offset += bias[i] - rtk->x[j];
             trace(2, "offset: %e\n\r", offset);
             k++;
         }
+        
         /* correct phase-code jump to ensure phase-code coherency */
-        if (k>=2&&fabs(offset/k)>0.0005*CLIGHT) {
+        if (k>=2 && fabs(offset/k)>0.0005*CLIGHT) {
             for (i=0;i<MAXSAT;i++) {
                 j=IB(i+1,f,&rtk->opt);
-                if (rtk->x[j]!=0.0) rtk->x[j]+=offset/k;
+                if (rtk->x[j]!=0.0) {
+                    rtk->x[j] += offset/k;
+                }
             }
             trace(2,"phase-code jump corrected: %s n=%2d dt=%12.9fs\n",
-                  time_str(rtk->sol.time,0),k,offset/k/CLIGHT);
+                  time_str(rtk->sol.time,0), k, offset/k/CLIGHT);
         }
+        
+        /* Обновление или инициализация ambiguity states */
         for (i=0;i<n&&i<MAXOBS;i++) {
             sat=obs[i].sat;
             j=IB(sat,f,&rtk->opt);
@@ -1400,11 +1431,13 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                     if (snr_scale<1.0) snr_scale=1.0;
                     if (snr_scale>50.0) snr_scale=50.0;
                 }
-                rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[0])*fabs(rtk->tt)*snr_scale;
+                rtk->P[j+j*rtk->nx] += SQR(rtk->opt.prn[0]) * fabs(rtk->tt) * snr_scale;
             }
 
-            if (bias[i]==0.0||(rtk->x[j]!=0.0&&!slip[i])) continue;
-            if (bias[i]!=bias[i]) continue; /* skip NaN bias (f=0 with non-IFLC iono) */
+            /* Пропускаем если bias нулевой или состояние уже инициализировано и нет slip */
+            if (bias[i]==0.0 || (rtk->x[j]!=0.0 && !slip_detected[i])) {
+                continue;
+            }
 
             /* adaptive initial variance: scale VAR_BIAS by SNR quality */
             {
@@ -1415,13 +1448,24 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                     if (sf>1.0) var_init*=sf;
                     if (var_init>VAR_BIAS*50.0) var_init=VAR_BIAS*50.0;
                 }
-                initx(rtk,bias[i],var_init,IB(sat,f,&rtk->opt));
+                initx(rtk, bias[i], var_init, IB(sat,f,&rtk->opt));
             }
             
             /* reset fix flags */
-            for (k=0;k<MAXSAT;k++) rtk->ambc[sat-1].flags[k]=0;
+            for (k=0;k<MAXSAT;k++) {
+                rtk->ambc[sat-1].flags[k]=0;
+            }
             
-            trace(5,"udbias_ppp: sat=%2d bias=%.3f\n",sat,bias[i]);
+            trace(5,"udbias_ppp: sat=%2d bias=%.3f\n", sat, bias[i]);
+        }
+        
+        /* Сброс флагов slip после полной обработки */
+        for (i=0;i<n&&i<MAXOBS;i++) {
+            sat=obs[i].sat;
+            if (slip_detected[i]) {
+                rtk->ssat[sat-1].slip[f] = 0;
+                if (f==0) rtk->ssat[sat-1].slip[1] = 0;
+            }
         }
     }
 }
@@ -1821,11 +1865,11 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
         rtk->sol.dtr[i]=rtk->x[irc]/CLIGHT;
     }
     
-    for (i=0;i<n&&i<MAXOBS;i++) for (j=0;j<opt->nf;j++) {
+    for (i=0;i<n;i++) for (j=0;j<opt->nf;j++) {
         rtk->ssat[obs[i].sat-1].snr_rover[j]=obs[i].SNR[j];
         rtk->ssat[obs[i].sat-1].snr_base[j] =0;
     }
-    for (i=0;i<MAXSAT;i++) for (j=0;j<opt->nf;j++) {
+    for (i=0;i<n;i++) for (j=0;j<opt->nf;j++) {
         if (rtk->ssat[i].slip[j]&3) rtk->ssat[i].slipc[j]++;
         else rtk->ssat[i].slipc[j]=0;
 
@@ -1933,11 +1977,12 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
     nv=n*rtk->opt.nf*2+MAXSAT+3;
     xp=mat(rtk->nx,1); Pp=zeros(rtk->nx,rtk->nx);
-    xa=mat(rtk->nx,1); Pa=zeros(rtk->nx,rtk->nx);
+    xa=mat(rtk->nx,1); Pa=zeros(rtk->na,rtk->na);
     v=mat(nv,1); H=mat(rtk->nx,nv); R=mat(nv,nv);
     post_v=mat(nv,1);
     norm_v=mat(nv,1);
     bias=mat(rtk->nx,1);
+    matcpy(xa, rtk->x, rtk->nx, 1);
     
     for (i=0;i<MAX_ITER;i++) {
         for(j=0;j<3;j++) rr[j]=rtk->x[j];
@@ -2009,7 +2054,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc)){
-            if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xp,rtk,v,H,R,azel,vflg)) {
+            if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xa,rtk,v,H,R,azel,vflg)) {
 
                 stat=SOLQ_FIX;
                 stat_ar=SOLQ_FIX;
@@ -2018,8 +2063,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 rtk->fix_epoch++;
                 rtk->nfix++;
                 m=1; prior_std=0.0;   /* restart Bertrand's counter for post-fix monitoring */
-                matcpy(rtk->xa,xp,rtk->nx,1);
-                matcpy(rtk->Pa,Pp,rtk->nx,rtk->nx);
+                matcpy(rtk->xa,xa,rtk->nx,1);
+                matcpy(rtk->Pa,Pa,rtk->na,rtk->na);
                 /* notify partner that PPP has fixed */
                 strcpy(checkbuff, "stop");
                 strcat(checkbuff, namePoint);
