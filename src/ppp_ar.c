@@ -317,7 +317,10 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
 
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
         if (rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
-        rtk->sol.thres=(float)rtk->opt.thresar[1];
+        /* NL validation uses the LAMBDA ratio (s1/s0, always >=1), so the
+         * threshold must be the ratio threshold thresar[0] (e.g. 3.0), NOT
+         * thresar[1] which is a rounding-confidence probability (~0.9999). */
+        rtk->sol.thres=(float)rtk->opt.thresar[0];
 
         if(rtk->sol.ratio<rtk->sol.thres&&nb>MIN_AMB_RES){
             stat=0;
@@ -378,8 +381,10 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         gamma=CLIGHT*frq2/(SQR(frq1)-SQR(frq2));
 
         if(opt.arprod == AR_PROD_OSB_COD){
-            if(Bl[i]!=0.0) Bc[i]=lam_nl*Bl[i]+gamma*Bw[i];
-            else Bc[i]=y[na+i];
+            /* Bl[i] holds the LAMBDA-fixed SD-NL integer for every entry
+             * 0..nb-1; a fixed value of 0 is a valid integer, so reconstruct
+             * the IF bias unconditionally (do not fall back to the float). */
+            Bc[i]=lam_nl*Bl[i]+gamma*Bw[i];
 
             rtk->sdamb[sat1[i]-1].lc_fix=Bc[i];
             rtk->sdamb[sat1[i]-1].lc_res=Bc[i]-rtk->sdamb[sat1[i]-1].lc;

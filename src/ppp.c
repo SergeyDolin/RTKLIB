@@ -470,6 +470,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     int *codes;
     int i,sys=satsys(obs->sat,NULL),frq2;
     
+    /* In OSB mode the per-signal satellite biases are already removed above,
+     * so the DCB/SSR code-bias corrections below must be skipped to avoid
+     * double-correcting the pseudoranges. */
+    int use_dcb=!(opt->arprod==AR_PROD_OSB_COD&&nav->osbs);
+
     codes = (int *)calloc(NFREQ, sizeof(int)); /* zero-init: CODE_NONE=0 prevents false matches */
     
     for (i=0;i<NFREQ;i++) {
@@ -484,8 +489,12 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         P[i]=obs->P[i]-dants[i]-dantr[i];
 
          
-        /* apply OSB corrections for PPP-AR */
-        if (opt->modear==ARMODE_CONT&&opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
+        /* Apply OSB corrections for PPP-AR.  Gate on the product type only
+         * (mirrors mwmeas): the phase OSB must be removed from the IF float
+         * ambiguity in every AR mode, not just continuous — otherwise WL is
+         * OSB-corrected while the IF float still carries the satellite phase
+         * bias, so the derived NL is non-integer and AR fixes garbage. */
+        if (opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
             double cosb=0.0,posb=0.0;
             matchcposb(obs,nav,i,&cosb,&posb);
             L[i]-=posb;
@@ -498,7 +507,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
-    if (sys==SYS_GPS) 
+    if (use_dcb&&sys==SYS_GPS) 
     {
         
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
@@ -535,7 +544,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             }
         }
     }
-    if (sys==SYS_GLO)
+    if (use_dcb&&sys==SYS_GLO)
     {
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P] == 0.0)
         {
@@ -560,7 +569,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             }
         }
     }
-    if (sys == SYS_GAL)
+    if (use_dcb&&sys == SYS_GAL)
     {
         /* NOTE: condition == 0.0 means no RINEX DCB loaded → use SSR biases.
          * Original code had != 0.0 which was inverted vs GPS/QZS/GLO/BDS pattern,
@@ -592,7 +601,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     
-    if (sys == SYS_QZS)
+    if (use_dcb&&sys == SYS_QZS)
     {
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
@@ -629,7 +638,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
-    if (sys == SYS_CMP)
+    if (use_dcb&&sys == SYS_CMP)
     {
         if (nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I] == 0.0) {
             if (obs->code[0]==CODE_L2I)
@@ -1143,10 +1152,14 @@ static void udpos_ppp(rtk_t *rtk)
         }
         return;
     }
-    /* kinmatic mode without dynamics */
+    /* kinematic mode without dynamics: preserve covariances,
+   inject position process noise via stats-prnpos */
     if (!rtk->opt.dynamics) {
-        for (i=0;i<3;i++) {
-            initx(rtk,rtk->sol.rr[i],VAR_POS,i);
+        if (norm(rtk->x,3) <= 0.0) {
+            for (i=0;i<3;i++) initx(rtk,rtk->sol.rr[i],VAR_POS,i);
+        } else {
+            double q = SQR(rtk->opt.prn[5])*fabs(rtk->tt);   /* prnpos */
+            for (i=0;i<3;i++) rtk->P[i*(1+rtk->nx)] += q;
         }
         return;
     }

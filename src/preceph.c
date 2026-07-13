@@ -58,7 +58,7 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
-#define MAXCODE 136
+
 
 typedef struct {
     int sat;
@@ -467,31 +467,14 @@ static int __attribute__((unused)) biasstr2time(const char *s, int i, int n, gti
 
 static int code2idx_obs(const char *obs)
 {
-    const char *codes[] = {
-        "",
-        "C1C","C1P","C1W","C1Y","C1M","C1N","C1S","C1L","C1E",
-        "C1A","C1B","C1X","C1Z","C2C","C2D","C2S","C2L","C2X",
-        "C2P","C2W","C2Y","C2M","C2N","C5I","C5Q","C5X","C7I",
-        "C7Q","C7X","C6A","C6B","C6C","C6X","C6Z","C6S","C6L",
-        "C8L","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q",
-        "C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B","C9C",
-        "C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z",
-        "C8D","C8P","C4A","C4B","C4X",
-
-        "L1C","L1P","L1W","L1Y","L1M","L1N","L1S","L1L","L1E",
-        "L1A","L1B","L1X","L1Z","L2C","L2D","L2S","L2L","L2X",
-        "L2P","L2W","L2Y","L2M","L2N","L5I","L5Q","L5X","L7I",
-        "L7Q","L7X","L6A","L6B","L6C","L6X","L6Z","L6S","L6L",
-        "L8L","L8Q","L8X","L2I","L2Q","L6I","L6Q","L3I","L3Q",
-        "L3X","L1I","L1Q","L5A","L5B","L5C","L9A","L9B","L9C",
-        "L9X","L1D","L5D","L5P","L5Z","L6E","L7D","L7P","L7Z",
-        "L8D","L8P","L4A","L4B","L4X"
-    };
-    int i;
-    for (i = 1; i < (int)(sizeof(codes)/sizeof(codes[0])); i++) {
-        if (strcmp(codes[i], obs) == 0) return i;
-    }
-    return 0;
+    /* obs is a 3-char RINEX bias observation code such as "C1C" (code) or
+     * "L1C" (phase).  The leading letter is the observable range and is tracked
+     * separately (bias_t.type), so map only the 2-char signal part ("1C") to
+     * the RTKLIB CODE_??? index (1..MAXCODE-1).  This makes both code and phase
+     * biases share the same signal index that matchcposb() looks up via
+     * obs->code[f]. */
+    if (!obs || strlen(obs) < 3) return 0;
+    return (int)obs2code(obs + 1);
 }
 
 static int biasstr2time_str(const char *s, gtime_t *time)
