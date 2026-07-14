@@ -1,4 +1,4 @@
-/*------------------------------------------------------------------------------
+ /*------------------------------------------------------------------------------
 * ppp_ar.c : ppp ambiguity resolution
 *
 * reference :
@@ -130,8 +130,17 @@ static int matchnlupd(const gtime_t obst, int sat1, int sat2,
     double upd1=0.0,upd2=0.0;
     int i,stat=0;
 
+    if(!nav||!nav->upds||!nav->upds->nls.data||sat1<=0||sat2<=0||
+       sat1>MAXSAT||sat2>MAXSAT) {
+        if(nl_upd1) *nl_upd1=0.0;
+        if(nl_upd2) *nl_upd2=0.0;
+        return 0;
+    }
     for(i=0;i<nav->upds->nls.n;i++){
-        if(timediff(nav->upds->nls.data[i].ts,obst)<=0&&timediff(nav->upds->nls.data[i].te,obst)>=0){
+        if(timediff(nav->upds->nls.data[i].ts,obst)<=0&&
+           timediff(nav->upds->nls.data[i].te,obst)>0&&
+           nav->upds->nls.data[i].valid[sat1-1]&&
+           nav->upds->nls.data[i].valid[sat2-1]){
             upd1=nav->upds->nls.data[i].nl[sat1-1];
             upd2=nav->upds->nls.data[i].nl[sat2-1];
             stat=1;
@@ -143,6 +152,43 @@ static int matchnlupd(const gtime_t obst, int sat1, int sat2,
     if(nl_upd2) *nl_upd2=upd2;
 
     return stat;
+}
+
+static int matchwlupd(int sat1, int sat2, double *wl_upd1, double *wl_upd2,
+                      const nav_t *nav)
+{
+    double upd1=0.0,upd2=0.0;
+    int stat=0;
+
+    if(nav&&nav->upds&&sat1>0&&sat2>0&&sat1<=MAXSAT&&sat2<=MAXSAT&&
+       nav->upds->wls.wl_valid[sat1-1]&&nav->upds->wls.wl_valid[sat2-1]) {
+        upd1=nav->upds->wls.wl[sat1-1];
+        upd2=nav->upds->wls.wl[sat2-1];
+        stat=1;
+    }
+    if(wl_upd1) *wl_upd1=upd1;
+    if(wl_upd2) *wl_upd2=upd2;
+    return stat;
+}
+
+static int validwlupd_sat(int sat, const nav_t *nav)
+{
+    return nav&&nav->upds&&sat>0&&sat<=MAXSAT&&
+           nav->upds->wls.wl_valid[sat-1];
+}
+
+static int validnlupd_sat(const gtime_t obst, int sat, const nav_t *nav)
+{
+    int i;
+
+    if(!nav||!nav->upds||!nav->upds->nls.data||sat<=0||sat>MAXSAT) return 0;
+    for(i=0;i<nav->upds->nls.n;i++) {
+        if(timediff(nav->upds->nls.data[i].ts,obst)<=0&&
+           timediff(nav->upds->nls.data[i].te,obst)>0) {
+            return nav->upds->nls.data[i].valid[sat-1];
+        }
+    }
+    return 0;
 }
 
 static int __attribute__((unused)) matchnlfcb(const gtime_t obst, int sat1, int sat2,
@@ -195,6 +241,15 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
 
             if(exc[j]||!rtk->ssat[obs[j].sat-1].vsat[frq]||rtk->ssat[obs[j].sat-1].azel[1]<elmask
                 ||rtk->ssat[obs[j].sat-1].lock[f]<0){continue;}
+
+            if(rtk->opt.arprod==AR_PROD_UPD) {
+                int f2obs=obs[j].L[1]==0.0?2:1;
+                if(f2obs==2) continue;
+                if(!validwlupd_sat(obs[j].sat,nav)||
+                   !validnlupd_sat(obs[j].time,obs[j].sat,nav)) {
+                    continue;
+                }
+            }
 
 #if 0
         int iamb=0;
@@ -253,12 +308,18 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
     }
 
     for(i=0;i<ns;i++){
+        double nl_fcb1=0.0,nl_fcb2=0.0;
+
         sat=sat1[i];
         ref_sat=sat2[i];
         satsys(sat,&prn);
         sys_idx=satsysidx(sat);
         if(sys_idx==-1) continue;
         if(rtk->sdamb[sat-1].fix_nl_flag!=1) continue;
+        if(opt.arprod == AR_PROD_UPD&&
+           !matchnlupd(obs[iu[i]].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
+            continue;
+        }
 
         f2=obs[iu[i]].L[1]==0.0?2:1;
 
@@ -289,9 +350,6 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
         Nc[nb]=sd_if;
         
         if(opt.arprod == AR_PROD_UPD){
-            double nl_fcb1=0.0,nl_fcb2=0.0;
-            matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav);
-
             sd_nl_fcb[nb]=nl_fcb1-nl_fcb2;
         }
         trace(2, "SAT: %d | IF: %f, WL: %f, NL: %f\n\r",sat-1, sd_if, rtk->sdamb[sat-1].wl, rtk->sdamb[sat-1].nl);
@@ -317,7 +375,10 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
 
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
         if (rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
-        rtk->sol.thres=(float)rtk->opt.thresar[1];
+        /* NL validation uses the LAMBDA ratio (s1/s0, always >=1), so the
+         * threshold must be the ratio threshold thresar[0] (e.g. 3.0), NOT
+         * thresar[1] which is a rounding-confidence probability (~0.9999). */
+        rtk->sol.thres=(float)rtk->opt.thresar[0];
 
         if(rtk->sol.ratio<rtk->sol.thres&&nb>MIN_AMB_RES){
             stat=0;
@@ -378,8 +439,10 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         gamma=CLIGHT*frq2/(SQR(frq1)-SQR(frq2));
 
         if(opt.arprod == AR_PROD_OSB_COD){
-            if(Bl[i]!=0.0) Bc[i]=lam_nl*Bl[i]+gamma*Bw[i];
-            else Bc[i]=y[na+i];
+            /* Bl[i] holds the LAMBDA-fixed SD-NL integer for every entry
+             * 0..nb-1; a fixed value of 0 is a valid integer, so reconstruct
+             * the IF bias unconditionally (do not fall back to the float). */
+            Bc[i]=lam_nl*Bl[i]+gamma*Bw[i];
 
             rtk->sdamb[sat1[i]-1].lc_fix=Bc[i];
             rtk->sdamb[sat1[i]-1].lc_res=Bc[i]-rtk->sdamb[sat1[i]-1].lc;
@@ -515,8 +578,10 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
             gamma_g  = CLIGHT * frq2_g / (SQR(frq1_g) - SQR(frq2_g));
 
             sd_wl_g = rtk->ssat[sat-1].mw[1] - rtk->ssat[ref_sat-1].mw[1];
-            if (opt.arprod == AR_PROD_UPD && nav->upds) {
-                wl_fcb_g = nav->upds->wls.wl[sat-1] - nav->upds->wls.wl[ref_sat-1];
+            if (opt.arprod == AR_PROD_UPD) {
+                double wl_upd1=0.0,wl_upd2=0.0;
+                if(!matchwlupd(sat,ref_sat,&wl_upd1,&wl_upd2,nav)) continue;
+                wl_fcb_g = wl_upd1 - wl_upd2;
             } else {
                 wl_fcb_g = nav->wlbias[sat-1] - nav->wlbias[ref_sat-1];
             }
@@ -561,6 +626,8 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         if(sys_idx==-1) continue;
 
         rtk->sdamb[ref_sat-1].ref_sat_no=0;
+        rtk->sdamb[sat-1].fix_wl_flag=0;
+        rtk->sdamb[sat-1].fix_nl_flag=0;
 
         f2=obs[iu[i]].L[1]==0.0?2:1;
 
@@ -576,7 +643,16 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         sd_wl=rtk->ssat[sat-1].mw[1]-rtk->ssat[ref_sat-1].mw[1];
         wl_fcb=0.0;
         if(opt.arprod == AR_PROD_UPD){
-            wl_fcb=nav->upds->wls.wl[sat-1]-nav->upds->wls.wl[ref_sat-1];
+            double wl_upd1=0.0,wl_upd2=0.0;
+            if(f2==2) {
+                trace(2,"ppp_ar upd: skip L1/L5 sat=%d ref=%d\n",sat,ref_sat);
+                continue;
+            }
+            if(!matchwlupd(sat,ref_sat,&wl_upd1,&wl_upd2,nav)) {
+                trace(2,"ppp_ar upd: missing WL UPD sat=%d ref=%d\n",sat,ref_sat);
+                continue;
+            }
+            wl_fcb=wl_upd1-wl_upd2;
         } else {
             wl_fcb=nav->wlbias[sat-1]-nav->wlbias[ref_sat-1];
         }
@@ -627,15 +703,19 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         if(opt.arprod == AR_PROD_OSB_COD){
             nl_amb = (sd_if-gamma*newround(wl_amb))/lam_nl;
             trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
-        } else if(opt.arprod == AR_PROD_UPD&&f2!=2&&
-                  !matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
+        } else if(opt.arprod == AR_PROD_UPD){
             /* UPD NL FCBs are computed for L1+L2; skip for L1+L5 (f2==2) */
+            if(f2==2) continue;
+            if(!matchnlupd(obs[iu[i]].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)) {
+                trace(2,"ppp_ar upd: missing NL UPD sat=%d ref=%d\n",sat,ref_sat);
+                continue;
+            }
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
         } else {
             /* L1+L5 with FCB/UPD: OSBs applied in corr_meas(), no separate FCB */
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl;
         }
-        if(isnan(nl_amb)) nl_amb=0.0;
+        if(nl_amb!=nl_amb) nl_amb=0.0;
 
         /* GLONASS FDMA: apply receiver NL IFB correction (cyc/channel) */
         if (sys == SYS_GLO && glo_ifb_nl != 0.0) {

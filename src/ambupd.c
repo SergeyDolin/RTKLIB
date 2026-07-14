@@ -5,7 +5,7 @@
  *     2) Time of day, (unit: second)
  *     3) Station name
  *     4) PRN number of GNSS satellite
- *     5) IF ambiguity derived from PPP float solution, (unit: meter)
+ *     5) IF ambiguity bc in GREAT-UPD convention, (unit: meter)
  *     6) WL ambiguity derived from Melbourne-Wübbena combination, (unit: cycle)
  *     7) Standard deviation of WL ambiguity.
  * The ambupd_write_epoch() function is intended to be called from ppp.c -> pppos() once per epoch. 
@@ -29,7 +29,7 @@
 #define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
 #define NP(opt)     ((opt)->dynamics?9:3)
 #define NC(opt)     (NSYS)
-#define NT(opt)     ((opt)->tropopt<TROPOPT_EST?0:((opt)->tropopt==TROPOPT_EST?1:3))
+#define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
 #define ND(opt)     ((opt)->nf>=3?1:0)
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
@@ -109,6 +109,10 @@ typedef struct {
     char station[32];
     char satid[8];
     double if_out;
+    double if_state_raw;
+    double if_sd;
+    double if_arc_mean;
+    double if_arc_std;
     double mw_raw;
     double mw_dcb;
     double mw_dcb_sat;
@@ -120,6 +124,12 @@ typedef struct {
     char code2[8];
     int k1, k2;
     double f1, f2;
+    double lambda1, lambda2, lambda_wl, lambda_nl;
+    double L1_m, L2_m, P1_m, P2_m;
+    double L_if_m, P_if_m;
+    int slip_flags;
+    int ppp_stat;
+    float ppp_cnvg;
 } amb_epoch_row_t;
 
 typedef struct {
@@ -169,6 +179,7 @@ static void ambupd_close_outputs(void);
 static void bsx_cache_reset(bsx_rcv_cache_t *cache);
 static void pending_flush_to_file(void);
 static void upper_copy(char *dst, size_t ndst, const char *src);
+extern int iamb_ppp(const prcopt_t *opt, int sat, int f);
 
  /* AMBFLAG --------------------------------------------------------------------- */
 #define MAX_AMB_ARCS  8192
@@ -1199,16 +1210,26 @@ static void pending_flush_to_file(void)
                 r->if_out, wl_mean, sigma_wl);
         if (g_fp_diag) {
             fprintf(g_fp_diag,
-                    "%s,%.1f,%s,%s,%s,%d,%d,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%d,%.6f,%.6f,%.6f\n",
+                    "%s,%.1f,%s,%s,%s,%d,%d,%.3f,%.3f,"
+                    "%.9f,%.9f,%.9f,%.9f,"
+                    "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                    "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                    "%.6f,%.6f,%.6f,%.6f,%s,%s,%s,%s,%s,%s,%d,%.6f,%.6f,"
+                    "%d,%d,%.3f\n",
                     r->station, r->sod, r->satid, r->code1, r->code2,
-                    r->k1, r->k2, r->f1, r->f2, r->mw_raw, r->mw_dcb,
-                    r->mw_dcb_sat, r->mw_dcb_rcv, dcb_mode_str(r->dcb_mode),
+                    r->k1, r->k2, r->f1, r->f2,
+                    r->lambda1, r->lambda2, r->lambda_wl, r->lambda_nl,
+                    r->L1_m, r->L2_m, r->P1_m, r->P2_m, r->L_if_m, r->P_if_m,
+                    r->if_state_raw, r->if_out, r->if_arc_mean, r->if_arc_std,
+                    r->if_sd, r->lambda_nl > 0.0 ? -r->if_out / r->lambda_nl : 0.0,
+                    r->mw_raw, r->mw_dcb, r->mw_dcb_sat, r->mw_dcb_rcv,
+                    dcb_mode_str(r->dcb_mode),
                     r->dcb_info.provider[0] ? r->dcb_info.provider : "bsx",
                     r->dcb_info.p1p2_source[0] ? r->dcb_info.p1p2_source : "none",
                     r->dcb_info.p1c1_source[0] ? r->dcb_info.p1c1_source : "none",
                     r->dcb_info.p2c2_source[0] ? r->dcb_info.p2c2_source : "none",
                     "sat-only", r->bsx_rcv_rows, r->dcb_info.mw_dcb_bsx,
-                    wl_mean, r->if_out);
+                    wl_mean, r->slip_flags, r->ppp_stat, r->ppp_cnvg);
         }
     }
     g_pending_n = 0;
@@ -1218,6 +1239,8 @@ static void ambupd_flush_sat_arc(int sat, const char *reason)
 {
     int idx, i;
     double wl_mean, sigma_wl, arc_sec, arc_epochs;
+    double if_mean = 0.0, if_std = 0.0, if_sumsq = 0.0;
+    int if_n = 0;
     if (sat <= 0 || sat > MAXSAT) return;
     idx = sat - 1;
     if (g_arc_rows_n[idx] <= 0) return;
@@ -1231,6 +1254,22 @@ static void ambupd_flush_sat_arc(int sat, const char *reason)
     sigma_wl = arc_sigma_mean(&wl_arc[idx]);    /* GREAT writes SE-of-mean */
     arc_epochs = wl_arc[idx].n;
     arc_sec  = wl_arc[idx].n * g_sample_dt;
+
+    for (i = 0; i < g_arc_rows_n[idx]; i++) {
+        double bc = g_arc_rows[idx][i].if_out;
+        if (bc != bc) continue;
+        if_mean += bc;
+        if_sumsq += bc * bc;
+        if_n++;
+    }
+    if (if_n > 0) {
+        if_mean /= (double)if_n;
+        if (if_n > 1) {
+            double var = (if_sumsq - (double)if_n * if_mean * if_mean) /
+                         (double)(if_n - 1);
+            if_std = var > 0.0 ? sqrt(var) : 0.0;
+        }
+    }
 
     /* Ge 2008 quality gates: drop short or noisy arcs entirely */
     if (arc_epochs < g_min_arc_epochs || arc_sec < g_min_arc_sec) {
@@ -1253,13 +1292,18 @@ static void ambupd_flush_sat_arc(int sat, const char *reason)
     g_arc_kept++;
 
     for (i = 0; i < g_arc_rows_n[idx]; i++) {
-        if (!pending_push(&g_arc_rows[idx][i], wl_mean, sigma_wl)) {
+        amb_epoch_row_t row = g_arc_rows[idx][i];
+        if (if_n > 0) row.if_out = if_mean;  /* GREAT bc is one ambiguity per arc */
+        row.if_arc_mean = if_mean;
+        row.if_arc_std = if_std;
+        if (!pending_push(&row, wl_mean, sigma_wl)) {
             trace(1, "ambupd: pending buffer alloc failed sat=%d\n", sat);
             break;
         }
     }
-    trace(4, "ambupd: pend sat=%d rows=%d reason=%s wl=%.4f sig=%.4f\n",
-          sat, g_arc_rows_n[idx], reason ? reason : "-", wl_mean, sigma_wl);
+    trace(4, "ambupd: pend sat=%d rows=%d reason=%s wl=%.4f sig=%.4f if=%.4f if_std=%.4f\n",
+          sat, g_arc_rows_n[idx], reason ? reason : "-", wl_mean, sigma_wl,
+          if_mean, if_std);
     g_arc_rows_n[idx] = 0;
 }
 
@@ -1347,7 +1391,9 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
     double gap_reset;
     double Nwl_mw;
     double Nwl_mw_base = 0.0, Nwl_mw_dcb = 0.0, Nwl_mw_dcb_sat = 0.0, Nwl_mw_dcb_rcv = 0.0;
-    double N_if;
+    double N_if, if_state_raw, if_sd;
+    double lambda1, lambda2, lambda_wl, lambda_nl;
+    double L1_m, L2_m, P1_m, P2_m, L_if_m, P_if_m;
     int idx_if;
     int mw_ok;
     dcb_mode_t dcb_mode = DCB_MODE_NONE;
@@ -1412,7 +1458,14 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
         }
         else {
             fprintf(g_fp_diag,
-                    "station,sod,sat,code1,code2,k1,k2,f1,f2,mw_raw,mw_dcb,mw_dcb_sat,mw_dcb_rcv,dcb_mode,dcb_provider,p1p2_source,p1c1_source,p2c2_source,mw_dcb_source,bsx_rcv_rows,mw_dcb_bsx,wl_mean,if_state\n");
+                    "station,sod,sat,code1,code2,k1,k2,f1,f2,"
+                    "lambda1,lambda2,lambda_wl,lambda_nl,"
+                    "L1_m,L2_m,P1_m,P2_m,L_IF_m,P_IF_m,"
+                    "if_state_raw_m,if_ambupd_bc_m,if_arc_mean_m,if_arc_std_m,"
+                    "if_sd_m,if_nl_component_cycles,"
+                    "mw_raw,mw_dcb,mw_dcb_sat,mw_dcb_rcv,dcb_mode,dcb_provider,"
+                    "p1p2_source,p1c1_source,p2c2_source,mw_dcb_source,"
+                    "bsx_rcv_rows,mw_dcb_bsx,wl_mean,slip_flags,ppp_stat,ppp_cnvg\n");
         }
         trace(1, "ambupd: creating file: %s\n", g_amb_file);
     }
@@ -1456,10 +1509,26 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
         }
         if (fabs(f1 - f2) < 1.0) continue;
 
-        idx_if = IB(sat, 0, &rtk->opt);
+        idx_if = iamb_ppp(&rtk->opt, sat, 0);
         if (idx_if < 0 || idx_if >= rtk->nx) continue;
-        N_if = rtk->x[idx_if];
+        if_state_raw = rtk->x[idx_if];
+        N_if = if_state_raw;  /* GREAT applies the sign in _calculateAmbNL(): -bc/lambda_NL */
         if (fabs(N_if) < 1e-12) continue;
+
+        lambda1 = CLIGHT / f1;
+        lambda2 = CLIGHT / f2;
+        lambda_wl = CLIGHT / (f1 - f2);
+        lambda_nl = CLIGHT / (f1 + f2);
+        L1_m = obs[iobs].L[k1] * lambda1;
+        L2_m = obs[iobs].L[k2] * lambda2;
+        P1_m = obs[iobs].P[k1];
+        P2_m = obs[iobs].P[k2];
+        {
+            double c1 = SQR(f1) / (SQR(f1) - SQR(f2));
+            double c2 = -SQR(f2) / (SQR(f1) - SQR(f2));
+            L_if_m = c1 * L1_m + c2 * L2_m;
+            P_if_m = c1 * P1_m + c2 * P2_m;
+        }
 
         {
             int arc_reset_flag = 0;
@@ -1494,12 +1563,12 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
          *     unconverged float-PPP IF state into ambupd output). */
         {
             int idx_p = idx_if + idx_if * rtk->nx;
-            double sd_if = (idx_p >= 0 && idx_p < rtk->nx * rtk->nx)
-                           ? sqrt(MAX(rtk->P[idx_p], 0.0)) : 1e9;
-            if (sd_if > g_max_if_sd) {
+            if_sd = (idx_p >= 0 && idx_p < rtk->nx * rtk->nx)
+                    ? sqrt(MAX(rtk->P[idx_p], 0.0)) : 1e9;
+            if (if_sd > g_max_if_sd) {
                 g_drop_if_sd++;
                 trace(4, "ambupd: sat=%d IF not mature sd=%.3f m (limit=%.3f)\n",
-                      sat, sd_if, g_max_if_sd);
+                      sat, if_sd, g_max_if_sd);
                 continue;   /* don't write this epoch yet */
             }
         }
@@ -1519,9 +1588,9 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
         wl_last_init[sat - 1] = 1;
 
         satno2id(sat, satid);
-        trace(3, "ambupd: sat=%-4s idx_if=%3d IF=%10.4f m  "
+        trace(3, "ambupd: sat=%-4s idx_if=%3d IFraw=%10.4f m bc=%10.4f m  "
               "WL_raw=%7.4f cy WL_dcb=%7.4f cy sat=%7.4f cy rcv=%7.4f cy dcb=%s n=%.0f\n",
-              satid, idx_if, N_if, Nwl_mw_base, Nwl_mw_dcb,
+              satid, idx_if, if_state_raw, N_if, Nwl_mw_base, Nwl_mw_dcb,
               Nwl_mw_dcb_sat, Nwl_mw_dcb_rcv, dcb_mode_str(dcb_mode),
               wl_arc[sat - 1].n);
 
@@ -1529,6 +1598,10 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
         row.mjd = floor(mjd);
         row.sod = time_of_day;
         row.if_out = N_if;
+        row.if_state_raw = if_state_raw;
+        row.if_sd = if_sd;
+        row.if_arc_mean = N_if;
+        row.if_arc_std = 0.0;
         row.mw_raw = Nwl_mw_base;
         row.mw_dcb = Nwl_mw_dcb;
         row.mw_dcb_sat = Nwl_mw_dcb_sat;
@@ -1540,6 +1613,20 @@ extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
         row.k2 = k2;
         row.f1 = f1;
         row.f2 = f2;
+        row.lambda1 = lambda1;
+        row.lambda2 = lambda2;
+        row.lambda_wl = lambda_wl;
+        row.lambda_nl = lambda_nl;
+        row.L1_m = L1_m;
+        row.L2_m = L2_m;
+        row.P1_m = P1_m;
+        row.P2_m = P2_m;
+        row.L_if_m = L_if_m;
+        row.P_if_m = P_if_m;
+        row.slip_flags = (int)rtk->ssat[sat - 1].slip[0] |
+                         ((int)rtk->ssat[sat - 1].slip[1] << 8);
+        row.ppp_stat = rtk->sol.stat;
+        row.ppp_cnvg = rtk->sol.cnvg;
         strncpy(row.station, station_name, sizeof(row.station) - 1);
         row.station[sizeof(row.station) - 1] = '\0';
         strncpy(row.satid, satid, sizeof(row.satid) - 1);

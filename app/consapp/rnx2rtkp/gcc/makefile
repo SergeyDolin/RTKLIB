@@ -35,7 +35,7 @@ all        : rnx2rtkp
 debug	   : rnx2rtkp
 rnx2rtkp   : rnx2rtkp.o rtkcmn.o rinex.o rtkpos.o postpos.o solution.o
 rnx2rtkp   : lambda.o geoid.o sbas.o preceph.o pntpos.o ephemeris.o options.o
-rnx2rtkp   : ppp.o ppp_ar.o rtcm.o rtcm2.o rtcm3.o rtcm3e.o ionex.o tides.o ambupd.o gpt3.o
+rnx2rtkp   : ppp.o ppp_ar.o ppp_upd_ar.o rtcm.o rtcm2.o rtcm3.o rtcm3e.o ionex.o tides.o ambupd.o gpt3.o
 
 rnx2rtkp.o : ../rnx2rtkp.c
 	$(CC) -c $(CFLAGS) ../rnx2rtkp.c
@@ -177,4 +177,3 @@ prof :
 
 install :
 	cp rnx2rtkp $(BINDIR)
-

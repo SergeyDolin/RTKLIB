@@ -58,7 +58,6 @@
 #define EXTERR_CLK  1E-3            /* extrapolation error for clock (m/s) */
 #define EXTERR_EPH  5E-7            /* extrapolation error for ephem (m/s^2) */
 
-#define MAXCODE 136
 
 typedef struct {
     int sat;
@@ -341,13 +340,55 @@ extern void readsp3(const char *file, nav_t *nav, int opt)
     if (nav->ne>0) combpeph(nav,opt);
 }
 
+static int get_pppopt_path_upd(const prcopt_t *opt, const char *token,
+                               char *path, int npath)
+{
+    const char *p;
+    int i;
+
+    if (!opt||!token||!*token||!path||npath<=0||!opt->pppopt[0]) return 0;
+    p=strstr(opt->pppopt,token);
+    if (!p) return 0;
+    if (p!=opt->pppopt&&*(p-1)!=' '&&*(p-1)!='\t') return 0;
+    p+=strlen(token);
+    for (i=0;*p&&*p!=' '&&*p!='\t'&&i<npath-1;p++) path[i++]=*p;
+    path[i]='\0';
+    return i>0;
+}
+
+static int parse_great_upd_row(const char *buff, int *sat, double *upd,
+                               double *std, int *npoint, int *valid)
+{
+    const char *p=buff;
+    char satid[16];
+    double val=0.0,sig=0.0;
+    int n=0,ok=1;
+
+    if (!buff||!sat||!upd||!std||!npoint||!valid) return 0;
+    if (buff[0]=='%'||!strncmp(buff,"EOF",3)) return 0;
+    if (*p=='x'||*p=='X') {
+        ok=0;
+        p++;
+    }
+    if (sscanf(p,"%15s %lf %lf %d",satid,&val,&sig,&n)<3) return 0;
+    *sat=satid2no(satid);
+    if (*sat<=0||*sat>MAXSAT) return 0;
+    *upd=val;
+    *std=ok?sig:10000.0;
+    *npoint=n;
+    *valid=ok;
+    return 1;
+}
+
 static int readupdf_ewl(const char *file, wl_upds_t *ewls)
 {
     FILE *fp;
     char buff[200]={'\0'};
-    int sat;
+    int sat,npoint,valid,n=0;
+    double upd,std;
 
     if(!ewls) return 0;
+    if(!file||!*file) return 0;
     if (!(fp=fopen(file,"r"))) {
         trace(2,"ewl upd parameters file open error: %s\n",file);
         return 0;
@@ -356,23 +397,29 @@ static int readupdf_ewl(const char *file, wl_upds_t *ewls)
     while(fgets(buff, sizeof(buff),fp)){
         if(!strncmp(buff, "EOF",3)) break;
         if(!strncmp(buff, "%",1)) continue;
-        sat=satid2no(buff+1);
-        if(sat<=0) continue;
-        ewls->ewl[sat-1]=str2num(buff,14,6);
+        if(!parse_great_upd_row(buff,&sat,&upd,&std,&npoint,&valid)) continue;
+        ewls->ewl[sat-1]=upd;
+        ewls->ewl_std[sat-1]=std;
+        ewls->ewl_npoint[sat-1]=npoint;
+        ewls->ewl_valid[sat-1]=(uint8_t)valid;
+        if(valid) n++;
     }
 
     fclose(fp);
 
-    return 1;
+    trace(2,"ewl upd parameters loaded: %s valid=%d\n",file,n);
+    return n>0;
 }
 
 static int readupdf_wl(const char *file, wl_upds_t *wls)
 {
     FILE *fp;
     char buff[200]={'\0'};
-    int sat;
+    int sat,npoint,valid,n=0;
+    double upd,std;
 
     if(!wls) return 0;
+    if(!file||!*file) return 0;
     if (!(fp=fopen(file,"r"))) {
         trace(2,"wl upd parameters file open error: %s\n",file);
         return 0;
@@ -381,26 +428,34 @@ static int readupdf_wl(const char *file, wl_upds_t *wls)
     while(fgets(buff, sizeof(buff),fp)){
         if(!strncmp(buff, "EOF",3)) break;
         if(!strncmp(buff, "%",1)) continue;
-        sat=satid2no(buff+1);
-        if(sat<=0) continue;
-        wls->wl[sat-1]=str2num(buff,14,6);
+        if(!parse_great_upd_row(buff,&sat,&upd,&std,&npoint,&valid)) continue;
+        wls->wl[sat-1]=upd;
+        wls->wl_std[sat-1]=std;
+        wls->wl_npoint[sat-1]=npoint;
+        wls->wl_valid[sat-1]=(uint8_t)valid;
+        if(valid) n++;
     }
 
     fclose(fp);
 
-    return 1;
+    trace(2,"wl upd parameters loaded: %s valid=%d\n",file,n);
+    return n>0;
 }
 
 static int readupdf_nl(const char *file, nl_upds_t *nls)
 {
     FILE *fp;
     char buff[200]={'\0'};
-    int sat,ep=0;
+    int sat,ep=-1,npoint,valid,nrow=0;
     mjd_t mjd;
     gtime_t t={0};
     nl_upd_t *nl_data_temp;
+    double upd,std,dt=30.0;
+    long mjdday;
+    double sod;
 
     if(!nls) return 0;
+    if(!file||!*file) return 0;
     if (!(fp=fopen(file,"r"))) {
         trace(2,"nl upd parameters file open error: %s\n",file);
         return 0;
@@ -409,44 +464,89 @@ static int readupdf_nl(const char *file, nl_upds_t *nls)
     while(fgets(buff, sizeof(buff),fp)){
         if(!strncmp(buff, "EOF",3)) break;
         if(!strncmp(buff, "%",1)) continue;
-        if(!strncmp(buff+1,"EPOCH-TIME",10)){
-            mjd.day=(long) str2num(buff,12,8);
-            mjd.ds.sn=(long) str2num(buff,20,12);
-            mjd.ds.tos=0.0;
+        if(strstr(buff,"EPOCH-TIME")){
+            if (sscanf(buff,"%*s %ld %lf",&mjdday,&sod)<2) continue;
+            mjd.day=mjdday;
+            mjd.ds.sn=(long)floor(sod);
+            mjd.ds.tos=sod-(double)mjd.ds.sn;
             mjd2time(&mjd,&t);
-            ep++;
-            nls->n=ep;
+            if(nls->n>=nls->nmax){
+                nls->nmax+=1024;
+                if(!(nl_data_temp=(nl_upd_t *)realloc(nls->data, sizeof(nl_upd_t)*nls->nmax))){
+                    free(nls->data);
+                    nls->data=NULL;
+                    nls->n=nls->nmax=0;
+                    fclose(fp);
+                    return -1;
+                }
+                nls->data=nl_data_temp;
+            }
+            ep=nls->n++;
+            memset(nls->data+ep,0,sizeof(nl_upd_t));
+            nls->data[ep].ts=t;
+            nls->data[ep].te=timeadd(t,dt);
+            if (ep>0) {
+                dt=fabs(timediff(nls->data[ep].ts,nls->data[ep-1].ts));
+                if (dt<=0.0) dt=30.0;
+                nls->data[ep-1].te=nls->data[ep].ts;
+                nls->data[ep].te=timeadd(nls->data[ep].ts,dt);
+            }
             continue;
         }
-        sat=satid2no(buff+1);
-        if(sat<=0) continue;
-        if(nls->n>=nls->nmax){
-            nls->nmax+=1024;
-            if(!(nl_data_temp=(nl_upd_t *)realloc(nls->data, sizeof(nl_upd_t)*nls->nmax))){
-                free(nls->data);
-                nls->data=NULL;
-                nls->n=nls->nmax=0;
-                return -1;
-            }
-            nls->data=nl_data_temp;
-        }
-        nls->data[ep-1].ts=t;
-        nls->data[ep-1].te=timeadd(t,30.0);
-        nls->data[ep-1].nl[sat-1]=str2num(buff,15,8);
-        nls->data[ep-1].std[sat-1]=str2num(buff,25,8);
+        if(ep<0) continue;
+        if(!parse_great_upd_row(buff,&sat,&upd,&std,&npoint,&valid)) continue;
+        nls->data[ep].nl[sat-1]=upd;
+        nls->data[ep].std[sat-1]=std;
+        nls->data[ep].npoint[sat-1]=npoint;
+        nls->data[ep].valid[sat-1]=(uint8_t)valid;
+        if(valid) nrow++;
     }
     fclose(fp);
-    return 0;
+    trace(2,"nl upd parameters loaded: %s epochs=%d valid_rows=%d\n",
+          file,nls->n,nrow);
+    return nls->n>0;
 }
 
-extern int readupd(const prcopt_t *opt,char *file_ewl,char *file_wl,char *file_nl, nav_t *nav)
+extern int readupd(const prcopt_t *opt,const char *file_ewl,
+                   const char *file_wl,const char *file_nl, nav_t *nav)
 {
-    nav->upds=(void *)malloc(sizeof(upds_t));
-    readupdf_ewl(file_ewl,&nav->upds->wls);
-    readupdf_wl(file_wl,&nav->upds->wls);
-    readupdf_nl(file_nl,&nav->upds->nls);
+    char ewl[MAXSTRPATH]="",wl[MAXSTRPATH]="",nl[MAXSTRPATH]="";
+    int i,has_wl=0,has_nl=0;
 
-    return 0;
+    if(!nav) return 0;
+
+    if(file_ewl) strncpy(ewl,file_ewl,sizeof(ewl)-1);
+    if(file_wl ) strncpy(wl ,file_wl ,sizeof(wl )-1);
+    if(file_nl ) strncpy(nl ,file_nl ,sizeof(nl )-1);
+    ewl[sizeof(ewl)-1]=wl[sizeof(wl)-1]=nl[sizeof(nl)-1]='\0';
+
+    get_pppopt_path_upd(opt,"-UPD_EWL=",ewl,sizeof(ewl));
+    get_pppopt_path_upd(opt,"-UPD_WL=", wl, sizeof(wl ));
+    get_pppopt_path_upd(opt,"-UPD_NL=", nl, sizeof(nl ));
+    get_pppopt_path_upd(opt,"-PPPAR_UPD_EWL=",ewl,sizeof(ewl));
+    get_pppopt_path_upd(opt,"-PPPAR_UPD_WL=", wl, sizeof(wl ));
+    get_pppopt_path_upd(opt,"-PPPAR_UPD_NL=", nl, sizeof(nl ));
+
+    if(nav->upds) {
+        free(nav->upds->nls.data);
+        free(nav->upds);
+        nav->upds=NULL;
+    }
+    nav->upds=(upds_t *)calloc(1,sizeof(upds_t));
+    if(!nav->upds) return 0;
+
+    readupdf_ewl(ewl,&nav->upds->wls);
+    readupdf_wl(wl,&nav->upds->wls);
+    readupdf_nl(nl,&nav->upds->nls);
+
+    trace(2,"readupd: ewl=%s wl=%s nl=%s\n",
+          ewl[0]?ewl:"-",wl[0]?wl:"-",nl[0]?nl:"-");
+
+    for(i=0;i<MAXSAT;i++) {
+        if(nav->upds->wls.wl_valid[i]) has_wl=1;
+    }
+    has_nl=nav->upds->nls.n>0;
+    return has_wl||has_nl;
 }
 
 static int __attribute__((unused)) biasstr2time(const char *s, int i, int n, gtime_t *t) {
@@ -467,31 +567,14 @@ static int __attribute__((unused)) biasstr2time(const char *s, int i, int n, gti
 
 static int code2idx_obs(const char *obs)
 {
-    const char *codes[] = {
-        "",
-        "C1C","C1P","C1W","C1Y","C1M","C1N","C1S","C1L","C1E",
-        "C1A","C1B","C1X","C1Z","C2C","C2D","C2S","C2L","C2X",
-        "C2P","C2W","C2Y","C2M","C2N","C5I","C5Q","C5X","C7I",
-        "C7Q","C7X","C6A","C6B","C6C","C6X","C6Z","C6S","C6L",
-        "C8L","C8Q","C8X","C2I","C2Q","C6I","C6Q","C3I","C3Q",
-        "C3X","C1I","C1Q","C5A","C5B","C5C","C9A","C9B","C9C",
-        "C9X","C1D","C5D","C5P","C5Z","C6E","C7D","C7P","C7Z",
-        "C8D","C8P","C4A","C4B","C4X",
-
-        "L1C","L1P","L1W","L1Y","L1M","L1N","L1S","L1L","L1E",
-        "L1A","L1B","L1X","L1Z","L2C","L2D","L2S","L2L","L2X",
-        "L2P","L2W","L2Y","L2M","L2N","L5I","L5Q","L5X","L7I",
-        "L7Q","L7X","L6A","L6B","L6C","L6X","L6Z","L6S","L6L",
-        "L8L","L8Q","L8X","L2I","L2Q","L6I","L6Q","L3I","L3Q",
-        "L3X","L1I","L1Q","L5A","L5B","L5C","L9A","L9B","L9C",
-        "L9X","L1D","L5D","L5P","L5Z","L6E","L7D","L7P","L7Z",
-        "L8D","L8P","L4A","L4B","L4X"
-    };
-    int i;
-    for (i = 1; i < (int)(sizeof(codes)/sizeof(codes[0])); i++) {
-        if (strcmp(codes[i], obs) == 0) return i;
-    }
-    return 0;
+    /* obs is a 3-char RINEX bias observation code such as "C1C" (code) or
+     * "L1C" (phase).  The leading letter is the observable range and is tracked
+     * separately (bias_t.type), so map only the 2-char signal part ("1C") to
+     * the RTKLIB CODE_??? index (1..MAXCODE-1).  This makes both code and phase
+     * biases share the same signal index that matchcposb() looks up via
+     * obs->code[f]. */
+    if (!obs || strlen(obs) < 3) return 0;
+    return (int)obs2code(obs + 1);
 }
 
 static int biasstr2time_str(const char *s, gtime_t *time)

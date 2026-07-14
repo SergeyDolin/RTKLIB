@@ -882,6 +882,8 @@ typedef struct {
     gtime_t ts,te;
     double nl[MAXSAT];
     double std[MAXSAT];
+    int npoint[MAXSAT];
+    uint8_t valid[MAXSAT];
 }nl_upd_t;
 
 typedef struct {
@@ -892,6 +894,12 @@ typedef struct {
 typedef struct {
     double ewl[MAXSAT];
     double wl[MAXSAT];
+    double ewl_std[MAXSAT];
+    double wl_std[MAXSAT];
+    int ewl_npoint[MAXSAT];
+    int wl_npoint[MAXSAT];
+    uint8_t ewl_valid[MAXSAT];
+    uint8_t wl_valid[MAXSAT];
 }wl_upds_t;
 
 typedef struct {
@@ -1973,7 +1981,8 @@ EXPORT void readsp3(const char *file, nav_t *nav, int opt);
 EXPORT int  readsap(const char *file, gtime_t time, nav_t *nav);
 EXPORT int  readdcb(const char *file, nav_t *nav, const sta_t *sta);
 EXPORT int  readfcb(const char *file, nav_t *nav);
-EXPORT int  readupd(const prcopt_t *opt, char *file_ewl, char *file_wl, char *file_nl, nav_t *nav);
+EXPORT int  readupd(const prcopt_t *opt, const char *file_ewl,
+                    const char *file_wl, const char *file_nl, nav_t *nav);
 EXPORT int  readosb(const char *file, nav_t *nav);
 EXPORT void alm2pos(gtime_t time, const alm_t *alm, double *rs, double *dts);
 
@@ -2182,6 +2191,8 @@ EXPORT int pppoutstat(rtk_t *rtk, char *buff);
 EXPORT int pppna(const prcopt_t *opt);
 EXPORT int iamb_ppp(const prcopt_t *opt,int sat,int f);
 EXPORT int pppoutstat(rtk_t *rtk, char *buff);
+EXPORT int ppp_upd_ar_debug(const rtk_t *rtk, const obsd_t *obs, int n,
+                            const nav_t *nav, const int *exc);
 EXPORT int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,const obsd_t *obs,int ns,const nav_t *nav,int *exc);
 EXPORT void holdamb_ppp(rtk_t *rtk,const double *xa);
 EXPORT void freeres(res_t *res);

@@ -134,6 +134,16 @@ static double STD(rtk_t *rtk, int i)
 extern int iamb_ppp(const prcopt_t *opt, int sat, int f){
     return IB(sat,f,opt);
 }
+/* AMBUPD output for integration testing. */
+extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
+                               const nav_t *nav);
+__attribute__((weak)) int ppp_upd_ar_debug(const rtk_t *rtk,
+                                           const obsd_t *obs, int n,
+                                           const nav_t *nav, const int *exc)
+{
+    (void)rtk; (void)obs; (void)n; (void)nav; (void)exc;
+    return 0;
+}
 /* write solution status for PPP ---------------------------------------------*/
 extern int pppoutstat(rtk_t *rtk, char *buff)
 {
@@ -470,6 +480,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     int *codes;
     int i,sys=satsys(obs->sat,NULL),frq2;
     
+    /* In OSB mode the per-signal satellite biases are already removed above,
+     * so the DCB/SSR code-bias corrections below must be skipped to avoid
+     * double-correcting the pseudoranges. */
+    int use_dcb=!(opt->arprod==AR_PROD_OSB_COD&&nav->osbs);
+    
     codes = (int *)calloc(NFREQ, sizeof(int)); /* zero-init: CODE_NONE=0 prevents false matches */
     
     for (i=0;i<NFREQ;i++) {
@@ -484,8 +499,12 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         P[i]=obs->P[i]-dants[i]-dantr[i];
 
          
-        /* apply OSB corrections for PPP-AR */
-        if (opt->modear==ARMODE_CONT&&opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
+        /* Apply OSB corrections for PPP-AR.  Gate on the product type only
+         * (mirrors mwmeas): the phase OSB must be removed from the IF float
+         * ambiguity in every AR mode, not just continuous — otherwise WL is
+         * OSB-corrected while the IF float still carries the satellite phase
+         * bias, so the derived NL is non-integer and AR fixes garbage. */
+        if (opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
             double cosb=0.0,posb=0.0;
             matchcposb(obs,nav,i,&cosb,&posb);
             L[i]-=posb;
@@ -498,7 +517,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
-    if (sys==SYS_GPS) 
+    if (use_dcb&&sys==SYS_GPS) 
     {
         
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
@@ -535,7 +554,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             }
         }
     }
-    if (sys==SYS_GLO)
+    if (use_dcb&&sys==SYS_GLO)
     {
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P] == 0.0)
         {
@@ -560,7 +579,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
             }
         }
     }
-    if (sys == SYS_GAL)
+    if (use_dcb&&sys == SYS_GAL)
     {
         /* NOTE: condition == 0.0 means no RINEX DCB loaded → use SSR biases.
          * Original code had != 0.0 which was inverted vs GPS/QZS/GLO/BDS pattern,
@@ -592,7 +611,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
     
-    if (sys == SYS_QZS)
+    if (use_dcb&&sys == SYS_QZS)
     {
         if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
         {
@@ -629,7 +648,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
-    if (sys == SYS_CMP)
+    if (use_dcb&&sys == SYS_CMP)
     {
         if (nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I] == 0.0) {
             if (obs->code[0]==CODE_L2I)
@@ -1143,10 +1162,14 @@ static void udpos_ppp(rtk_t *rtk)
         }
         return;
     }
-    /* kinmatic mode without dynamics */
+    /* kinematic mode without dynamics: preserve covariances,
+    inject position process noise via stats-prnpos */
     if (!rtk->opt.dynamics) {
-        for (i=0;i<3;i++) {
-            initx(rtk,rtk->sol.rr[i],VAR_POS,i);
+        if (norm(rtk->x,3) <= 0.0) {
+            for (i=0;i<3;i++) initx(rtk,rtk->sol.rr[i],VAR_POS,i);
+        } else {
+            double q = SQR(rtk->opt.prn[5])*fabs(rtk->tt);   /* prnpos */
+            for (i=0;i<3;i++) rtk->P[i*(1+rtk->nx)] += q;
         }
         return;
     }
@@ -1863,6 +1886,19 @@ static int __attribute__((unused)) test_hold_amb(rtk_t *rtk)
     return ++rtk->nfix>=rtk->opt.minfix;
 }
 
+static int pppopt_has_token(const char *pppopt, const char *token)
+{
+    const char *p;
+    char c;
+    
+    if (!pppopt||!token||!*token) return 0;
+    p=strstr(pppopt,token);
+    if (!p) return 0;
+    if (p!=pppopt&&*(p-1)!=' '&&*(p-1)!='\t') return 0;
+    c=p[strlen(token)];
+    return c=='\0'||c==' '||c=='\t';
+}
+
 /* precise point positioning -------------------------------------------------*/
 extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
@@ -1992,7 +2028,6 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         stat_ar=SOLQ_PPP;
     }
 
-
     if (stat==SOLQ_PPP) {
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc)){
@@ -2033,7 +2068,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             }
         }
         update_stat(rtk,obs,n,stat);
-
+        
         if (stat==SOLQ_FIX) {
             matcpy(rtk->x,xp,rtk->nx,1);
             matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
@@ -2049,6 +2084,9 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         }
 
     }
+
+    ambupd_write_epoch(rtk,obs,n,nav);
+
     trace(2, "SOL X: %f, Y: %f, Z: %f\n\r", rtk->x[0],rtk->x[1],rtk->x[2]);
 
     /* CPP warm-convergence detector -------------------------------------------
