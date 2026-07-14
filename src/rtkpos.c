@@ -1779,8 +1779,17 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     /* rover position by single point positioning */
     if (!pntpos(obs,nu,nav,&rtk->opt,&rtk->sol,NULL,rtk->ssat,msg)) {
         errmsg(rtk,"point pos error (%s)\n",msg);
-        
-        if (!rtk->opt.dynamics) {
+
+        /* For PPP modes, estpos() already wrote a converged rr/qr into
+         * rtk->sol before valsol()'s chi-square/GDOP check failed it — that
+         * check is tuned for a standalone SPP output, not for seeding PPP,
+         * which does its own robust processing and outlier rejection. On
+         * noisy/low-cost receivers (e.g. smartphone L1/L5) this check fails
+         * on most epochs, and bailing out here skipped PPP entirely for
+         * >80% of epochs even though a usable position estimate existed.
+         * Relative (non-PPP) modes still need a validated SPP for the
+         * rover-base geometry, so keep the early return there. */
+        if (!rtk->opt.dynamics&&opt->mode<PMODE_PPP_KINEMA) {
             outsolstat(rtk);
             return 0;
         }

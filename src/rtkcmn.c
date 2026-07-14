@@ -3876,6 +3876,16 @@ extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias
 
     i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
     if(i<0) return;
+    /* clamp to the last allocated window (nb-1, see readosb()): biases are
+     * near-constant over a day, so reuse the last window past tmax instead of
+     * reading beyond the array */
+    {
+        int imax=(int)(timediff(nav->osbs->tmax,nav->osbs->tmin)/nav->osbs->dt);
+        if(i>imax){
+            trace(2,"matchcposb: CLAMP i=%d > imax=%d sat=%d f=%d\n\r",i,imax,sat,f);
+            i=imax;
+        }
+    }
 
     /* try exact code first */
     if(nav->osbs->sat_osb[i].code[sat-1][code]!=0.0||
@@ -3884,10 +3894,21 @@ extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias
         if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
         return;
     }
-    /* fallback: Galileo L1B → L1X, GPS/QZS L5Q → L5X */
+    /* fallback: Galileo L1B <-> L1X, GPS/QZS L5Q <-> L5X. Bidirectional
+     * because the RINEX reader defaults an ambiguous/incomplete tracking
+     * channel (e.g. a 2-char legacy "C5" observation type with no Q/X/I
+     * suffix, common in RINEX2->3 conversions) to 'X' (see decode_obsh()'s
+     * defcodes[] table in rinex.c), while OSB products conventionally
+     * publish GPS/QZS L5 biases under the 'Q' channel — so observations
+     * come in as L5X while the bias table is indexed by L5Q. The original
+     * one-directional check (L5Q->L5X) silently applied zero correction
+     * whenever the observation itself was already L5X, which is the
+     * common case for these converted files. */
     sys=satsys(sat,NULL);
     if(sys==SYS_GAL&&code==CODE_L1B) fallback=CODE_L1X;
+    else if(sys==SYS_GAL&&code==CODE_L1X) fallback=CODE_L1B;
     else if((sys==SYS_GPS||sys==SYS_QZS)&&code==CODE_L5Q) fallback=CODE_L5X;
+    else if((sys==SYS_GPS||sys==SYS_QZS)&&code==CODE_L5X) fallback=CODE_L5Q;
     if(fallback) {
         if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][fallback];
         if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][fallback];

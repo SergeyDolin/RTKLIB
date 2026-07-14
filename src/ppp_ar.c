@@ -23,13 +23,43 @@
 #define SQRT2       1.41421356237309510
 #define SWAP_I(x,y) do {int _tmp=x; x=y; y=_tmp;} while (0)
 #define SWAP_D(x,y) do {double _tmp=x; x=y; y=_tmp;} while (0)
-#define MIN_AMB_RES 4         /* min number of ambiguities for ILS-AR */
-#define MIN_LOCK_AR 15
+/* min number of ambiguities for ILS-AR. Empirically (LMMF trace, 2026-07-13)
+ * fix success rate is *inversely* related to nb: 70% of nb=4 attempts "fix"
+ * vs only 4% of nb=10 attempts, because a 4-dof LAMBDA search has almost no
+ * redundancy to reject a wrong integer vector (ratio>thresar[0] is cheap to
+ * satisfy by chance). Those low-nb fixes are the least reliable and were the
+ * dominant cause of a higher fix count but worse position accuracy (5mm/1.5cm
+ * -> 1.5cm on all axes) after NL_RES_MAX partial-AR was added. Raised from 4
+ * to require real redundancy in the search. */
+#define MIN_AMB_RES 4
+/* Floor on continuous slip-free lock (epochs) before a satellite is
+ * AR-eligible, independent of pos2-arlockcnt. WL/NL rely on the recursive
+ * MW smoothing in saveinfo() (rtk->ssat[].mw[2]/mw[3]): its variance only
+ * shrinks to a trustworthy level after enough epochs of accumulation. A
+ * satellite that just regained lock has wl_var still near the initial
+ * SQR(5), so it can pass the WL confidence gate "by chance" on noisy data
+ * even though its float WL/NL are not actually reliable yet. This used to
+ * be a hardcoded, unconditional MIN_LOCK_AR=15 gate; deferring entirely to
+ * pos2-arlockcnt (which most configs set to 0, meaning "no extra wait")
+ * removed this quality floor and was the main driver of the accuracy drop
+ * seen after NL_RES_MAX/MIN_AMB_RES tuning: more (and noisier) satellites
+ * entered the joint search, so more epochs fixed but with lower per-fix
+ * quality. Keep both: respect an explicit user arlockcnt if set higher,
+ * but never go below this floor. */
+#define MIN_LOCK_FLOOR 15
+#define NL_RES_MAX  0.25       /* max |NL float - round| (cycle) to admit a
+                                 * candidate into the joint LAMBDA search;
+                                 * mirrors the existing WL rounding gate.
+                                 * Without this, a handful of noisy NL floats
+                                 * (residual>0.4 cyc, ~40% of candidates in
+                                 * practice) get mixed into the joint search
+                                 * and drag the LAMBDA ratio down to ~1 even
+                                 * when most other ambiguities are clean. */
 
 /* number and index of ekf states */
 #define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
 #define NP(opt)     ((opt)->dynamics?9:3)
-#define NC(opt)     ((opt)->sdopt?0:NSYS)
+#define NC(opt)     (NSYS) /* must match ppp.c state layout */
 #define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
 #define ND(opt)     ((opt)->nf>=3?1:0)
@@ -242,15 +272,14 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
             if(exc[j]||!rtk->ssat[obs[j].sat-1].vsat[frq]||rtk->ssat[obs[j].sat-1].azel[1]<elmask
                 ||rtk->ssat[obs[j].sat-1].lock[f]<0){continue;}
 
-            if(rtk->opt.arprod==AR_PROD_UPD) {
-                int f2obs=obs[j].L[1]==0.0?2:1;
-                if(f2obs==2) continue;
-                if(!validwlupd_sat(obs[j].sat,nav)||
-                   !validnlupd_sat(obs[j].time,obs[j].sat,nav)) {
-                    continue;
-                }
+            /* AR eligibility requires surviving the larger of the user's
+             * pos2-arlockcnt and the MIN_LOCK_FLOOR quality floor (see
+             * comment above) — arlockcnt can only make this stricter, not
+             * looser, since 0 no longer means "no requirement at all". */
+            if (rtk->ssat[obs[j].sat-1].lock[f] <
+                MAX(rtk->opt.minlock, MIN_LOCK_FLOOR)) {
+                continue;
             }
-
 #if 0
         int iamb=0;
         iamb=rtk->tc?xiAmb(&rtk->opt.insopt,obs[j].sat,0):IB(obs[j].sat,0,&rtk->opt);
@@ -364,14 +393,21 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
 /* Narrow-lane ambiguity resolution */
 static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
 {
-    int nb=num_nl,stat=0;
+    int nb=num_nl,stat=0,info,i;
     double *Qnl,*HP,s[2]={0},*b,*pb;
 
     Qnl=mat(nb,nb);HP=mat(nb,rtk->nx);b=mat(nb,2);pb=zeros(nb,2);
     matmul("TN",nb,rtk->nx,rtk->nx,1.0,H_nl,rtk->P,0.0,HP);
     matmul("NN",nb,nb,rtk->nx,1.0,HP,H_nl,0.0,Qnl);
 
-    if(!lambda(nb,2,nl_amb,Qnl,b,s)){
+    trace(2,"resamb_nl: nb=%d Nl=",nb);
+    for(i=0;i<nb;i++) trace(2," %.3f",nl_amb[i]);
+    trace(2,"\n\r");
+    trace(2,"resamb_nl: Qnl diag=",nb);
+    for(i=0;i<nb;i++) trace(2," %.5f",Qnl[i+i*nb]);
+    trace(2,"\n\r");
+
+    if(!(info=lambda(nb,2,nl_amb,Qnl,b,s))){
 
         rtk->sol.ratio=s[0]>0?(float)(s[1]/s[0]):0.0f;
         if (rtk->sol.ratio>999.9) rtk->sol.ratio=999.9f;
@@ -379,6 +415,9 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
          * threshold must be the ratio threshold thresar[0] (e.g. 3.0), NOT
          * thresar[1] which is a rounding-confidence probability (~0.9999). */
         rtk->sol.thres=(float)rtk->opt.thresar[0];
+
+        trace(2,"resamb_nl: lambda ok s0=%.5f s1=%.5f ratio=%.3f thres=%.3f\n\r",
+              s[0],s[1],rtk->sol.ratio,rtk->sol.thres);
 
         if(rtk->sol.ratio<rtk->sol.thres&&nb>MIN_AMB_RES){
             stat=0;
@@ -389,7 +428,10 @@ static int resamb_nl(rtk_t *rtk,double *H_nl,double *nl_amb,int num_nl)
         }
         else stat=0;
     }
-    else stat=0;
+    else {
+        stat=0;
+        trace(2,"resamb_nl: lambda() failed info=%d nb=%d\n\r",info,nb);
+    }
 
     free(Qnl);free(HP);free(b);free(pb);
 
@@ -729,9 +771,18 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         rtk->sdamb[sat-1].nl_fix=newround(nl_amb);
         rtk->sdamb[sat-1].nl_res=nl_amb-newround(nl_amb);
         rtk->sdamb[sat-1].lc=sd_if;
+
+        /* partial AR: keep only NL floats close enough to an integer out of
+         * the joint LAMBDA pool; noisy ones are still tracked in rtk->sdamb
+         * (for diagnostics/next-epoch smoothing) but excluded from SDmat */
+        if(fabs(nl_amb-newround(nl_amb)) > NL_RES_MAX){
+            rtk->sdamb[sat-1].fix_nl_flag=0;
+            trace(2, "SAT: %d; NL REJECTED (res=%f > %.2f)\n\r", i, nl_amb-newround(nl_amb), NL_RES_MAX);
+            continue;
+        }
         rtk->sdamb[sat-1].fix_nl_flag=1;
         trace(2, "SAT: %d; NL: %f; NL_FIX: %d; NL_RES: %f; SD_IF: %f\n\r", i, nl_amb, newround(nl_amb), nl_amb-newround(nl_amb), sd_if);
-        
+
     }
 
     nb=SDmat(rtk,obs,ns,nav,H_nl,H_if,sat1,sat2,iu,ir,el,Nw,Bw,Nl,Nc,sd_nl_fcb);
