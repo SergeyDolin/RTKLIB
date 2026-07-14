@@ -78,6 +78,9 @@
 #define HATCH_MAX_N   10               /* max Hatch filter smoothing epochs */
 #define HATCH_ERATIO  300.0            /* enable Hatch only for high-noise receivers */
 #define SNR_REF       30.0            /* reference C/N0 for SNR weighting (dBHz) */
+#define MAX_AR_JUMP   0.5              /* max |xa-x| position jump (m) accepted
+                                        * from an AR fix; larger jumps are
+                                        * rejected as likely false fixes */
 
 #define VAR_POS     SQR(60.0)       /* init variance receiver position (m^2) */
 #define VAR_VEL     SQR(60.0)       /* init variance of receiver vel ((m/s)^2) */
@@ -1984,7 +1987,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     post_v=mat(nv,1);
     norm_v=mat(nv,1);
     bias=mat(rtk->nx,1);
-    
+
     for (i=0;i<MAX_ITER;i++) {
         for(j=0;j<3;j++) rr[j]=rtk->x[j];
 
@@ -2053,11 +2056,17 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
 
     if (stat==SOLQ_PPP) {
-        /* ambiguity resolution in ppp */
         /* start AR from the filtered float states: fix_sol/resetamb overwrite
          * only the fixed entries of xa, the rest must be the float solution */
         matcpy(xa,rtk->x,rtk->nx,1);
-        if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc)){
+        /* ambiguity resolution in ppp */
+        if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc) &&
+           /* sanity gate: a correct AR fix nudges the position by at most a
+            * few cm (NL-cycle-scale correction). A jump beyond MAX_AR_JUMP
+            * is a strong sign of a false fix (common on noisy/low-cost
+            * receivers where a systematic, not random, bias can fool both
+            * the NL residual gate and the LAMBDA ratio test at once). */
+           SQRT(SQR(xa[0]-rtk->x[0])+SQR(xa[1]-rtk->x[1])+SQR(xa[2]-rtk->x[2]))<MAX_AR_JUMP) {
             if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xa,rtk,v,H,R,azel,vflg)) {
 
                 stat=SOLQ_FIX;
