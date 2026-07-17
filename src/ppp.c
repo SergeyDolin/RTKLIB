@@ -1965,13 +1965,19 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         rtk->ssat[i].sys=satsys(i+1,NULL);
         for (j=0;j<opt->nf;j++){
             rtk->ssat[i].fix[j]=0;
-            rtk->ssat[i].snr_rover[j]=obs[i].SNR[j];
+            rtk->ssat[i].snr_rover[j]=0;
             rtk->ssat[i].snr_base[j] =0;
             rtk->ssat[i].eclipse = 1.0;
             rtk->ssat[i].var_fact[0][j]=1.0;
             rtk->ssat[i].var_fact[1][j]=1.0;
         }
-    }  
+    }
+    for (i=0;i<n;i++) {
+        if (obs[i].sat<1||obs[i].sat>MAXSAT) continue;
+        for (j=0;j<opt->nf;j++) {
+            rtk->ssat[obs[i].sat-1].snr_rover[j]=obs[i].SNR[j];
+        }
+    }
     
     /* satellite positions and clocks */
     satposs(obs[0].time,obs,n,nav,rtk->opt.sateph,rs,dts,var,svh);
