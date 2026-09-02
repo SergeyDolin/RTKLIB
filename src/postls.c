@@ -25,7 +25,10 @@
 #define POSTLS_MINPHASEOBS 4
 #define POSTLS_MAXFIXAMB 12
 #define POSTLS_ARC_REJSTD 6.0
+#define POSTLS_ARC_REJSTD_PHONE 4.0
 #define POSTLS_MAXBADARC 4
+#define POSTLS_HATCH_MIN 5
+#define POSTLS_HATCH_NMAX 100
 
 #define SMARTPHONE(opt) ((opt)->nf==6)
 
@@ -128,11 +131,85 @@ static int build_phase_arcs(const obs_t *obs, const prcopt_t *opt, int nf,
     }
     return narc;
 }
+static int build_hatch_codes(const obs_t *obs, const nav_t *nav,
+                             const prcopt_t *opt, int nf, const int *arc,
+                             double *scode, int *scnt)
+{
+    int last_arc[2][MAXSAT][NFREQ]={{{0}}},cnt[2][MAXSAT][NFREQ]={{{0}}};
+    double last_phi[2][MAXSAT][NFREQ]={{{0}}},smooth[2][MAXSAT][NFREQ]={{{0}}};
+    double freq,lam,phi,P;
+    int i,j,f,p,rcv,sat,ia,nn,n=0;
+
+    for (i=0;i<obs->n*nf;i++) {
+        scode[i]=0.0;
+        scnt[i]=0;
+    }
+    for (i=0;i<obs->n;i++) {
+        rcv=obs->data[i].rcv;
+        if (rcv<1||rcv>2) continue;
+        j=rcv-1;
+        sat=obs->data[i].sat;
+        if (sat<=0||sat>MAXSAT) continue;
+        for (f=0;f<nf;f++) {
+            p=postls_obsidx(opt,f);
+            ia=arc[i*nf+f];
+            if (ia<=0||!valid_sig(obs->data+i,p,0)||
+                !valid_sig(obs->data+i,p,1)||
+                (freq=sat2freq(sat,obs->data[i].code[p],nav))<=0.0) {
+                last_arc[j][sat-1][f]=0;
+                cnt[j][sat-1][f]=0;
+                continue;
+            }
+            lam=CLIGHT/freq;
+            phi=obs->data[i].L[p]*lam;
+            P=obs->data[i].P[p];
+            if (last_arc[j][sat-1][f]!=ia||cnt[j][sat-1][f]<=0) {
+                smooth[j][sat-1][f]=P;
+                cnt[j][sat-1][f]=1;
+            }
+            else {
+                nn=MIN_(cnt[j][sat-1][f]+1,POSTLS_HATCH_NMAX);
+                smooth[j][sat-1][f]=P/nn+
+                    (smooth[j][sat-1][f]+phi-last_phi[j][sat-1][f])*
+                    (nn-1.0)/nn;
+                cnt[j][sat-1][f]=nn;
+            }
+            last_arc[j][sat-1][f]=ia;
+            last_phi[j][sat-1][f]=phi;
+            scode[i*nf+f]=smooth[j][sat-1][f];
+            scnt[i*nf+f]=cnt[j][sat-1][f];
+            if (cnt[j][sat-1][f]>=POSTLS_HATCH_MIN) n++;
+        }
+    }
+    return n;
+}
+static void copy_obs_hatch(const obs_t *obs, const prcopt_t *opt, int nf,
+                           const double *scode, const int *scnt,
+                           int src, int n, obsd_t *dst, int dst0)
+{
+    double sig;
+    int i,f,p,ns;
+
+    for (i=0;i<n;i++) {
+        dst[dst0+i]=obs->data[src+i];
+        if (!scode||!scnt) continue;
+        for (f=0;f<nf;f++) {
+            p=postls_obsidx(opt,f);
+            if (scnt[(src+i)*nf+f]>=POSTLS_HATCH_MIN&&scode[(src+i)*nf+f]!=0.0) {
+                dst[dst0+i].P[p]=scode[(src+i)*nf+f];
+                ns=MIN_(scnt[(src+i)*nf+f],POSTLS_HATCH_NMAX);
+                sig=(f==1?8.0:12.0)*sqrt((double)POSTLS_HATCH_MIN/ns);
+                dst[dst0+i].Pstd[p]=-(float)MAX_(sig,4.0);
+            }
+        }
+    }
+}
 static double obs_sigma(const obsd_t *obs, const nav_t *nav,
                         const prcopt_t *opt, int f, int phase, double el)
 {
-    double sig,cn0,cnfact=1.0,reported=0.0,freq,sinel;
-    int p=postls_obsidx(opt,f);
+    double sig,cn0,cnfact=1.0,reported=0.0,freq,sinel,target,sysfact=1.0;
+    double sigfact=1.0,floorv;
+    int p=postls_obsidx(opt,f),sys=satsys(obs->sat,NULL);
 
     sinel=MAX_(sin(el),0.10);
     sig=opt->err[1]+opt->err[2]/sinel;
@@ -140,10 +217,42 @@ static double obs_sigma(const obsd_t *obs, const nav_t *nav,
     if (sig<=0.0) sig=phase?0.01:3.0;
 
     cn0=obs->SNR[p]*SNR_UNIT;
-    if (SMARTPHONE(opt)&&cn0>0.0) {
-        cnfact=pow(10.0,MAX_(0.0,(f==1?35.0:40.0)-cn0)/20.0);
+    if (SMARTPHONE(opt)) {
+        if      (sys==SYS_GAL) sysfact=0.9;
+        else if (sys==SYS_GLO) sysfact=phase?1.8:1.5;
+        else if (sys==SYS_CMP) sysfact=phase?1.4:1.3;
+        else if (sys==SYS_IRN) sysfact=1.3;
+
+        if (obs->code[p]==CODE_L5I||obs->code[p]==CODE_L5Q||
+            obs->code[p]==CODE_L5X||obs->code[p]==CODE_L5P||
+            obs->code[p]==CODE_L5Z) {
+            sigfact=phase?0.80:0.70;
+        }
+        else if (obs->code[p]==CODE_L1C||obs->code[p]==CODE_L1S||
+                 obs->code[p]==CODE_L1L||obs->code[p]==CODE_L1X) {
+            sigfact=phase?1.05:1.10;
+        }
+        if (cn0>0.0) {
+            target=f==1?40.0:35.0;
+            cnfact=pow(10.0,MAX_(0.0,target-cn0)/20.0);
+            if (cn0<(phase?25.0:28.0)) cnfact*=3.0;
+            cnfact=MIN_(cnfact,20.0);
+        }
+        sig*=sysfact*sigfact*cnfact;
+
+        floorv=phase?(f==1?0.008:0.012):(f==1?0.45:0.80);
+        if (sys==SYS_GLO) floorv*=1.5;
+        if (sys==SYS_CMP) floorv*=1.3;
+        sig=MAX_(sig,floorv);
+    }
+    else if (cn0>0.0) {
+        cnfact=pow(10.0,MAX_(0.0,35.0-cn0)/20.0);
         cnfact=MIN_(cnfact,10.0);
         sig*=cnfact;
+    }
+    if (!phase&&obs->Pstd[p]<0.0) {
+        reported=-obs->Pstd[p];
+        return MIN_(sig,MAX_(reported,0.03));
     }
     if (phase&&obs->Lstd[p]>0.0&&
         (freq=sat2freq(obs->sat,obs->code[p],nav))>0.0) {
@@ -247,19 +356,21 @@ static int modeled_iflc(const obsd_t *obs, const double *rs, const double *dts,
 static int avepos_postls(const obs_t *obs, const nav_t *nav,
                          const prcopt_t *opt, double *rr)
 {
+    prcopt_t spopt=*opt;
     obsd_t data[MAXOBS];
     sol_t sol={{0}};
     char msg[128];
     int i,j,n,m,iobs=0,count=0;
 
+    spopt.sateph=EPHOPT_BRDC;
     for (i=0;i<3;i++) rr[i]=0.0;
     while ((m=nextobsf_postls(obs,&iobs,1))>0) {
         for (i=j=0;i<m&&j<MAXOBS;i++) {
             data[j]=obs->data[iobs+i];
-            if ((satsys(data[j].sat,NULL)&opt->navsys)&&
-                opt->exsats[data[j].sat-1]!=1) j++;
+            if ((satsys(data[j].sat,NULL)&spopt.navsys)&&
+                spopt.exsats[data[j].sat-1]!=1) j++;
         }
-        if (j>0&&pntpos(data,j,nav,opt,&sol,NULL,NULL,msg)) {
+        if (j>0&&pntpos(data,j,nav,&spopt,&sol,NULL,NULL,msg)) {
             for (n=0;n<3;n++) rr[n]+=sol.rr[n];
             count++;
         }
@@ -421,7 +532,8 @@ static int prepare_ambs(postls_amb_t *ambs, int namb)
 }
 static int scan_rows(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
                      const double *ru, const int refsat[POSTLS_NSYS][NFREQ],
-                     const int *arc, postls_amb_t *ambs, int *namb)
+                     const int *arc, const double *scode, const int *scnt,
+                     postls_amb_t *ambs, int *namb)
 {
     obsd_t data[MAXOBS*2];
     double *rs,*dts,*vare,yu,yb,yr,ybr,ebr[3],e[3],az[2],sig;
@@ -434,8 +546,8 @@ static int scan_rows(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
 
     while ((ret=pair_epochs(obs,&iu,&nu,&ir,&nr))!=0) {
         if (ret<0) continue;
-        for (i=0;i<nu;i++) data[i]=obs->data[iu+i];
-        for (i=0;i<nr;i++) data[nu+i]=obs->data[ir+i];
+        copy_obs_hatch(obs,opt,nf,scode,scnt,iu,nu,data,0);
+        copy_obs_hatch(obs,opt,nf,scode,scnt,ir,nr,data,nu);
         n=nu+nr;
         satposs(data[0].time,data,n,nav,opt->sateph,rs,dts,vare,svh);
         for (i=0;i<nu;i++) {
@@ -537,7 +649,8 @@ static int scan_rows(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
 static int fill_system(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
                        const double *ru,
                        const int refsat[POSTLS_NSYS][NFREQ],
-                       const int *arc, const postls_amb_t *ambs, int namb,
+                       const int *arc, const double *scode, const int *scnt,
+                       const postls_amb_t *ambs, int namb,
                        int nx, double *A, double *v, int *used_sat,
                        int *row_amb)
 {
@@ -553,8 +666,8 @@ static int fill_system(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
 
     while ((ret=pair_epochs(obs,&iu,&nu,&ir,&nr))!=0) {
         if (ret<0) continue;
-        for (i=0;i<nu;i++) data[i]=obs->data[iu+i];
-        for (i=0;i<nr;i++) data[nu+i]=obs->data[ir+i];
+        copy_obs_hatch(obs,opt,nf,scode,scnt,iu,nu,data,0);
+        copy_obs_hatch(obs,opt,nf,scode,scnt,ir,nr,data,nu);
         n=nu+nr;
         satposs(data[0].time,data,n,nav,opt->sateph,rs,dts,vare,svh);
         for (i=0;i<nu;i++) {
@@ -683,11 +796,13 @@ static int fill_system(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
 }
 static int reject_bad_ambs(const double *A, const double *v, const double *x,
                            int nx, int nv, const int *row_amb,
-                           postls_amb_t *ambs, int namb)
+                           postls_amb_t *ambs, int namb,
+                           const prcopt_t *opt, int maxrej)
 {
-    double *sum,*maxr,r,rms,worst=0.0;
-    int *cnt,i,j,ia,worstia=-1;
+    double *sum,*maxr,r,rms,thres;
+    int *cnt,i,j,ia,nrej=0;
 
+    if (maxrej<=0) return 0;
     sum=mat(namb,1); maxr=mat(namb,1); cnt=imat(namb,1);
     for (j=0;j<nv;j++) {
         if (!row_amb||(ia=row_amb[j])<0||ia>=namb||!ambs[ia].use) continue;
@@ -697,20 +812,18 @@ static int reject_bad_ambs(const double *A, const double *v, const double *x,
         cnt[ia]++;
         if (fabs(r)>maxr[ia]) maxr[ia]=fabs(r);
     }
+    thres=SMARTPHONE(opt)?POSTLS_ARC_REJSTD_PHONE:POSTLS_ARC_REJSTD;
     for (ia=0;ia<namb;ia++) {
         if (!ambs[ia].use||cnt[ia]<POSTLS_MINPHASEOBS) continue;
         rms=sqrt(sum[ia]/cnt[ia]);
-        if ((rms>POSTLS_ARC_REJSTD||maxr[ia]>POSTLS_REJSTD)&&rms>worst) {
-            worst=rms;
-            worstia=ia;
+        if (rms>thres||maxr[ia]>POSTLS_REJSTD) {
+            ambs[ia].bad=1;
+            ambs[ia].use=0;
+            if (++nrej>=maxrej) break;
         }
     }
-    if (worstia>=0) {
-        ambs[worstia].bad=1;
-        ambs[worstia].use=0;
-    }
     free(sum); free(maxr); free(cnt);
-    return worstia>=0;
+    return nrej;
 }
 static int compact_rows(const double *A, const double *v, const int *use,
                         int nx, int nv, double *Ac, double *vc)
@@ -801,8 +914,9 @@ static int fix_ambiguities(const obs_t *obs, const nav_t *nav,
                            const double *x, const double *Q,
                            double *ru, float *ratio)
 {
-    double *af,*Qa,*F,*s,*lam,*invQa,*d,*z,*score,corr[3]={0};
-    int *idx,*pool,*used,i,j,k,nb=0,np=0,ntry,info,best;
+    double *af,*Qa,*F,*s,*lam,*invQa,*d,*z,*score,corr[3]={0},qmax,cmax;
+    int *idx,*pool,*used,i,j,k,nb=0,np=0,ntry,info,best,sys,bestsys=0;
+    int syscnt[POSTLS_NSYS]={0},minarc;
 
     if (ratio) *ratio=0.0f;
     if (opt->modear==ARMODE_OFF||namb<4) return 0;
@@ -815,13 +929,16 @@ static int fix_ambiguities(const obs_t *obs, const nav_t *nav,
         double qaa;
 
         if (!ambs[i].use) continue;
-        if (ambs[i].n<POSTLS_MINARCOBS) continue;
+        minarc=SMARTPHONE(opt)?10:POSTLS_MINARCOBS;
+        if (ambs[i].n<minarc) continue;
         lam[np]=amb_lambda_postls(obs,nav,opt,ambs[i].sat,ambs[i].f);
         if (lam[np]<=0.0) continue;
         qaa=Q[ambs[i].index+ambs[i].index*nx]/SQR(lam[np]);
-        if (qaa<=0.0||qaa>1.0) continue;
+        qmax=SMARTPHONE(opt)?0.25:1.0;
+        if (qaa<=0.0||qaa>qmax) continue;
         pool[np]=i;
         score[np]=ambs[i].n/(sqrt(qaa)+1E-6);
+        if ((sys=postls_sysidx(satsys(ambs[i].sat,NULL)))>=0) syscnt[sys]++;
         np++;
     }
     if (np<4) {
@@ -829,10 +946,27 @@ static int fix_ambiguities(const obs_t *obs, const nav_t *nav,
         free(score); free(idx); free(pool); free(used);
         return 0;
     }
+    if (SMARTPHONE(opt)) {
+        best=-1;
+        for (i=0;i<POSTLS_NSYS;i++) {
+            if (i==1) continue; /* do not fix GLONASS FDMA ambiguities here */
+            if (syscnt[i]>best) {
+                best=syscnt[i];
+                bestsys=i;
+            }
+        }
+        if (best<4) {
+            free(af); free(Qa); free(F); free(s); free(lam); free(invQa); free(d); free(z);
+            free(score); free(idx); free(pool); free(used);
+            return 0;
+        }
+    }
     for (i=0;i<np;i++) used[i]=0;
     for (i=0;i<MIN_(POSTLS_MAXFIXAMB,np);i++) {
         best=-1;
         for (j=0;j<np;j++) {
+            if (SMARTPHONE(opt)&&
+                postls_sysidx(satsys(ambs[pool[j]].sat,NULL))!=bestsys) continue;
             if (!used[j]&&(best<0||score[j]>score[best])) best=j;
         }
         if (best<0) break;
@@ -841,7 +975,7 @@ static int fix_ambiguities(const obs_t *obs, const nav_t *nav,
         lam[i]=amb_lambda_postls(obs,nav,opt,ambs[idx[i]].sat,ambs[idx[i]].f);
         af[i]=x[ambs[idx[i]].index]/lam[i];
     }
-    nb=MIN_(POSTLS_MAXFIXAMB,np);
+    nb=i;
     if (nb<4) {
         free(af); free(Qa); free(F); free(s); free(lam); free(invQa); free(d); free(z);
         free(score); free(idx); free(pool); free(used);
@@ -874,8 +1008,14 @@ static int fix_ambiguities(const obs_t *obs, const nav_t *nav,
         for (i=0;i<ntry;i++) {
             corr[k]+=Q[k+ambs[idx[i]].index*nx]/lam[i]*z[i];
         }
-        ru[k]-=corr[k];
     }
+    cmax=SMARTPHONE(opt)?0.25:1.0;
+    if (norm(corr,3)>cmax) {
+        free(af); free(Qa); free(F); free(s); free(lam); free(invQa); free(d); free(z);
+        free(score); free(idx); free(pool); free(used);
+        return 0;
+    }
+    for (k=0;k<3;k++) ru[k]-=corr[k];
     free(af); free(Qa); free(F); free(s); free(lam); free(invQa); free(d); free(z);
     free(score); free(idx); free(pool); free(used);
     return ntry;
@@ -884,13 +1024,13 @@ extern int postls_relpos(const obs_t *obs, const nav_t *nav,
                          const prcopt_t *opt, sol_t *sol, char *msg)
 {
     prcopt_t opt_=*opt;
-    double ru[3],*A,*v,*dx,*Q,dpos;
+    double ru[3],*A,*v,*dx,*Q,*scode,dpos;
     float ratio=0.0f;
     int refsat[POSTLS_NSYS][NFREQ];
     postls_amb_t *ambs;
-    int *arc,*row_amb;
+    int *arc,*row_amb,*scnt;
     int used_sat[MAXSAT],i,namb=0,nuseamb,nx,nv,maxnv,info,iter,nused=0,nf,nout=0,nout_tot=0,nfix=0;
-    int nbadamb=0;
+    int nbadamb=0,nhatch=0;
 
     trace(3,"postls_relpos: nobs=%d\n",obs?obs->n:0);
     if (msg) *msg='\0';
@@ -912,27 +1052,31 @@ extern int postls_relpos(const obs_t *obs, const nav_t *nav,
         return 0;
     }
     arc=imat(obs->n,nf);
+    scode=mat(obs->n,nf);
+    scnt=imat(obs->n,nf);
     ambs=(postls_amb_t *)calloc(POSTLS_MAXAMB,sizeof(postls_amb_t));
-    if (!arc||!ambs) {
+    if (!arc||!scode||!scnt||!ambs) {
         if (msg) strcpy(msg,"memory allocation error");
-        free(arc); free(ambs);
+        free(arc); free(scode); free(scnt); free(ambs);
         return 0;
     }
     build_phase_arcs(obs,&opt_,nf,arc);
+    nhatch=build_hatch_codes(obs,nav,&opt_,nf,arc,scode,scnt);
     select_refs(obs,nav,&opt_,ru,refsat,DTTOL);
-    maxnv=scan_rows(obs,nav,&opt_,ru,refsat,arc,ambs,&namb);
+    maxnv=scan_rows(obs,nav,&opt_,ru,refsat,arc,scode,scnt,ambs,&namb);
     nuseamb=prepare_ambs(ambs,namb);
     nx=3+nuseamb;
     if (maxnv<nx||maxnv<POSTLS_MINOBS) {
         if (msg) sprintf(msg,"not enough DD observations (nv=%d nx=%d)",maxnv,nx);
-        free(arc); free(ambs);
+        free(arc); free(scode); free(scnt); free(ambs);
         return 0;
     }
     A=mat(nx,maxnv); v=mat(maxnv,1); dx=mat(nx,1); Q=mat(nx,nx);
     row_amb=imat(maxnv,1);
     if (!A||!v||!dx||!Q||!row_amb) {
         if (msg) strcpy(msg,"memory allocation error");
-        free(A); free(v); free(dx); free(Q); free(row_amb); free(arc); free(ambs);
+        free(A); free(v); free(dx); free(Q); free(row_amb);
+        free(arc); free(scode); free(scnt); free(ambs);
         return 0;
     }
 
@@ -947,22 +1091,25 @@ extern int postls_relpos(const obs_t *obs, const nav_t *nav,
         nuseamb=prepare_ambs(ambs,namb);
         nx=3+nuseamb;
         for (i=0;i<MAXSAT;i++) used_sat[i]=0;
-        nv=fill_system(obs,nav,&iteropt,ru,refsat,arc,ambs,namb,nx,A,v,used_sat,
-                       row_amb);
+        nv=fill_system(obs,nav,&iteropt,ru,refsat,arc,scode,scnt,ambs,namb,nx,
+                       A,v,used_sat,row_amb);
         if (nv<nx) {
             if (msg) sprintf(msg,"rank-deficient DD system (nv=%d nx=%d)",nv,nx);
-            free(A); free(v); free(dx); free(Q); free(row_amb); free(arc); free(ambs);
+            free(A); free(v); free(dx); free(Q); free(row_amb);
+            free(arc); free(scode); free(scnt); free(ambs);
             return 0;
         }
         if ((info=robust_lsq(A,v,nx,nv,dx,Q,&nout))) {
             if (msg) sprintf(msg,"least-squares error info=%d nv=%d nx=%d",info,nv,nx);
-            free(A); free(v); free(dx); free(Q); free(row_amb); free(arc); free(ambs);
+            free(A); free(v); free(dx); free(Q); free(row_amb);
+            free(arc); free(scode); free(scnt); free(ambs);
             return 0;
         }
         nout_tot+=nout;
         if (nbadamb<POSTLS_MAXBADARC&&
-            reject_bad_ambs(A,v,dx,nx,nv,row_amb,ambs,namb)) {
-            nbadamb++;
+            (i=reject_bad_ambs(A,v,dx,nx,nv,row_amb,ambs,namb,&iteropt,
+                               POSTLS_MAXBADARC-nbadamb))>0) {
+            nbadamb+=i;
             continue;
         }
         for (i=0;i<3;i++) ru[i]+=dx[i];
@@ -988,16 +1135,19 @@ extern int postls_relpos(const obs_t *obs, const nav_t *nav,
     sol->ns=(uint8_t)MIN_(nused,255);
     sol->age=0.0f;
     sol->ratio=nfix>0?ratio:0.0f;
-    if (msg) sprintf(msg,"postls %s static: iter=%d nv=%d nx=%d namb=%d/%d badarc=%d nfix=%d out=%d ratio=%.2f",
-                     nfix>0?"fix":"float",iter+1,nv,nx,nuseamb,namb,nbadamb,nfix,nout_tot,ratio);
+    if (msg) sprintf(msg,"postls %s static: iter=%d nv=%d nx=%d namb=%d/%d hatch=%d badarc=%d nfix=%d out=%d ratio=%.2f",
+                     nfix>0?"fix":"float",iter+1,nv,nx,nuseamb,namb,nhatch,
+                     nbadamb,nfix,nout_tot,ratio);
 
-    free(A); free(v); free(dx); free(Q); free(row_amb); free(arc); free(ambs);
+    free(A); free(v); free(dx); free(Q); free(row_amb);
+    free(arc); free(scode); free(scnt); free(ambs);
     return 1;
 }
 static int build_epochs(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
                         postls_epoch_t **epochs, int *nep, double *ru0,
                         double maxdt)
 {
+    prcopt_t spopt=*opt;
     postls_epoch_t *eps=NULL,*tmp;
     obsd_t data[MAXOBS];
     sol_t sol={{0}};
@@ -1005,6 +1155,7 @@ static int build_epochs(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
     int iu=0,ir=0,nu,nr,ret,i,j,n=0,nmax=0,have=0;
 
     *epochs=NULL; *nep=0;
+    spopt.sateph=EPHOPT_BRDC;
     for (i=0;i<3;i++) ru0[i]=0.0;
     while ((ret=pair_epochs_tol(obs,&iu,&nu,&ir,&nr,maxdt))!=0) {
         if (ret<0) continue;
@@ -1025,10 +1176,10 @@ static int build_epochs(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
         eps[n].time=obs->data[iu].time;
         for (i=j=0;i<nu&&j<MAXOBS;i++) {
             data[j]=obs->data[iu+i];
-            if ((satsys(data[j].sat,NULL)&opt->navsys)&&
-                opt->exsats[data[j].sat-1]!=1) j++;
+            if ((satsys(data[j].sat,NULL)&spopt.navsys)&&
+                spopt.exsats[data[j].sat-1]!=1) j++;
         }
-        if (j>0&&pntpos(data,j,nav,opt,&sol,NULL,NULL,msg)) {
+        if (j>0&&pntpos(data,j,nav,&spopt,&sol,NULL,NULL,msg)) {
             for (i=0;i<3;i++) eps[n].ru[i]=sol.rr[i];
             for (i=0;i<3;i++) ru0[i]+=eps[n].ru[i];
             have++;
@@ -1057,7 +1208,8 @@ static int build_epochs(const obs_t *obs, const nav_t *nav, const prcopt_t *opt,
 static int scan_rows_kin(const obs_t *obs, const nav_t *nav,
                          const prcopt_t *opt, const postls_epoch_t *eps,
                          int nep, const int refsat[POSTLS_NSYS][NFREQ],
-                         const int *arc, postls_amb_t *ambs, int *namb)
+                         const int *arc, const double *scode,
+                         const int *scnt, postls_amb_t *ambs, int *namb)
 {
     obsd_t data[MAXOBS*2];
     double *rs,*dts,*vare,yu,yb,yr,ybr,e[3],az[2],sig;
@@ -1068,8 +1220,9 @@ static int scan_rows_kin(const obs_t *obs, const nav_t *nav,
     rs=mat(6,MAXOBS*2); dts=mat(2,MAXOBS*2);
     vare=mat(1,MAXOBS*2); svh=imat(1,MAXOBS*2);
     for (ie=0;ie<nep;ie++) {
-        for (i=0;i<eps[ie].nu;i++) data[i]=obs->data[eps[ie].iu+i];
-        for (i=0;i<eps[ie].nr;i++) data[eps[ie].nu+i]=obs->data[eps[ie].ir+i];
+        copy_obs_hatch(obs,opt,nf,scode,scnt,eps[ie].iu,eps[ie].nu,data,0);
+        copy_obs_hatch(obs,opt,nf,scode,scnt,eps[ie].ir,eps[ie].nr,data,
+                       eps[ie].nu);
         n=eps[ie].nu+eps[ie].nr;
         satposs(data[0].time,data,n,nav,opt->sateph,rs,dts,vare,svh);
         for (i=0;i<eps[ie].nu;i++) {
@@ -1122,7 +1275,8 @@ static int scan_rows_kin(const obs_t *obs, const nav_t *nav,
 static int fill_system_kin(const obs_t *obs, const nav_t *nav,
                            const prcopt_t *opt, const postls_epoch_t *eps,
                            int nep, const int refsat[POSTLS_NSYS][NFREQ],
-                           const int *arc, const postls_amb_t *ambs, int namb,
+                           const int *arc, const double *scode,
+                           const int *scnt, const postls_amb_t *ambs, int namb,
                            int nx, double *A, double *v, int *row_amb,
                            int *row_epoch, int *usedsat)
 {
@@ -1136,8 +1290,9 @@ static int fill_system_kin(const obs_t *obs, const nav_t *nav,
     rs=mat(6,MAXOBS*2); dts=mat(2,MAXOBS*2);
     vare=mat(1,MAXOBS*2); svh=imat(1,MAXOBS*2);
     for (ie=0;ie<nep;ie++) {
-        for (i=0;i<eps[ie].nu;i++) data[i]=obs->data[eps[ie].iu+i];
-        for (i=0;i<eps[ie].nr;i++) data[eps[ie].nu+i]=obs->data[eps[ie].ir+i];
+        copy_obs_hatch(obs,opt,nf,scode,scnt,eps[ie].iu,eps[ie].nu,data,0);
+        copy_obs_hatch(obs,opt,nf,scode,scnt,eps[ie].ir,eps[ie].nr,data,
+                       eps[ie].nu);
         n=eps[ie].nu+eps[ie].nr;
         satposs(data[0].time,data,n,nav,opt->sateph,rs,dts,vare,svh);
         for (i=0;i<eps[ie].nu;i++) {
@@ -1219,10 +1374,11 @@ static int postls_relpos_kin_all(const obs_t *obs, const nav_t *nav,
     prcopt_t opt_=*opt,iteropt;
     postls_epoch_t *eps=NULL;
     postls_amb_t *ambs=NULL;
-    double ru0[3],*A=NULL,*v=NULL,*dx=NULL,*Q=NULL,dmax;
+    double ru0[3],*A=NULL,*v=NULL,*dx=NULL,*Q=NULL,*scode=NULL,dmax;
     int refsat[POSTLS_NSYS][NFREQ];
-    int *arc=NULL,*row_amb=NULL,*row_epoch=NULL,*usedsat=NULL;
+    int *arc=NULL,*row_amb=NULL,*row_epoch=NULL,*usedsat=NULL,*scnt=NULL;
     int i,j,ie,nf,nep=0,namb=0,nuseamb,nx,nv,maxnv,iter,info,nout,nout_tot=0;
+    int nbadamb=0,nhatch=0;
 
     if (msg) *msg='\0';
     if (!obs||!nav||!opt||!solbuf) return 0;
@@ -1238,22 +1394,26 @@ static int postls_relpos_kin_all(const obs_t *obs, const nav_t *nav,
         return 0;
     }
     arc=imat(obs->n,nf);
+    scode=mat(obs->n,nf);
+    scnt=imat(obs->n,nf);
     ambs=(postls_amb_t *)calloc(POSTLS_MAXAMB,sizeof(postls_amb_t));
     usedsat=imat(MAXSAT,nep);
-    if (!arc||!ambs||!usedsat) {
+    if (!arc||!scode||!scnt||!ambs||!usedsat) {
         if (msg) strcpy(msg,"memory allocation error");
-        free(eps); free(arc); free(ambs); free(usedsat);
+        free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
         return 0;
     }
     build_phase_arcs(obs,&opt_,nf,arc);
+    nhatch=build_hatch_codes(obs,nav,&opt_,nf,arc,scode,scnt);
     select_refs(obs,nav,&opt_,ru0,refsat,opt_.maxtdiff>0.0?opt_.maxtdiff:DTTOL);
-    maxnv=scan_rows_kin(obs,nav,&opt_,eps,nep,refsat,arc,ambs,&namb);
+    maxnv=scan_rows_kin(obs,nav,&opt_,eps,nep,refsat,arc,scode,scnt,ambs,
+                        &namb);
     nuseamb=prepare_ambs(ambs,namb);
     nx=3*nep+nuseamb;
     if (maxnv<nx||maxnv<POSTLS_MINOBS) {
         if (msg) sprintf(msg,"not enough kinematic DD observations (nv=%d nx=%d epochs=%d)",
                          maxnv,nx,nep);
-        free(eps); free(arc); free(ambs); free(usedsat);
+        free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
         return 0;
     }
     for (j=0,i=0;i<namb;i++) if (ambs[i].use) ambs[i].index=3*nep+j++;
@@ -1262,7 +1422,7 @@ static int postls_relpos_kin_all(const obs_t *obs, const nav_t *nav,
     if (!A||!v||!dx||!Q||!row_amb||!row_epoch) {
         if (msg) strcpy(msg,"memory allocation error");
         free(A); free(v); free(dx); free(Q); free(row_amb); free(row_epoch);
-        free(eps); free(arc); free(ambs); free(usedsat);
+        free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
         return 0;
     }
     for (iter=0;iter<POSTLS_MAXITR;iter++) {
@@ -1274,23 +1434,29 @@ static int postls_relpos_kin_all(const obs_t *obs, const nav_t *nav,
         nuseamb=prepare_ambs(ambs,namb);
         for (j=0,i=0;i<namb;i++) if (ambs[i].use) ambs[i].index=3*nep+j++;
         nx=3*nep+nuseamb;
-        nv=fill_system_kin(obs,nav,&iteropt,eps,nep,refsat,arc,ambs,namb,nx,
-                           A,v,row_amb,row_epoch,usedsat);
+        nv=fill_system_kin(obs,nav,&iteropt,eps,nep,refsat,arc,scode,scnt,
+                           ambs,namb,nx,A,v,row_amb,row_epoch,usedsat);
         if (nv<nx) {
             if (msg) sprintf(msg,"rank-deficient kinematic DD system (nv=%d nx=%d epochs=%d)",
                              nv,nx,nep);
             free(A); free(v); free(dx); free(Q); free(row_amb); free(row_epoch);
-            free(eps); free(arc); free(ambs); free(usedsat);
+            free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
             return 0;
         }
         if ((info=robust_lsq(A,v,nx,nv,dx,Q,&nout))) {
             if (msg) sprintf(msg,"kinematic least-squares error info=%d nv=%d nx=%d",
                              info,nv,nx);
             free(A); free(v); free(dx); free(Q); free(row_amb); free(row_epoch);
-            free(eps); free(arc); free(ambs); free(usedsat);
+            free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
             return 0;
         }
         nout_tot+=nout;
+        if (nbadamb<POSTLS_MAXBADARC&&
+            (i=reject_bad_ambs(A,v,dx,nx,nv,row_amb,ambs,namb,&iteropt,
+                               POSTLS_MAXBADARC-nbadamb))>0) {
+            nbadamb+=i;
+            continue;
+        }
         dmax=0.0;
         for (ie=0;ie<nep;ie++) {
             for (i=0;i<3;i++) eps[ie].ru[i]+=dx[eps[ie].index+i];
@@ -1317,14 +1483,14 @@ static int postls_relpos_kin_all(const obs_t *obs, const nav_t *nav,
         if (!addsol(solbuf,&sol)) {
             if (msg) strcpy(msg,"solution buffer allocation error");
             free(A); free(v); free(dx); free(Q); free(row_amb); free(row_epoch);
-            free(eps); free(arc); free(ambs); free(usedsat);
+            free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
             return 0;
         }
     }
-    if (msg) sprintf(msg,"postls float kinematic: epochs=%d nv=%d nx=%d namb=%d/%d out=%d",
-                     nep,nv,nx,nuseamb,namb,nout_tot);
+    if (msg) sprintf(msg,"postls float kinematic: epochs=%d nv=%d nx=%d namb=%d/%d hatch=%d badarc=%d out=%d",
+                     nep,nv,nx,nuseamb,namb,nhatch,nbadamb,nout_tot);
     free(A); free(v); free(dx); free(Q); free(row_amb); free(row_epoch);
-    free(eps); free(arc); free(ambs); free(usedsat);
+    free(eps); free(arc); free(scode); free(scnt); free(ambs); free(usedsat);
     return 1;
 }
 static int slice_obs_time(const obs_t *obs, gtime_t ts, gtime_t te,

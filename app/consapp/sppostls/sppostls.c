@@ -163,8 +163,8 @@ int main(int argc, char **argv)
     sol_t sol={{0}};
     FILE *fp=stdout;
     double pos[3];
-    char *infile[MAXINFILE],*outfile="",*p,msg[MAXERRMSG]="";
-    int i,j,n=0,ret=0,precise=0;
+    char *infile[MAXINFILE],*outfile="",*p,msg[MAXERRMSG]="",pmsg[MAXERRMSG]="";
+    int i,j,n=0,ret=0,precise=0,wantprec=0,usedprec=0;
 
     if (!(obs=(obs_t *)calloc(1,sizeof(obs_t)))||
         !(nav=(nav_t *)calloc(1,sizeof(nav_t)))) {
@@ -231,7 +231,10 @@ int main(int argc, char **argv)
         ret=-1;
     }
     else {
-        if (precise&&nav->ne>0) prcopt.sateph=EPHOPT_PREC;
+        wantprec=precise||prcopt.sateph==EPHOPT_PREC;
+        if (wantprec&&nav->ne>0) prcopt.sateph=EPHOPT_PREC;
+        else if (wantprec) prcopt.sateph=EPHOPT_BRDC;
+        usedprec=prcopt.sateph==EPHOPT_PREC;
         if (!setup_pcv(obs->data[0].time,&filopt,&prcopt,nav,sta,&satpcvs,
                        &rcvpcvs,msg)) {
             fprintf(stderr,"error: %s\n",msg);
@@ -240,12 +243,19 @@ int main(int argc, char **argv)
         else if (prcopt.mode==PMODE_KINEMA) {
             if (!postls_relpos_kin(obs,nav,&prcopt,&solbuf,msg)) {
                 if (prcopt.sateph==EPHOPT_PREC) {
+                    strcpy(pmsg,msg);
                     prcopt.sateph=EPHOPT_BRDC;
+                    freesolbuf(&solbuf);
+                    memset(&solbuf,0,sizeof(solbuf));
                     if (!postls_relpos_kin(obs,nav,&prcopt,&solbuf,msg)) {
                         fprintf(stderr,"error: %s\n",msg);
                         ret=-1;
                     }
-                    else strcat(msg," (precise unavailable, used broadcast)");
+                    else {
+                        usedprec=0;
+                        sprintf(msg+strlen(msg)," (precise failed: %s; used broadcast)",
+                                pmsg);
+                    }
                 }
                 else {
                     fprintf(stderr,"error: %s\n",msg);
@@ -255,12 +265,17 @@ int main(int argc, char **argv)
         }
         else if (!postls_relpos(obs,nav,&prcopt,&sol,msg)) {
             if (prcopt.sateph==EPHOPT_PREC) {
+                strcpy(pmsg,msg);
                 prcopt.sateph=EPHOPT_BRDC;
                 if (!postls_relpos(obs,nav,&prcopt,&sol,msg)) {
                     fprintf(stderr,"error: %s\n",msg);
                     ret=-1;
                 }
-                else strcat(msg," (precise unavailable, used broadcast)");
+                else {
+                    usedprec=0;
+                    sprintf(msg+strlen(msg)," (precise failed: %s; used broadcast)",
+                            pmsg);
+                }
             }
             else {
                 fprintf(stderr,"error: %s\n",msg);
@@ -281,6 +296,10 @@ int main(int argc, char **argv)
             }
             else {
                 outsol(fp,&sol,prcopt.rb,&solopt);
+            }
+            if (wantprec) {
+                sprintf(msg+strlen(msg)," eph=%s sp3=%d clk=%d",
+                        usedprec?"precise":"brdc",nav->ne,nav->nc);
             }
             fprintf(fp,"%s postls : %s\n",COMMENTH,msg);
             if (fp!=stdout) fclose(fp);

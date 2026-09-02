@@ -7,7 +7,7 @@ batch least squares over double-difference code and carrier phase observations.
 
 ```sh
 cd /Users/sergeidolin/RTKLIB/app/consapp/sppostls/gcc
-make sppostls
+make
 ```
 
 ## Run
@@ -22,7 +22,8 @@ cd /Users/sergeidolin/RTKLIB/app/consapp/sppostls/gcc
   ../test/GEOP1895.26o \
   ../test/NSK100RUS_R_20261890000_01D_30S_MO.rnx \
   ../test/BRDC00IGS_R_20261890000_01D_MN.rnx \
-  ../test/IGS0OPSFIN_20261890000_01D_15M_ORB.SP3
+  ../test/COD0MGXFIN_20261890000_01D_05M_ORB.SP3 \
+  ../test/COD0MGXFIN_20261890000_01D_30S_CLK.CLK
 ```
 
 The default test config uses the NSK1 base position:
@@ -37,9 +38,11 @@ ant2-pos3    = 141.165
 Use `-r X Y Z` for ECEF base coordinates or `-l lat lon h` to override the
 base position from the config on the command line.
 
-The default config uses broadcast navigation because the bundled test SP3 files
-are GPS-only while the phone data are multi-GNSS. Use `-precise` when a complete
-precise orbit/clock set is available for the enabled systems.
+The default phone configs request precise products with `pos1-sateph = precise`.
+When SP3/CLK files are present and usable, the solution footer reports
+`eph=precise sp3=... clk=...`. If precise processing fails, `sppostls`
+automatically retries with broadcast ephemerides and records the precise failure
+reason in the same footer.
 
 For kinematic processing use `phone_kine.conf`:
 
@@ -69,7 +72,14 @@ without applying the RINEX antenna height as an extra offset.
 
 For smartphone raw L1/L5 processing, the solver now uses the code observations
 for the first geometry pass and automatically reduces their weight on later
-iterations so the carrier phase dominates the final static estimate. Setting
+iterations so the carrier phase dominates the final estimate. The smartphone
+weighting model also uses elevation, C/N0, reported RINEX uncertainty, signal
+type, and constellation-specific scale factors. Code observations are Hatch
+smoothed along continuous carrier-phase arcs before they are used in the
+double-difference least-squares system; the solution footer reports the number
+of smoothed code samples as `hatch=...`. The smoothed code is deliberately
+weighted conservatively for smartphone data because residual code multipath can
+remain at the meter level even after carrier smoothing. Setting
 `pos1-ionoopt = dual-freq` enables an experimental ionosphere-free L1/L5 path,
 but it requires enough satellites with simultaneous L1 and L5 code/phase at both
 rover and base.

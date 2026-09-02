@@ -670,6 +670,7 @@ static int readrnxh(FILE *fp, double *ver, char *type, int *sys, int *tsys,
         else if (strstr(label,"RINEX VERSION / TYPE")) {
             *ver=str2num(buff,0,9);
             *type=*(buff+20);
+            if (*type==' '&&*(buff+21)=='C') *type='C';
             
             /* satellite system */
             switch (*(buff+40)) {
@@ -1473,9 +1474,9 @@ static int readrnxclk(FILE *fp, const char *opt, int index, nav_t *nav)
 {
     pclk_t *nav_pclk;
     gtime_t time;
-    double data[2];
-    int i,j,sat,mask;
-    char buff[MAXRNXLEN],satid[8]="";
+    double data[2],ep[6],sec;
+    int i,j,sat,mask,nval,n;
+    char buff[MAXRNXLEN],rtype[8]="",satid[8]="";
     
     trace(3,"readrnxclk: index=%d\n", index);
     
@@ -1485,20 +1486,30 @@ static int readrnxclk(FILE *fp, const char *opt, int index, nav_t *nav)
     mask=set_sysmask(opt);
     
     while (fgets(buff,sizeof(buff),fp)) {
-        
-        if (str2time(buff,8,26,&time)) {
-            trace(2,"rinex clk invalid epoch: %34.34s\n",buff);
-            continue;
-        }
-        strncpy(satid,buff+3,4);
-        
+
         /* only read AS (satellite clock) record */
-        if (strncmp(buff,"AS",2)||!(sat=satid2no(satid))) continue;
+        if (strncmp(buff,"AS",2)) continue;
+
+        data[0]=data[1]=0.0;
+        n=sscanf(buff,"%7s %7s %lf %lf %lf %lf %lf %lf %d %lf %lf",
+                 rtype,satid,ep,ep+1,ep+2,ep+3,ep+4,&sec,&nval,data,data+1);
+        if (n>=10&&!strcmp(rtype,"AS")) {
+            ep[5]=sec;
+            time=epoch2time(ep);
+        }
+        else {
+            if (str2time(buff,8,26,&time)) {
+                trace(2,"rinex clk invalid epoch: %34.34s\n",buff);
+                continue;
+            }
+            strncpy(satid,buff+3,4);
+            satid[4]='\0';
+            for (i=0,j=40;i<2;i++,j+=20) data[i]=str2num(buff,j,19);
+        }
+        if (!(sat=satid2no(satid))) continue;
         
         if (!(satsys(sat,NULL)&mask)) continue;
-        
-        for (i=0,j=40;i<2;i++,j+=20) data[i]=str2num(buff,j,19);
-        
+
         if (nav->nc>=nav->ncmax) {
             nav->ncmax+=1024;
             if (!(nav_pclk=(pclk_t *)realloc(nav->pclk,sizeof(pclk_t)*(nav->ncmax)))) {
