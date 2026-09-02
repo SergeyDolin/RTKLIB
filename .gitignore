@@ -12,3 +12,4 @@ __history
 __astcache
 .vscode/
 .claude/*.trace
+/aira_ar_four_methods/
