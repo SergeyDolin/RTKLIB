@@ -3267,7 +3267,7 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
             }
             dcb=-(beta_13*cbias[G1W2W]-dcb_13);
         }
-        trace(0,"%f\n\r",dcb);
+        trace(5,"corrDCB: sat=%d frq=%d dcb=%.6f\n",sat,frq,dcb);
         return dcb;
     }
     else if(sys==SYS_GLO){ /*broadcast and precise clock base on G1/G2 ionospheric-free combination*/

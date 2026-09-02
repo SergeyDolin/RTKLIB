@@ -2192,6 +2192,10 @@ EXPORT void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const dou
 EXPORT int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc);
 
 /* post-processing positioning -----------------------------------------------*/
+EXPORT int postls_relpos(const obs_t *obs, const nav_t *nav,
+                         const prcopt_t *opt, sol_t *sol, char *msg);
+EXPORT int postls_relpos_kin(const obs_t *obs, const nav_t *nav,
+                             const prcopt_t *opt, solbuf_t *solbuf, char *msg);
 EXPORT int postpos(gtime_t ts, gtime_t te, double ti, double tu,
                    const prcopt_t *popt, const solopt_t *sopt,
                    const filopt_t *fopt, char **infile, int n, char *outfile,
