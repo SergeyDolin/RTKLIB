@@ -639,7 +639,7 @@ static void prstatus(vt_t *vt)
          "single","DGPS","kinematic","static","moving-base","fixed",
          "PPP-kinema","PPP-static","CPP-kinema","CPP-static"
     };
-    const char *freq[]={"-","L1","L1+L2","L1+L2+L5","","",""};
+    const char *freq[]={"-","L1","L1+L2","L1+L2+L5","","","L1+L5"};
     rtcm_t rtcm[4];
     int i,j,n,thread,cycle,state,rtkstat,nsat0,nsat1,prcout,nave;
     int cputime,nb[4]={0},nmsg[4][10]={{0}};
@@ -778,14 +778,15 @@ static void prsatellite(vt_t *vt, int nf)
     rtk_t rtk;
     double az,el;
     char id[32];
-    int i,j,fix,frq[]={1,2,5,7,8,6};
+    int i,j,fix,smart=nf==6,frq[]={1,2,5,7,8,6};
     
     trace(4,"prsatellite:\n");
     
     rtksvrlock(&svr);
     rtk=svr.rtk;
     rtksvrunlock(&svr);
-    if (nf<=0||nf>NFREQ) nf=NFREQ;
+    if (smart) { nf=2; frq[1]=5; }
+    else if (nf<=0||nf>NFREQ) nf=NFREQ;
     vt_printf(vt,"\n%s%3s %2s %5s %4s",ESC_BOLD,"SAT","C1","Az","El");
     for (j=0;j<nf;j++) vt_printf(vt," L%d"    ,frq[j]);
     for (j=0;j<nf;j++) vt_printf(vt,"  Fix%d" ,frq[j]);
@@ -821,7 +822,7 @@ static void probserv(vt_t *vt, int nf)
 {
     obsd_t obs[MAXOBS*2];
     char tstr[64],id[32];
-    int i,j,n=0,frq[]={1,2,5,7,8,6,9};
+    int i,j,p,n=0,smart=nf==6,frq[]={1,2,5,7,8,6,9};
     
     trace(4,"probserv:\n");
     
@@ -834,7 +835,8 @@ static void probserv(vt_t *vt, int nf)
     }
     rtksvrunlock(&svr);
     
-    if (nf<=0||nf>NFREQ) nf=NFREQ;
+    if (smart) { nf=2; frq[1]=5; }
+    else if (nf<=0||nf>NFREQ) nf=NFREQ;
     vt_printf(vt,"\n%s%-22s %3s %s",ESC_BOLD,"      TIME(GPST)","SAT","R");
     for (i=0;i<nf;i++) vt_printf(vt,"        P%d(m)" ,frq[i]);
     for (i=0;i<nf;i++) vt_printf(vt,"       L%d(cyc)",frq[i]);
@@ -845,11 +847,11 @@ static void probserv(vt_t *vt, int nf)
         time2str(obs[i].time,tstr,2);
         satno2id(obs[i].sat,id);
         vt_printf(vt,"%s %3s %d",tstr,id,obs[i].rcv);
-        for (j=0;j<nf;j++) vt_printf(vt,"%13.3f",obs[i].P[j]);
-        for (j=0;j<nf;j++) vt_printf(vt,"%14.3f",obs[i].L[j]);
-        for (j=0;j<nf;j++) vt_printf(vt,"%8.1f" ,obs[i].D[j]);
-        for (j=0;j<nf;j++) vt_printf(vt,"%3.0f" ,obs[i].SNR[j]*SNR_UNIT);
-        for (j=0;j<nf;j++) vt_printf(vt,"%2d"   ,obs[i].LLI[j]);
+        for (j=0;j<nf;j++) { p=smart&&j==1?2:j; vt_printf(vt,"%13.3f",obs[i].P[p]); }
+        for (j=0;j<nf;j++) { p=smart&&j==1?2:j; vt_printf(vt,"%14.3f",obs[i].L[p]); }
+        for (j=0;j<nf;j++) { p=smart&&j==1?2:j; vt_printf(vt,"%8.1f" ,obs[i].D[p]); }
+        for (j=0;j<nf;j++) { p=smart&&j==1?2:j; vt_printf(vt,"%3.0f" ,obs[i].SNR[p]*SNR_UNIT); }
+        for (j=0;j<nf;j++) { p=smart&&j==1?2:j; vt_printf(vt,"%2d"   ,obs[i].LLI[p]); }
         vt_printf(vt,"\n");
     }
 }

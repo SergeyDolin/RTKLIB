@@ -1118,7 +1118,7 @@ typedef struct {        /* processing options type */
     int mode;           /* positioning mode (PMODE_???) */
     int soltype;        /* solution type (0:forward,1:backward,2:combined) */
     int kalman;         /* kalman filter type (0: base, 1: vbbra) */
-    int nf;             /* number of frequencies (1:L1,2:L1+L2,3:L1+L2+L5) */
+    int nf;             /* frequency mode (1:L1,...,5:first 5,6:logical L1+L5) */
     int navsys;         /* navigation system */
     int arprod;         /* products of correction for AR */
     double elmin;       /* elevation mask angle (rad) */
@@ -1542,6 +1542,8 @@ typedef struct {        /* RTK control/result type */
     double *x, *P;      /* float states and their covariance */
     double *xa,*Pa;     /* fixed states and their covariance */
     int nfix;           /* number of continuous fixes of ambiguity */
+    uint64_t amb_hash;  /* hash of current relative integer ambiguity set */
+    uint64_t amb_hash_prev; /* hash accepted at previous fixed epoch */
     int fix_epoch;
     int tc;
     ambc_t ambc[MAXSAT]; /* ambibuity control */

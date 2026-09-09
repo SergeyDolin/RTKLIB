@@ -1417,7 +1417,7 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
         "PPP Kinematic","PPP Static","PPP Fixed","","",""
     };
     const char *s2[]={
-        "L1","L1+2","L1+2+3","L1+2+3+4","L1+2+3+4+5","L1+2+3+4+5+6","","",""
+        "L1","L1+2","L1+2+3","L1+2+3+4","L1+2+3+4+5","L1+L5","","",""
     };
     const char *s3[]={
         "Forward","Backward","Combined","","",""

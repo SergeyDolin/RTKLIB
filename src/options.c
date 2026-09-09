@@ -43,7 +43,7 @@ static char snrmask_[NFREQ][1024];
 /* system options table ------------------------------------------------------*/
 #define SWTOPT  "0:off,1:on"
 #define MODOPT  "0:single,1:dgps,2:kinematic,3:static,4:movingbase,5:fixed,6:ppp-kine,7:ppp-static,8:ppp-fixed,9:cpp-kine,10:cpp-static"
-#define FRQOPT  "1:l1,2:l1+l2,3:l1+l2+l5,4:l1+l2+l5+l6"
+#define FRQOPT  "1:l1,2:l1+l2,3:l1+l2+l5,4:l1+l2+l5+l6,5:l1+l2+l5+l6+l8,6:l1+l5"
 #define TYPOPT  "0:forward,1:backward,2:combined"
 #define IONOPT  "0:off,1:brdc,2:sbas,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
 #define TRPOPT  "0:off,1:saas,2:sbas,3:est-ztd,4:est-ztdgrad,5:ztd,6:gpt3,7:gpt3+est-zwd"
@@ -138,7 +138,18 @@ EXPORT opt_t sysopts[]={
     {"out-outstat",     3,  (void *)&solopt_.sstat,      STSOPT },
     
     {"stats-eratio1",   1,  (void *)&prcopt_.eratio[0],  ""     },
+#if NFREQ>=2
     {"stats-eratio2",   1,  (void *)&prcopt_.eratio[1],  ""     },
+#endif
+#if NFREQ>=3
+    {"stats-eratio3",   1,  (void *)&prcopt_.eratio[2],  ""     },
+#endif
+#if NFREQ>=4
+    {"stats-eratio4",   1,  (void *)&prcopt_.eratio[3],  ""     },
+#endif
+#if NFREQ>=5
+    {"stats-eratio5",   1,  (void *)&prcopt_.eratio[4],  ""     },
+#endif
     {"stats-errphase",  1,  (void *)&prcopt_.err[1],     "m"    },
     {"stats-errphaseel",1,  (void *)&prcopt_.err[2],     "m"    },
     {"stats-errphasebl",1,  (void *)&prcopt_.err[3],     "m/10km"},

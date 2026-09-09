@@ -47,6 +47,8 @@
 #include "rtklib.h"
 
 #define MIN(x,y)    ((x)<(y)?(x):(y))
+#define MAX(x,y)    ((x)>(y)?(x):(y))
+#define SQR(x)      ((x)*(x))
 #define SQRT(x)     ((x)<=0.0||(x)!=(x)?0.0:sqrt(x))
 
 #define MAXPRCDAYS  100          /* max days of continuous processing */
@@ -346,7 +348,6 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
 
     solstatic=sopt_.solstatic&&
               (popt->mode==PMODE_STATIC||popt->mode==PMODE_PPP_STATIC);
-
     rtkinit(&rtk,popt);
     rtcm_path[0]='\0';
 
@@ -411,7 +412,7 @@ static int valcomb(const sol_t *solf, const sol_t *solb)
         var[i]=solf->qr[i]+solb->qr[i];
     }
     for (i=0;i<3;i++) {
-        if (dr[i]*dr[i]<=16.0*var[i]) continue; /* ok if in 4-sigma */
+        if (dr[i]*dr[i]<=MAX(16.0*var[i],SQR(0.20))) continue;
         
         time2str(solf->time,tstr,2);
         trace(2,"degrade fix to float: %s dr=%.3f %.3f %.3f std=%.3f %.3f %.3f\n",
@@ -459,9 +460,7 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
             sols=solf[i];
             sols.time=timeadd(sols.time,-tt/2.0);
             
-            if ((popt->mode==PMODE_KINEMA  ||popt->mode==PMODE_MOVEB||
-                 popt->mode==PMODE_PPP_KINEMA||popt->mode==PMODE_CPP_KINEMA)&&
-                sols.stat==SOLQ_FIX) {
+            if (sols.stat==SOLQ_FIX) {
 
                 /* degrade fix to float if validation failed */
                 if (!valcomb(solf+i,solb+j)) sols.stat=SOLQ_FLOAT;

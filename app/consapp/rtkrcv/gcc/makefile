@@ -7,7 +7,7 @@ CTARGET= -DENAGLO -DENAQZS -DENACMP -DENAGAL -DENAIRN -DNFREQ=5 -DSVR_REUSEADDR
 #CTARGET= -DENAGLO -DENAQZS -DENACMP -DENAGAL -DENAIRN -DNFREQ=3 -DIERS_MODEL -DSVR_REUSEADDR
 
 CFLAGS = -Wall -O3 -ansi -pedantic -Wno-unused-but-set-variable -I$(SRC) -I.. -DTRACE $(CTARGET) -g
-LDLIBS  = -lm -lpthread
+LDLIBS  = ../../../../lib/iers/gcc/iers.a -lm -lpthread
 #LDLIBS  = ../../../lib/iers/gcc/iers.a -lm -lrt -lpthread
 
 all        : rtkrcv
@@ -15,7 +15,7 @@ rtkrcv     : rtkrcv.o vt.o rtkcmn.o rtksvr.o rtkpos.o geoid.o solution.o lambda.
 rtkrcv     : sbas.o stream.o rcvraw.o rtcm.o preceph.o options.o pntpos.o ppp.o ppp_ar.o
 rtkrcv     : novatel.o ublox.o ss2.o crescent.o skytraq.o javad.o nvs.o binex.o
 rtkrcv     : rt17.o ephemeris.o rinex.o ionex.o rtcm2.o rtcm3.o rtcm3e.o
-rtkrcv     : tides.o septentrio.o
+rtkrcv     : tides.o gpt3.o septentrio.o
 
 rtkrcv.o   : ../rtkrcv.c
 	$(CC) -c $(CFLAGS) ../rtkrcv.c
@@ -83,6 +83,8 @@ ionex.o    : $(SRC)/ionex.c
 	$(CC) -c $(CFLAGS) $(SRC)/ionex.c
 tides.o    : $(SRC)/tides.c
 	$(CC) -c $(CFLAGS) $(SRC)/tides.c
+gpt3.o     : $(SRC)/gpt3.c
+	$(CC) -c $(CFLAGS) $(SRC)/gpt3.c
 septentrio.o: $(SRC)/rcv/septentrio.c
 	$(CC) -c $(CFLAGS) $(SRC)/rcv/septentrio.c
 
@@ -133,4 +135,3 @@ test3:
 
 clean:
 	rm -f rtkrcv rtkrcv.exe rtkrcv.nav *.o *.out *.trace
-
