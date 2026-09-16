@@ -784,7 +784,8 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         /* satellite clock bias by broadcast ephemeris */
         if (!ephclk(time[i],teph,obs[i].sat,nav,&dt)) {
             trace(3,"no broadcast clock %s sat=%2d\n",time_str(time[i],3),obs[i].sat);
-            continue;
+            if (ephopt!=EPHOPT_PREC) continue;
+            dt=0.0;
         }
         time[i]=timeadd(time[i],-dt);
         

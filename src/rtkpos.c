@@ -1894,18 +1894,25 @@ extern int rtkpos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     if (!pntpos(obs,nu,nav,&rtk->opt,&rtk->sol,NULL,rtk->ssat,msg)) {
         errmsg(rtk,"point pos error (%s)\n",msg);
 
-        /* For PPP modes, estpos() already wrote a converged rr/qr into
-         * rtk->sol before valsol()'s chi-square/GDOP check failed it — that
-         * check is tuned for a standalone SPP output, not for seeding PPP,
-         * which does its own robust processing and outlier rejection. On
-         * noisy/low-cost receivers (e.g. smartphone L1/L5) this check fails
-         * on most epochs, and bailing out here skipped PPP entirely for
-         * >80% of epochs even though a usable position estimate existed.
-         * Relative (non-PPP) modes still need a validated SPP for the
-         * rover-base geometry, so keep the early return there. */
+        /* PPP can start from an approximate station position and validate
+         * observations with its own precise-orbit residuals. If SPP cannot
+         * form a standalone solution (for example due to broadcast-nav
+         * issues), keep PPP running; relative modes still need a validated
+         * SPP rover seed for rover-base geometry. */
         if (!rtk->opt.dynamics&&opt->mode<PMODE_PPP_KINEMA) {
             outsolstat(rtk);
             return 0;
+        }
+        if (opt->mode>=PMODE_PPP_KINEMA&&norm(rtk->sol.rr,3)<=0.0) {
+            double rru=norm(opt->ru,3),pos[3];
+            ecef2pos(opt->ru,pos);
+            if (rru>6.0E6&&rru<6.5E6&&pos[2]>-1000.0&&pos[2]<100000.0) {
+                for (i=0;i<3;i++) rtk->sol.rr[i]=opt->ru[i];
+            }
+            else {
+                outsolstat(rtk);
+                return 0;
+            }
         }
     }
     if (time.time!=0) rtk->tt=timediff(rtk->sol.time,time);

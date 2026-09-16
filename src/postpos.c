@@ -924,6 +924,45 @@ static FILE *openfile(const char *outfile)
     
     return !*outfile?stdout:fopen(outfile,"ab");
 }
+/* add suffix before path extension ------------------------------------------*/
+static void addpathsuffix(const char *path, const char *suffix, char *out)
+{
+    const char *ext=strrchr(path,'.'),*sep1=strrchr(path,'/'),*sep2=strrchr(path,'\\');
+    const char *sep=sep1>sep2?sep1:sep2;
+    
+    if (!suffix||!*suffix) {
+        strcpy(out,path);
+    }
+    else if (ext&&(!sep||sep<ext)) {
+        strncpy(out,path,ext-path);
+        out[ext-path]='\0';
+        strcat(out,suffix);
+        strcat(out,ext);
+    }
+    else {
+        strcpy(out,path);
+        strcat(out,suffix);
+    }
+}
+/* open solution statistics file ---------------------------------------------*/
+static void openstatfile(const solopt_t *sopt, const filopt_t *fopt,
+                         const char *outfile, const char *suffix)
+{
+    char statfile[1024],basefile[1024];
+    
+    if (sopt->sstat<=0) return;
+    
+    if (*fopt->solstat) {
+        strcpy(basefile,fopt->solstat);
+    }
+    else {
+        strcpy(basefile,outfile);
+        strcat(basefile,".stat");
+    }
+    addpathsuffix(basefile,suffix,statfile);
+    rtkclosestat();
+    rtkopenstat(statfile,sopt->sstat);
+}
 /* execute processing session ------------------------------------------------*/
 static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
                    const solopt_t *sopt, const filopt_t *fopt, int flag,
@@ -931,7 +970,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
 {
     FILE *fp;
     prcopt_t popt_=*popt;
-    char tracefile[1024],statfile[1024],path[1024],*ext;
+    char tracefile[1024],path[1024],*ext;
     
     trace(3,"execses : n=%d outfile=%s\n",n,outfile);
     
@@ -988,18 +1027,15 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
             return 0;
         }
     }
+    else if ((popt_.mode==PMODE_PPP_KINEMA||popt_.mode==PMODE_PPP_STATIC)&&
+             norm(stas[0].pos,3)>0.0) {
+        matcpy(popt_.ru,stas[0].pos,3,1);
+    }
     else if (PMODE_DGPS<=popt_.mode&&popt_.mode<=PMODE_STATIC) {
         if (!antpos(&popt_,2,&obss,&navs,stas,fopt->stapos)) {
             freeobsnav(&obss,&navs);
             return 0;
         }
-    }
-    /* open solution statistics */
-    if (flag&&sopt->sstat>0) {
-        strcpy(statfile,outfile);
-        strcat(statfile,".stat");
-        rtkclosestat();
-        rtkopenstat(statfile,sopt->sstat);
     }
     /* write header to output file */
     if (flag&&!outhead(outfile,infile,n,&popt_,sopt)) {
@@ -1010,12 +1046,14 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     
     if (popt_.mode==PMODE_SINGLE||popt_.soltype==0) {
         if ((fp=openfile(outfile))) {
+            if (flag) openstatfile(sopt,fopt,outfile,"");
             procpos(fp,&popt_,sopt,0); /* forward */
             fclose(fp);
         }
     }
     else if (popt_.soltype==1) {
         if ((fp=openfile(outfile))) {
+            if (flag) openstatfile(sopt,fopt,outfile,"");
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
             procpos(fp,&popt_,sopt,0); /* backward */
             fclose(fp);
@@ -1030,9 +1068,11 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         if (solf&&solb) {
             isolf=isolb=0;
             ppp_set_backward(0);                          /* ensure CPP in forward mode */
+            if (flag) openstatfile(sopt,fopt,outfile,"_forward");
             procpos(NULL,&popt_,sopt,1); /* forward */
             revs=1; iobsu=iobsr=obss.n-1; isbs=sbss.n-1;
             ppp_set_backward(1);                          /* reset CPP, skip jumpstart backward */
+            if (flag) openstatfile(sopt,fopt,outfile,"_backward");
             procpos(NULL,&popt_,sopt,1); /* backward */
             ppp_set_backward(0);                          /* restore forward mode */
 

@@ -1627,8 +1627,13 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
  *
  * H convention: H is stored as [n×m] (states × measurements, column-major).
  * In math notation this equals H_math^T where H_math is [m×n]. */
+static int iscodeobs_(int j, const int *vflg)
+{
+    return vflg ? ((vflg[j]>>4)&1) : (j%2);
+}
 static int vbakf_core_(const double *x, const double *P, const double *H,
-                       const double *v, const double *R, int n, int m,
+                       const double *v, const double *R, const int *vflg,
+                       int n, int m,
                        double *xp, double *Pp)
 {
     /* --- Stage 1 work matrices ------------------------------------------- */
@@ -1665,33 +1670,36 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     matmul("NN", m, m, m,  1.0, R, Q, 0.0, vpostR);    /* vpostR = R*Q^-1   */
     matmul("NN", m, 1, m, -1.0, vpostR, v, 0.0, vpost);/* vpost = -R*Q^-1*v */
 
-    /* Split measurements: even indices = phase, odd = code */
-    n_cp = m / 2;
-    n_pr = m - n_cp;
-
     /* Normalised residuals */
     for (j = 0; j < m; j++) {
         double denom = sqrt(fabs(vpostR[j+j*m]) * RI[j+j*m]);
         vn[j] = (denom > 0.0) ? fabs(vpost[j]) / denom : 0.0;
     }
 
-    /* Mean and variance per group */
+    /* Mean and variance per group. PPP residuals may skip observations, so the
+     * measurement index parity is not reliable; use ppp_res() flags instead. */
     vm_cp = vm_pr = vv_cp = vv_pr = 0.0;
-    for (j = 0; j < n_cp; j++) vm_cp += vn[2*j];
-    for (j = 0; j < n_pr; j++) vm_pr += vn[2*j+1];
+    n_cp = n_pr = 0;
+    for (j = 0; j < m; j++) {
+        if (iscodeobs_(j,vflg)) { vm_pr += vn[j]; n_pr++; }
+        else                    { vm_cp += vn[j]; n_cp++; }
+    }
     if (n_cp > 0) vm_cp /= n_cp;
     if (n_pr > 0) vm_pr /= n_pr;
-    for (j = 0; j < n_cp; j++) vv_cp += SQR(vn[2*j]   - vm_cp);
-    for (j = 0; j < n_pr; j++) vv_pr += SQR(vn[2*j+1] - vm_pr);
+    for (j = 0; j < m; j++) {
+        if (iscodeobs_(j,vflg)) vv_pr += SQR(vn[j] - vm_pr);
+        else                   vv_cp += SQR(vn[j] - vm_cp);
+    }
     if (n_cp > 1) vv_cp /= (n_cp - 1);   /* unbiased sample variance */
     if (n_pr > 1) vv_pr /= (n_pr - 1);
 
     /* t-test down-weighting (tdistb_0250 ≈ 75th pct, tdistb_0005 ≈ 99.95th) */
     for (j = 0; j < m; j++) {
-        int idx = (j % 2 == 0) ? (n_cp > 30 ? 29 : n_cp - 1)
-                                : (n_pr > 30 ? 29 : n_pr - 1);
-        double vm  = (j % 2 == 0) ? vm_cp : vm_pr;
-        double vv  = (j % 2 == 0) ? vv_cp : vv_pr;
+        int iscode = iscodeobs_(j,vflg);
+        int idx = !iscode ? (n_cp > 30 ? 29 : n_cp - 1)
+                          : (n_pr > 30 ? 29 : n_pr - 1);
+        double vm  = !iscode ? vm_cp : vm_pr;
+        double vv  = !iscode ? vv_cp : vv_pr;
         if (idx < 0) continue;
 
         Ts[j] = (vv > 0.0) ? fabs(vn[j] - vm) / sqrt(vv) : 0.0;
@@ -1704,7 +1712,7 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
             RI[j+j*m] *= w;
         } else if (Ts[j] >= tdistb_0005[idx]) {
             /* Effectively reject the measurement */
-            RI[j+j*m] *= (j % 2 == 0) ? 1e7 : 1e8;
+            RI[j+j*m] *= !iscode ? 1e7 : 1e8;
         }
     }
 
@@ -1833,7 +1841,7 @@ extern int filter(double *x, double *P, const double *H, const double *v,
 * return : status (0:ok,<0:error)
 *-----------------------------------------------------------------------------*/
 extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
-                        const double *R, int n, int m)
+                        const double *R, const int *vflg, int n, int m)
 {
     double *x_, *xp_, *P_, *Pp_, *H_;
     int i, j, k, info, *ix;
@@ -1874,8 +1882,9 @@ extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
         }
     }
     
-    /* call VB-AKF core */
-    info = vbakf_core_(x_, P_, H_, v, R, k, m, xp_, Pp_);
+    /* call VB-AKF core; without PPP measurement flags it falls back to the
+     * historical index-parity classification. */
+    info = vbakf_core_(x_, P_, H_, v, R, vflg, k, m, xp_, Pp_);
     
     if (info == 0) {
         /* symmetrize Pp for numerical stability */
@@ -3267,7 +3276,7 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
             }
             dcb=-(beta_13*cbias[G1W2W]-dcb_13);
         }
-        trace(5,"corrDCB: sat=%d frq=%d dcb=%.6f\n",sat,frq,dcb);
+        trace(0,"%f\n\r",dcb);
         return dcb;
     }
     else if(sys==SYS_GLO){ /*broadcast and precise clock base on G1/G2 ionospheric-free combination*/

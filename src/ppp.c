@@ -1134,7 +1134,7 @@ static void udpos_ppp(rtk_t *rtk)
                 R[8] = pow(RTK_sol[5], 2.0);  /* SDZ² */
                 /* use the same filter variant as the main PPP measurement update */
                 if (rtk->opt.kalman == 1)
-                    filter_vbakf(rtk->x, rtk->P, H, v, R, rtk->nx, 3);
+                    filter_vbakf(rtk->x, rtk->P, H, v, R, NULL, rtk->nx, 3);
                 else
                     filter(rtk->x, rtk->P, H, v, R, rtk->nx, 3);
                 free(H);
@@ -1943,7 +1943,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         rtk->ssat[i].sys=satsys(i+1,NULL);
         for (j=0;j<opt->nf;j++){
             rtk->ssat[i].fix[j]=0;
-            rtk->ssat[i].snr_rover[j]=obs[i].SNR[j];
+            rtk->ssat[i].snr_rover[j]=0;
             rtk->ssat[i].snr_base[j] =0;
             rtk->ssat[i].eclipse = 1.0;
             rtk->ssat[i].var_fact[0][j]=1.0;
@@ -2013,7 +2013,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 break;
             }
         } else if (opt->kalman == 1) {
-            if ((info=filter_vbakf(xp,Pp,H,v,R,rtk->nx,nv))) {
+            if ((info=filter_vbakf(xp,Pp,H,v,R,vflg,rtk->nx,nv))) {
                 trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
                 break;
             }
@@ -2108,8 +2108,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         update_stat(rtk,obs,n,stat);
 
         if (stat==SOLQ_FIX) {
-            matcpy(rtk->x,xp,rtk->nx,1);
-            matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
+            /*matcpy(rtk->x,xp,rtk->nx,1);
+            matcpy(rtk->P,Pp,rtk->nx,rtk->nx);*/
              /* fix-and-hold: constrain float filter after minfix consecutive fixes */
             if (rtk->opt.modear==ARMODE_FIXHOLD&&rtk->nfix>=rtk->opt.minfix) {
                 holdamb_ppp(rtk,xa);
