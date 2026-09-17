@@ -902,6 +902,7 @@ typedef struct {
 typedef struct {
     double code[MAXSAT][MAXCODE];
     double phase[MAXSAT][MAXCODE];
+    uint8_t valid[MAXSAT][MAXCODE]; /* bit 0: code OSB, bit 1: phase OSB */
 }osb_t;
 
 typedef struct {
@@ -1312,6 +1313,9 @@ typedef struct {        /* satellite status type */
     int new_sat;
     double hatch_P[NFREQ]; /* Hatch-smoothed pseudorange (m) */
     double hatch_L[NFREQ]; /* prev phase for Hatch filter (m) */
+    double ppp_dop[NFREQ]; /* previous Doppler for trapezoidal phase prediction */
+    uint8_t ppp_code[NFREQ]; /* signal identity of the previous PPP arc */
+    uint8_t ppp_if2; /* previous secondary IF slot + 1; zero: no arc */
     int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
 
@@ -2158,7 +2162,8 @@ EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
 
 
 /* observation model */
-EXPORT void matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT int matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT int matchcposb_ar(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
 EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);
@@ -2176,6 +2181,7 @@ EXPORT void rtkclosestat(void);
 EXPORT int  rtkoutstat(rtk_t *rtk, char *buff);
 
 /* precise point positioning -------------------------------------------------*/
+EXPORT int ppp_if2(const obsd_t *obs, const prcopt_t *opt);
 EXPORT int seliflc(int optnf, int sys);
 EXPORT int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vflag,int nv,int *exc);
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);

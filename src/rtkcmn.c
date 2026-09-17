@@ -1627,13 +1627,8 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
  *
  * H convention: H is stored as [n×m] (states × measurements, column-major).
  * In math notation this equals H_math^T where H_math is [m×n]. */
-static int iscodeobs_(int j, const int *vflg)
-{
-    return vflg ? ((vflg[j]>>4)&1) : (j%2);
-}
 static int vbakf_core_(const double *x, const double *P, const double *H,
-                       const double *v, const double *R, const int *vflg,
-                       int n, int m,
+                       const double *v, const double *R, const int *vflg, int n, int m,
                        double *xp, double *Pp)
 {
     /* --- Stage 1 work matrices ------------------------------------------- */
@@ -1649,8 +1644,8 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     double *Pxz    = mat(n, m);   /* temp K*RI       [n×m]  */
     double *Kk     = mat(n, m);   /* Kalman gain     [n×m]  */
 
-    int i, j, n_cp, n_pr, info = -1;
-    double vm_cp, vm_pr, vv_cp, vv_pr;
+    int i, j, group, count[2]={0}, info = -1;
+    double mean[2]={0}, variance[2]={0};
 
     if (!F||!Q||!RI||!vpost||!vpostR||!vn||!Ts||!Dpk||!Pxz||!Kk)
         goto cleanup;
@@ -1670,49 +1665,37 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     matmul("NN", m, m, m,  1.0, R, Q, 0.0, vpostR);    /* vpostR = R*Q^-1   */
     matmul("NN", m, 1, m, -1.0, vpostR, v, 0.0, vpost);/* vpost = -R*Q^-1*v */
 
-    /* Normalised residuals */
-    for (j = 0; j < m; j++) {
-        double denom = sqrt(fabs(vpostR[j+j*m]) * RI[j+j*m]);
-        vn[j] = (denom > 0.0) ? fabs(vpost[j]) / denom : 0.0;
-    }
-
-    /* Mean and variance per group. PPP residuals may skip observations, so the
-     * measurement index parity is not reliable; use ppp_res() flags instead. */
-    vm_cp = vm_pr = vv_cp = vv_pr = 0.0;
-    n_cp = n_pr = 0;
-    for (j = 0; j < m; j++) {
-        if (iscodeobs_(j,vflg)) { vm_pr += vn[j]; n_pr++; }
-        else                    { vm_cp += vn[j]; n_cp++; }
-    }
-    if (n_cp > 0) vm_cp /= n_cp;
-    if (n_pr > 0) vm_pr /= n_pr;
-    for (j = 0; j < m; j++) {
-        if (iscodeobs_(j,vflg)) vv_pr += SQR(vn[j] - vm_pr);
-        else                   vv_cp += SQR(vn[j] - vm_cp);
-    }
-    if (n_cp > 1) vv_cp /= (n_cp - 1);   /* unbiased sample variance */
-    if (n_pr > 1) vv_pr /= (n_pr - 1);
-
-    /* t-test down-weighting (tdistb_0250 ≈ 75th pct, tdistb_0005 ≈ 99.95th) */
-    for (j = 0; j < m; j++) {
-        int iscode = iscodeobs_(j,vflg);
-        int idx = !iscode ? (n_cp > 30 ? 29 : n_cp - 1)
-                          : (n_pr > 30 ? 29 : n_pr - 1);
-        double vm  = !iscode ? vm_cp : vm_pr;
-        double vv  = !iscode ? vv_cp : vv_pr;
-        if (idx < 0) continue;
-
-        Ts[j] = (vv > 0.0) ? fabs(vn[j] - vm) / sqrt(vv) : 0.0;
-
-        if (Ts[j] > tdistb_0250[idx] && Ts[j] < tdistb_0005[idx]) {
-            /* Smooth down-weight between the two thresholds */
-            double w = Ts[j] / tdistb_0250[idx] *
-                       SQR((tdistb_0005[idx] - tdistb_0250[idx]) /
-                           (tdistb_0005[idx] - Ts[j]));
-            RI[j+j*m] *= w;
-        } else if (Ts[j] >= tdistb_0005[idx]) {
-            /* Effectively reject the measurement */
-            RI[j+j*m] *= !iscode ? 1e7 : 1e8;
+    /* PPP residuals are sparse: phase/code identity comes from vflg,
+     * never from row parity. NULL denotes generic pseudo-observations. */
+    if (vflg) {
+        for (j=0;j<m;j++) {
+            double denom=sqrt(fmax(0.0,vpostR[j+j*m]*R[j+j*m]));
+            vn[j]=denom>0.0?fabs(vpost[j])/denom:0.0;
+            group=(vflg[j]>>4)&1;
+            mean[group]+=vn[j];
+            count[group]++;
+        }
+        for (i=0;i<2;i++) if (count[i]) mean[i]/=count[i];
+        for (j=0;j<m;j++) {
+            group=(vflg[j]>>4)&1;
+            variance[group]+=SQR(vn[j]-mean[group]);
+        }
+        for (i=0;i<2;i++) if (count[i]>1) variance[i]/=count[i]-1;
+        for (j=0;j<m;j++) {
+            int idx;
+            double w=1.0;
+            group=(vflg[j]>>4)&1;
+            if (count[group]<3||variance[group]<=0.0) continue;
+            idx=(count[group]>31?29:count[group]-2); /* sample variance: n-1 degrees of freedom */
+            /* Small residuals are not outliers. Down-weight only upper tail. */
+            Ts[j]=(vn[j]-mean[group])/sqrt(variance[group]);
+            if (Ts[j]>tdistb_0250[idx]&&Ts[j]<tdistb_0005[idx]) {
+                w=Ts[j]/tdistb_0250[idx]*
+                  SQR((tdistb_0005[idx]-tdistb_0250[idx])/
+                      (tdistb_0005[idx]-Ts[j]));
+            }
+            else if (Ts[j]>=tdistb_0005[idx]) w=group?1E8:1E7;
+            RI[j+j*m]*=w;
         }
     }
 
@@ -1788,14 +1771,15 @@ cleanup:
 *          double *Pp       O   covariance matrix of states after update (n x n)
 * return : status (0:ok,<0:error)
 * notes  : matirix stored by column-major order (fortran convention)
-*          if state x[i]==0.0, not updates state x[i]/P[i+i*n]
+*          states with zero value or nonpositive diagonal covariance are not updated
 *-----------------------------------------------------------------------------*/
 static int filter_(const double *x, const double *P, const double *H,
                    const double *v, const double *R, int n, int m,
                    double *xp, double *Pp)
 {
     double *F=mat(n,m),*Q=mat(m,m),*K=mat(n,m),*I=eye(n);
-    int info;
+    double *T=mat(n,n),*KR=mat(n,m);
+    int info,i,j;
     
     matcpy(Q,R,m,m);
     matcpy(xp,x,n,1);
@@ -1805,9 +1789,16 @@ static int filter_(const double *x, const double *P, const double *H,
         matmul("NN",n,m,m,1.0,F,Q,0.0,K);   /* K=P*H*Q^-1 */
         matmul("NN",n,1,m,1.0,K,v,1.0,xp);  /* xp=x+K*v */
         matmul("NT",n,n,m,-1.0,K,H,1.0,I);  /* Pp=(I-K*H')*P */
-        matmul("NN",n,n,n,1.0,I,P,0.0,Pp);
+        matmul("NN",n,n,n,1.0,I,P,0.0,T);
+        matmul("NT",n,n,n,1.0,T,I,0.0,Pp);
+        matmul("NN",n,m,m,1.0,K,R,0.0,KR);
+        matmul("NT",n,n,m,1.0,KR,K,1.0,Pp);
+        for (i=0;i<n;i++) for (j=i+1;j<n;j++) {
+            double avg=0.5*(Pp[i+j*n]+Pp[j+i*n]);
+            Pp[i+j*n]=Pp[j+i*n]=avg;
+        }
     }
-    free(F); free(Q); free(K); free(I);
+    free(F); free(Q); free(K); free(I); free(T); free(KR);
     return info;
 }
 extern int filter(double *x, double *P, const double *H, const double *v,
@@ -1817,6 +1808,7 @@ extern int filter(double *x, double *P, const double *H, const double *v,
     int i,j,k,info,*ix;
     
     ix=imat(n,1); for (i=k=0;i<n;i++) if (x[i]!=0.0&&P[i+i*n]>0.0) ix[k++]=i;
+    if (!k||m<=0) {free(ix); return -1;}
     x_=mat(k,1); xp_=mat(k,1); P_=mat(k,k); Pp_=mat(k,k); H_=mat(k,m);
     for (i=0;i<k;i++) {
         x_[i]=x[ix[i]];
@@ -1824,7 +1816,7 @@ extern int filter(double *x, double *P, const double *H, const double *v,
         for (j=0;j<m;j++) H_[i+j*k]=H[ix[i]+j*n];
     }
     info=filter_(x_,P_,H_,v,R,k,m,xp_,Pp_);
-    for (i=0;i<k;i++) {
+    if (!info) for (i=0;i<k;i++) {
         x[ix[i]]=xp_[i];
         for (j=0;j<k;j++) P[ix[i]+ix[j]*n]=Pp_[i+j*k];
     }
@@ -1846,10 +1838,10 @@ extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
     double *x_, *xp_, *P_, *Pp_, *H_;
     int i, j, k, info, *ix;
     
-    /* check for active states (non-zero and positive variance) */
+    /* Preserve the RTKLIB active-state convention. */
     ix = imat(n, 1);
     for (i = k = 0; i < n; i++) {
-        if (x[i] != 0.0 && P[i + i * n] > 0.0) {
+        if (x[i]!=0.0 && P[i + i * n] > 0.0) {
             ix[k++] = i;
         }
     }
@@ -1882,8 +1874,7 @@ extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
         }
     }
     
-    /* call VB-AKF core; without PPP measurement flags it falls back to the
-     * historical index-parity classification. */
+    /* call VB-AKF core */
     info = vbakf_core_(x_, P_, H_, v, R, vflg, k, m, xp_, Pp_);
     
     if (info == 0) {
@@ -3276,7 +3267,7 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
             }
             dcb=-(beta_13*cbias[G1W2W]-dcb_13);
         }
-        trace(0,"%f\n\r",dcb);
+        trace(5,"corrDCB: sat=%d frq=%d dcb=%.6f\n",sat,frq,dcb);
         return dcb;
     }
     else if(sys==SYS_GLO){ /*broadcast and precise clock base on G1/G2 ionospheric-free combination*/
@@ -3873,55 +3864,82 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
 }
 
-extern void matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
-    int i,sys;
-    int sat=obs->sat;
-    int code=obs->code[f];
-    int fallback=0;
+/* Exact signal lookup. Return bit 0 for code and bit 1 for phase availability.
+ * Validity is independent of the bias value: an explicitly stored zero is valid.
+ * Biases are never extrapolated or borrowed from another tracking code. */
+extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f,
+                     double *cbias, double *pbias)
+{
+    int i,sat,code,valid;
+    double dt;
+    const osb_t *osb;
+    if (cbias) *cbias=0.0;
+    if (pbias) *pbias=0.0;
+    if (!obs||!nav||f<0||f>=NFREQ||!nav->osbs||
+        !nav->osbs->sat_osb||nav->osbs->dt<=0.0) return 0;
+    sat=obs->sat;
+    code=obs->code[f];
+    if (sat<=0||sat>MAXSAT||code<=0||code>=MAXCODE) return 0;
+    dt=timediff(obs->time,nav->osbs->tmin);
+    if (dt<0.0||timediff(obs->time,nav->osbs->tmax)>=0.0) return 0;
+    i=(int)floor(dt/nav->osbs->dt);
+    osb=nav->osbs->sat_osb+i;
+    valid=osb->valid[sat-1][code];
+    if (cbias&&(valid&1)) *cbias=osb->code[sat-1][code];
+    if (pbias&&(valid&2)) *pbias=osb->phase[sat-1][code];
+    return valid;
+}
 
-    if(cbias) *cbias=0.0;
-    if(pbias) *pbias=0.0;
-    if(!nav->osbs||!nav->osbs->sat_osb||nav->osbs->dt==0.0) return;
+/* PPP-AR OSB lookup ----------------------------------------------------------
+ * Code OSB is observable-specific and therefore must match obs->code[f]
+ * exactly. Phase OSBs in WUM all-frequency RAP products may be published
+ * under another tracking attribute on the same carrier (for example Q/X).
+ * For AR only, if the exact phase OSB is absent, use a published phase OSB
+ * from the same satellite and the same carrier frequency.
+ *
+ * Return bits are identical to matchcposb(): bit0=code, bit1=phase.
+ * The code OSB is never borrowed from another tracking code.
+ * --------------------------------------------------------------------------*/
+extern int matchcposb_ar(const obsd_t *obs, const nav_t *nav, int f,
+                        double *cbias, double *pbias)
+{
+    int i,sat,code,valid,c,phase_code=0;
+    double dt,freq0,freq,phase=0.0;
+    const osb_t *osb;
 
-    i=(int)(timediff(obs->time, nav->osbs->tmin)/nav->osbs->dt);
-    if(i<0) return;
-    /* clamp to the last allocated window (nb-1, see readosb()): biases are
-     * near-constant over a day, so reuse the last window past tmax instead of
-     * reading beyond the array */
-    {
-        int imax=(int)(timediff(nav->osbs->tmax,nav->osbs->tmin)/nav->osbs->dt);
-        if(i>imax){
-            trace(2,"matchcposb: CLAMP i=%d > imax=%d sat=%d f=%d\n\r",i,imax,sat,f);
-            i=imax;
-        }
-    }
+    valid=matchcposb(obs,nav,f,cbias,pbias);
+    if (valid&2) return valid;
 
-    /* try exact code first */
-    if(nav->osbs->sat_osb[i].code[sat-1][code]!=0.0||
-       nav->osbs->sat_osb[i].phase[sat-1][code]!=0.0) {
-        if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
-        if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
-        return;
+    if (!obs||!nav||f<0||f>=NFREQ||!nav->osbs||
+        !nav->osbs->sat_osb||nav->osbs->dt<=0.0) return valid;
+
+    sat=obs->sat;
+    code=obs->code[f];
+    if (sat<=0||sat>MAXSAT||code<=0||code>=MAXCODE) return valid;
+
+    freq0=sat2freq(sat,code,nav);
+    if (freq0<=0.0) return valid;
+
+    dt=timediff(obs->time,nav->osbs->tmin);
+    if (dt<0.0||timediff(obs->time,nav->osbs->tmax)>=0.0) return valid;
+    i=(int)floor(dt/nav->osbs->dt);
+    osb=nav->osbs->sat_osb+i;
+
+    for (c=1;c<MAXCODE;c++) {
+        if (!(osb->valid[sat-1][c]&2)) continue;
+        freq=sat2freq(sat,c,nav);
+        if (freq<=0.0||fabs(freq-freq0)>1.0) continue;
+        phase=osb->phase[sat-1][c];
+        phase_code=c;
+        break;
     }
-    /* fallback: Galileo L1B <-> L1X, GPS/QZS L5Q <-> L5X. Bidirectional
-     * because the RINEX reader defaults an ambiguous/incomplete tracking
-     * channel (e.g. a 2-char legacy "C5" observation type with no Q/X/I
-     * suffix, common in RINEX2->3 conversions) to 'X' (see decode_obsh()'s
-     * defcodes[] table in rinex.c), while OSB products conventionally
-     * publish GPS/QZS L5 biases under the 'Q' channel — so observations
-     * come in as L5X while the bias table is indexed by L5Q. The original
-     * one-directional check (L5Q->L5X) silently applied zero correction
-     * whenever the observation itself was already L5X, which is the
-     * common case for these converted files. */
-    sys=satsys(sat,NULL);
-    if(sys==SYS_GAL&&code==CODE_L1B) fallback=CODE_L1X;
-    else if(sys==SYS_GAL&&code==CODE_L1X) fallback=CODE_L1B;
-    else if((sys==SYS_GPS||sys==SYS_QZS)&&code==CODE_L5Q) fallback=CODE_L5X;
-    else if((sys==SYS_GPS||sys==SYS_QZS)&&code==CODE_L5X) fallback=CODE_L5Q;
-    if(fallback) {
-        if(cbias) *cbias=nav->osbs->sat_osb[i].code[sat-1][fallback];
-        if(pbias) *pbias=nav->osbs->sat_osb[i].phase[sat-1][fallback];
-    }
+    if (!phase_code) return valid;
+
+    if (pbias) *pbias=phase;
+    valid|=2;
+    trace(3,"PPP AR phase OSB alias sat=%d obs=%s phase_from=%s\\n",
+          sat,code2obs(code),code2obs(phase_code));
+    return valid;
 }
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
@@ -4344,6 +4362,16 @@ extern int expath(const char *path, char *paths[], int nmax)
     for (i=0;i<n;i++) trace(3,"expath  : file=%s\n",paths[i]);
     
     return n;
+}
+
+/* Secondary signal slot for the PPP ionosphere-free combination. */
+extern int ppp_if2(const obsd_t *obs, const prcopt_t *opt)
+{
+    /* CODE GPS/Galileo OSBs use E1/E5a, not E1/E5b. Slot 1 is E5b
+     * for Galileo. Use the same pair in IF, MW, slip detection and AR. */
+    if (opt->arprod==AR_PROD_OSB_COD&&satsys(obs->sat,NULL)==SYS_GAL)
+        return 2;
+    return opt->freqopt||obs->L[1]==0.0?2:1;
 }
 
 extern int seliflc(int optnf, int sys){
