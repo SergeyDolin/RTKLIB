@@ -70,6 +70,7 @@ static const char *help[]={
 " -l lat lon hgt reference (base) receiver latitude/longitude/height (deg/m)",
 "           rover latitude/longitude/height for fixed or ppp-fixed mode",
 " -y level  output soltion status (0:off,1:states,2:residuals) [0]",
+" -stat file output solution status/residual file [output file + .stat]",
 " -x level  debug trace level (0:off) [0]"
 };
 /* show message --------------------------------------------------------------*/
@@ -173,6 +174,7 @@ int main(int argc, char **argv)
             pos2ecef(pos,prcopt.rb);
             matcpy(prcopt.ru,prcopt.rb,3,1);
         }
+        else if (!strcmp(argv[i],"-stat")&&i+1<argc) strcpy(filopt.solstat,argv[++i]);
         else if (!strcmp(argv[i],"-y")&&i+1<argc) solopt.sstat=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-x")&&i+1<argc) solopt.trace=atoi(argv[++i]);
         else if (!strcmp(argv[i],"-sta")&&i+1<argc) strcpy(prcopt.station_name,argv[++i]);

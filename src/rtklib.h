@@ -902,6 +902,7 @@ typedef struct {
 typedef struct {
     double code[MAXSAT][MAXCODE];
     double phase[MAXSAT][MAXCODE];
+    uint8_t valid[MAXSAT][MAXCODE]; /* bit 0: code OSB, bit 1: phase OSB */
 }osb_t;
 
 typedef struct {
@@ -1312,6 +1313,9 @@ typedef struct {        /* satellite status type */
     int new_sat;
     double hatch_P[NFREQ]; /* Hatch-smoothed pseudorange (m) */
     double hatch_L[NFREQ]; /* prev phase for Hatch filter (m) */
+    double ppp_dop[NFREQ]; /* previous Doppler for trapezoidal phase prediction */
+    uint8_t ppp_code[NFREQ]; /* signal identity of the previous PPP arc */
+    uint8_t ppp_if2; /* previous secondary IF slot + 1; zero: no arc */
     int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
 
@@ -1775,7 +1779,7 @@ EXPORT int  lsq   (const double *A, const double *y, int n, int m, double *x,
 EXPORT int  filter(double *x, double *P, const double *H, const double *v,
                    const double *R, int n, int m);
 EXPORT int  filter_vbakf(double *x, double *P, const double *H, const double *v,
-                   const double *R, int n, int m);
+                   const double *R, const int *vflg, int n, int m);
 EXPORT int  smoother(const double *xf, const double *Qf, const double *xb,
                      const double *Qb, int n, double *xs, double *Qs);
 EXPORT void matprint (const double *A, int n, int m, int p, int q);
@@ -2158,7 +2162,8 @@ EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
 
 
 /* observation model */
-EXPORT void matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT int matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
+EXPORT int matchcposb_ar(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
 EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);
@@ -2176,6 +2181,7 @@ EXPORT void rtkclosestat(void);
 EXPORT int  rtkoutstat(rtk_t *rtk, char *buff);
 
 /* precise point positioning -------------------------------------------------*/
+EXPORT int ppp_if2(const obsd_t *obs, const prcopt_t *opt);
 EXPORT int seliflc(int optnf, int sys);
 EXPORT int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vflag,int nv,int *exc);
 EXPORT void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav);
@@ -2192,6 +2198,10 @@ EXPORT void init_postres(rtk_t *rtk, const double *post_v, res_t *res, const dou
 EXPORT int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc);
 
 /* post-processing positioning -----------------------------------------------*/
+EXPORT int postls_relpos(const obs_t *obs, const nav_t *nav,
+                         const prcopt_t *opt, sol_t *sol, char *msg);
+EXPORT int postls_relpos_kin(const obs_t *obs, const nav_t *nav,
+                             const prcopt_t *opt, solbuf_t *solbuf, char *msg);
 EXPORT int postpos(gtime_t ts, gtime_t te, double ti, double tu,
                    const prcopt_t *popt, const solopt_t *sopt,
                    const filopt_t *fopt, char **infile, int n, char *outfile,

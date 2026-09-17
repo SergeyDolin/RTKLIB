@@ -481,7 +481,7 @@ static int biasstr2time_str(const char *s, gtime_t *time)
 {
     int year, doy, sec;
     if (sscanf(s, "%d:%d:%d", &year, &doy, &sec) != 3) return -1;
-    *time = timeadd(epoch2time((double[]){year, 1, 0, 0, 0, 0}), (doy - 1) * 86400.0 + sec);
+    *time = timeadd(epoch2time((double[]){year, 1, 1, 0, 0, 0}), (doy - 1) * 86400.0 + sec);
     return 0;
 }
 
@@ -656,12 +656,16 @@ extern int readosb(const char *file, nav_t *nav)
         int i2 = (int)(timediff(biases.data[i].te, tmin) / dt);
         
         
-        for (ii = i1; ii <= i2; ii++) {
+        /* Bias-SINEX intervals are [start,end). Do not overwrite a new
+         * interval with the previous day's bias at its end epoch. */
+        for (ii = i1; ii < i2; ii++) {
             if (biases.data[i].type) {
                 nav->osbs->sat_osb[ii].code[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+                nav->osbs->sat_osb[ii].valid[sat][code] |= 1;
                 trace(2, "CODE OSB: %f\n\r", nav->osbs->sat_osb[ii].code[sat][code]);
             } else {
                 nav->osbs->sat_osb[ii].phase[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+                nav->osbs->sat_osb[ii].valid[sat][code] |= 2;
                 trace(2, "PHASE OSB: %f\n\r", nav->osbs->sat_osb[ii].phase[sat][code]);
             }
         }
