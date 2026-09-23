@@ -336,9 +336,10 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
 /* measurement error variance ------------------------------------------------*/
 /* Per-signal variance in metres squared. eratio scales sigma, not variance. */
 static double varerr_signal(int sys, double el, int frq, int code,
-                            const prcopt_t *opt, const obsd_t *obs)
+                            const prcopt_t *opt, const obsd_t *obs,
+                            const nav_t *nav)
 {
-    double fact=1.0, snr, scale, a, b;
+    double fact=1.0, snr, scale, a, b, sig, reported=0.0, freq;
     if (code) {
         fact=opt->eratio[frq];
         if (fact<=0.0) fact=opt->eratio[0];
@@ -352,12 +353,25 @@ static double varerr_signal(int sys, double el, int frq, int code,
         case SYS_IRN: fact*=EFACT_IRN; break;
         default: fact*=EFACT_GPS; break;
     }
+    if (frq==2&&(sys==SYS_GPS||sys==SYS_QZS)) fact*=EFACT_GPS_L5;
     if (code&&(sys==SYS_GPS||sys==SYS_QZS)) fact*=2.0;
     a=fact*opt->err[1];
     b=fact*opt->err[2]/sin(MAX(el,5.0*D2R));
     snr=obs->SNR[frq]*SNR_UNIT;
     scale=snr>1.0?MAX(1.0,pow(10.0,(SNR_REF-snr)/10.0)):1.0;
-    return (SQR(a)+SQR(b))*scale;
+    sig=sqrt(SQR(a)+SQR(b))*sqrt(scale);
+
+    /* Use receiver/RINEX supplied observation sigmas as a variance floor.
+     * Lstd is stored in cycles, Pstd in metres; they must not make the
+     * configured stochastic model over-optimistic. */
+    if (!code&&obs->Lstd[frq]>0.0&&
+        (freq=sat2freq(obs->sat,obs->code[frq],nav))>0.0) {
+        reported=obs->Lstd[frq]*CLIGHT/freq;
+    }
+    else if (code&&obs->Pstd[frq]>0.0) {
+        reported=obs->Pstd[frq];
+    }
+    return SQR(MAX(sig,reported));
 }
 
 static double varerr(int sys, double el, int frq, int code,
@@ -366,15 +380,15 @@ static double varerr(int sys, double el, int frq, int code,
     double f1,f2,c1,c2;
     int k;
     if (opt->ionoopt!=IONOOPT_IFLC)
-        return varerr_signal(sys,el,frq,code,opt,obs);
+        return varerr_signal(sys,el,frq,code,opt,obs,nav);
     k=ppp_if2(obs,opt);
     f1=sat2freq(obs->sat,obs->code[0],nav);
     f2=sat2freq(obs->sat,obs->code[k],nav);
     if (f1==0.0||f2==0.0||f1==f2) return 1E8;
     c1=SQR(f1)/(SQR(f1)-SQR(f2));
     c2=-SQR(f2)/(SQR(f1)-SQR(f2));
-    return SQR(c1)*varerr_signal(sys,el,0,code,opt,obs)+
-           SQR(c2)*varerr_signal(sys,el,k,code,opt,obs);
+    return SQR(c1)*varerr_signal(sys,el,0,code,opt,obs,nav)+
+           SQR(c2)*varerr_signal(sys,el,k,code,opt,obs,nav);
 }
 /* initialize state and covariance -------------------------------------------*/
 static void initx(rtk_t *rtk, double xi, double var, int i)
@@ -453,10 +467,10 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     if (var) {
         double a=freq1/(freq1+freq2), b=freq2/(freq1+freq2);
         int sys=satsys(obs->sat,NULL);
-        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,0,0,opt,obs)+
-              SQR(freq2/(freq1-freq2))*varerr_signal(sys,el,f2,0,opt,obs)+
-              SQR(a)*varerr_signal(sys,el,0,1,opt,obs)+
-              SQR(b)*varerr_signal(sys,el,f2,1,opt,obs))/SQR(lam_wl);
+        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,0,0,opt,obs,nav)+
+              SQR(freq2/(freq1-freq2))*varerr_signal(sys,el,f2,0,opt,obs,nav)+
+              SQR(a)*varerr_signal(sys,el,0,1,opt,obs,nav)+
+              SQR(b)*varerr_signal(sys,el,f2,1,opt,obs,nav))/SQR(lam_wl);
     }
     return MW;
 #endif
@@ -2125,8 +2139,6 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         update_stat(rtk,obs,n,stat);
 
         if (stat==SOLQ_FIX) {
-            matcpy(rtk->x,xp,rtk->nx,1);
-            matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
              /* fix-and-hold: constrain float filter after minfix consecutive fixes */
             if (rtk->opt.modear==ARMODE_FIXHOLD&&rtk->nfix>=rtk->opt.minfix) {
                 holdamb_ppp(rtk,xa);

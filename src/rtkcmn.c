@@ -1628,7 +1628,8 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
  * H convention: H is stored as [n×m] (states × measurements, column-major).
  * In math notation this equals H_math^T where H_math is [m×n]. */
 static int vbakf_core_(const double *x, const double *P, const double *H,
-                       const double *v, const double *R, const int *vflg, int n, int m,
+                       const double *v, const double *R, const int *vflg,
+                       int n, int m,
                        double *xp, double *Pp)
 {
     /* --- Stage 1 work matrices ------------------------------------------- */
@@ -1667,14 +1668,15 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
 
     /* PPP residuals are sparse: phase/code identity comes from vflg,
      * never from row parity. NULL denotes generic pseudo-observations. */
+    for (j=0;j<m;j++) {
+        double denom=sqrt(fmax(0.0,vpostR[j+j*m]*R[j+j*m]));
+        vn[j]=denom>0.0?fabs(vpost[j])/denom:0.0;
+        if (!vflg) continue;
+        group=(vflg[j]>>4)&1;
+        mean[group]+=vn[j];
+        count[group]++;
+    }
     if (vflg) {
-        for (j=0;j<m;j++) {
-            double denom=sqrt(fmax(0.0,vpostR[j+j*m]*R[j+j*m]));
-            vn[j]=denom>0.0?fabs(vpost[j])/denom:0.0;
-            group=(vflg[j]>>4)&1;
-            mean[group]+=vn[j];
-            count[group]++;
-        }
         for (i=0;i<2;i++) if (count[i]) mean[i]/=count[i];
         for (j=0;j<m;j++) {
             group=(vflg[j]>>4)&1;

@@ -175,11 +175,12 @@ static int matchnlupd(const gtime_t obst, int sat1, int sat2,
     return stat;
 }
 
-static int __attribute__((unused)) matchnlfcb(const gtime_t obst, int sat1, int sat2,
+static int matchnlfcb(const gtime_t obst, int sat1, int sat2,
                       double *nl_fcb1, double *nl_fcb2, const nav_t *nav){
     double fcb1=0.0,fcb2=0.0;
     int i,stat=0;
 
+    if (!nav||!nav->fcbs) return 0;
     for(i=0;i<nav->fcbs->n;i++){
         if(timediff(nav->fcbs->data[i].ts,obst)<=0&&timediff(nav->fcbs->data[i].te,obst)>=0){
             fcb1=nav->fcbs->data[i].bias[sat1-1];
@@ -365,6 +366,12 @@ static int SDmat(rtk_t *rtk,const obsd_t *obs,int ns,const nav_t *nav,double *H_
         if(opt.arprod == AR_PROD_UPD){
             double nl_fcb1=0.0,nl_fcb2=0.0;
             matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav);
+
+            sd_nl_fcb[nb]=nl_fcb1-nl_fcb2;
+        }
+        else if(opt.arprod == AR_PROD_FCB){
+            double nl_fcb1=0.0,nl_fcb2=0.0;
+            matchnlfcb(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav);
 
             sd_nl_fcb[nb]=nl_fcb1-nl_fcb2;
         }
@@ -725,12 +732,21 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         if(opt.arprod == AR_PROD_OSB_COD){
             nl_amb = (sd_if-gamma*newround(wl_amb))/lam_nl;
             trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
-        } else if(opt.arprod == AR_PROD_UPD&&f2!=2&&
-                  !matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)){
-            /* UPD NL FCBs are computed for L1+L2; skip for L1+L5 (f2==2) */
+        } else if(opt.arprod == AR_PROD_UPD){
+            /* UPD NL FCBs are integer-datum corrections.  The ambiguity is
+             * integer only after subtracting the matched satellite-difference
+             * NL UPD; without a valid product this candidate must not enter
+             * the LAMBDA pool. */
+            if (f2==2||!matchnlupd(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)) {
+                continue;
+            }
+            nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
+        } else if(opt.arprod == AR_PROD_FCB){
+            if (f2==2||!matchnlfcb(obs[i].time,sat,ref_sat,&nl_fcb1,&nl_fcb2,nav)) {
+                continue;
+            }
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl-(nl_fcb1-nl_fcb2);
         } else {
-            /* L1+L5 with FCB/UPD: OSBs applied in corr_meas(), no separate FCB */
             nl_amb=(sd_if-gamma*newround(wl_amb))/lam_nl;
         }
         if(isnan(nl_amb)) nl_amb=0.0;
@@ -855,6 +871,7 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     prcopt_t opt=rtk->opt;
     rtk->sol.ratio=0.0;
     if (opt.modear==ARMODE_OFF||opt.arprod==0) return 0;
+    if (opt.arprod==AR_PROD_FCB&&!nav->fcbs) return 0;
     if (opt.arprod==AR_PROD_OSB_COD&&!nav->osbs) return 0;
     if (opt.arprod==AR_PROD_UPD&&!nav->upds) return 0;
 
