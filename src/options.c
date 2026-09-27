@@ -63,7 +63,7 @@ static char snrmask_[NFREQ][1024];
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
 #define KALMAN  "0:base,1:vbbra"
-#define ARPROD  "0:off,1:fcb,2:upd,3:osb_cod"
+#define ARPROD  "0:off,1:fcb,2:upd,3:osb_cod,4:osb_grg"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
@@ -198,6 +198,7 @@ EXPORT opt_t sysopts[]={
     {"file-ionofile",   2,  (void *)&filopt_.iono,       ""     },
     {"file-dcbfile",    2,  (void *)&filopt_.dcb,        ""     },
     {"file-osbfile",    2,  (void *)&filopt_.bia,        ""     },
+    {"file-attfile",    2,  (void *)&filopt_.att,        ""     },
     {"file-ewlamb",     2,  (void *)&filopt_.ewl,        ""     },
     {"file-wlamb",      2,  (void *)&filopt_.wl,         ""     },
     {"file-nlamb",      2,  (void *)&filopt_.nl,         ""     },
@@ -239,13 +240,19 @@ static int enum2str(char *s, const char *comment, int val)
 static int str2enum(const char *str, const char *comment, int *val)
 {
     const char *p;
+    const char *q;
     char s[32];
+
+    /* Empty values are invalid and strstr(comment, "") returns comment,
+     * which would make the old p-1 check read before the string. */
+    if (!str||!*str||!comment||!val) return 0;
     
     for (p=comment;;p++) {
        if (!(p=strstr(p,str))) break;
-       if (*(p-1)!=':') continue;
-       for (p-=2;'0'<=*p&&*p<='9';p--) ;
-       return sscanf(p+1,"%d",val)==1;
+       if (p==comment||*(p-1)!=':') continue;
+       q=p-2;
+       while (q>comment&&'0'<=q[-1]&&q[-1]<='9') q--;
+       return sscanf(q,"%d",val)==1;
     }
     sprintf(s,"%.30s:",str);
     if ((p=strstr(comment,s))) { /* number  */

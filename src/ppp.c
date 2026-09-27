@@ -77,7 +77,7 @@
 #define THRES_DOP     1.0              /* Doppler slip threshold (cycles) */
 #define HATCH_MAX_N   10               /* max Hatch filter smoothing epochs */
 #define SNR_REF       30.0            /* reference C/N0 for SNR weighting (dBHz) */
-#define MAX_AR_JUMP   2.0              /* max |xa-x| position jump (m) accepted
+#define MAX_AR_JUMP   0.5              /* max |xa-x| position jump (m) accepted
                                         * from an AR fix; larger jumps are
                                         * rejected as likely false fixes */
 
@@ -258,11 +258,14 @@ extern int yaw_angle(int sat, const char *type, int opt, double beta, double mu,
 }
 /* satellite attitude model --------------------------------------------------*/
 static int sat_yaw(gtime_t time, int sat, const char *type, int opt,
-                   const double *rs, double *exs, double *eys)
+                   const double *rs, const nav_t *nav, double *exs, double *eys)
 {
     double rsun[3],ri[6],es[3],esun[3],n[3],p[3],en[3],ep[3],ex[3],E,beta,mu;
+    double ezs[3];
     double yaw,cosy,siny,erpv[5]={0};
     int i;
+
+    if (satatt(time,sat,nav,exs,eys,ezs)) return 1;
     
     sunmoonpos(gpst2utc(time),erpv,rsun,NULL,NULL);
     
@@ -295,7 +298,8 @@ static int sat_yaw(gtime_t time, int sat, const char *type, int opt,
 }
 /* phase windup model --------------------------------------------------------*/
 static int model_phw(gtime_t time, int sat, const char *type, int opt,
-                     const double *rs, const double *rr, double *phw)
+                     const double *rs, const double *rr, const nav_t *nav,
+                     double *phw)
 {
     double exs[3],eys[3],ek[3],exr[3],eyr[3],eks[3],ekr[3],E[9];
     double dr[3],ds[3],drs[3],r[3],pos[3],cosp,ph;
@@ -304,7 +308,7 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     if (opt<=0) return 1; /* no phase windup */
     
     /* satellite yaw attitude model */
-    if (!sat_yaw(time,sat,type,opt,rs,exs,eys)) return 0;
+    if (!sat_yaw(time,sat,type,opt,rs,nav,exs,eys)) return 0;
     
     /* unit vector satellite to receiver */
     for (i=0;i<3;i++) r[i]=rr[i]-rs[i];
@@ -336,10 +340,9 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
 /* measurement error variance ------------------------------------------------*/
 /* Per-signal variance in metres squared. eratio scales sigma, not variance. */
 static double varerr_signal(int sys, double el, int frq, int code,
-                            const prcopt_t *opt, const obsd_t *obs,
-                            const nav_t *nav)
+                            const prcopt_t *opt, const obsd_t *obs)
 {
-    double fact=1.0, snr, scale, a, b, sig, reported=0.0, freq;
+    double fact=1.0, snr, scale, a, b;
     if (code) {
         fact=opt->eratio[frq];
         if (fact<=0.0) fact=opt->eratio[0];
@@ -353,25 +356,12 @@ static double varerr_signal(int sys, double el, int frq, int code,
         case SYS_IRN: fact*=EFACT_IRN; break;
         default: fact*=EFACT_GPS; break;
     }
-    if (frq==2&&(sys==SYS_GPS||sys==SYS_QZS)) fact*=EFACT_GPS_L5;
     if (code&&(sys==SYS_GPS||sys==SYS_QZS)) fact*=2.0;
     a=fact*opt->err[1];
     b=fact*opt->err[2]/sin(MAX(el,5.0*D2R));
     snr=obs->SNR[frq]*SNR_UNIT;
     scale=snr>1.0?MAX(1.0,pow(10.0,(SNR_REF-snr)/10.0)):1.0;
-    sig=sqrt(SQR(a)+SQR(b))*sqrt(scale);
-
-    /* Use receiver/RINEX supplied observation sigmas as a variance floor.
-     * Lstd is stored in cycles, Pstd in metres; they must not make the
-     * configured stochastic model over-optimistic. */
-    if (!code&&obs->Lstd[frq]>0.0&&
-        (freq=sat2freq(obs->sat,obs->code[frq],nav))>0.0) {
-        reported=obs->Lstd[frq]*CLIGHT/freq;
-    }
-    else if (code&&obs->Pstd[frq]>0.0) {
-        reported=obs->Pstd[frq];
-    }
-    return SQR(MAX(sig,reported));
+    return (SQR(a)+SQR(b))*scale;
 }
 
 static double varerr(int sys, double el, int frq, int code,
@@ -380,15 +370,15 @@ static double varerr(int sys, double el, int frq, int code,
     double f1,f2,c1,c2;
     int k;
     if (opt->ionoopt!=IONOOPT_IFLC)
-        return varerr_signal(sys,el,frq,code,opt,obs,nav);
+        return varerr_signal(sys,el,frq,code,opt,obs);
     k=ppp_if2(obs,opt);
     f1=sat2freq(obs->sat,obs->code[0],nav);
     f2=sat2freq(obs->sat,obs->code[k],nav);
     if (f1==0.0||f2==0.0||f1==f2) return 1E8;
     c1=SQR(f1)/(SQR(f1)-SQR(f2));
     c2=-SQR(f2)/(SQR(f1)-SQR(f2));
-    return SQR(c1)*varerr_signal(sys,el,0,code,opt,obs,nav)+
-           SQR(c2)*varerr_signal(sys,el,k,code,opt,obs,nav);
+    return SQR(c1)*varerr_signal(sys,el,0,code,opt,obs)+
+           SQR(c2)*varerr_signal(sys,el,k,code,opt,obs);
 }
 /* initialize state and covariance -------------------------------------------*/
 static void initx(rtk_t *rtk, double xi, double var, int i)
@@ -416,7 +406,7 @@ static double gfmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt)
 /* Melbourne-Wubbena linear combination --------------------------------------*/
 static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, double *var, double el)
 {
-    int prn,f2,osb1=0,osb2=0;
+    int prn,f2;
     double freq1,freq2,lam_wl,lam1,lam2;
     double osb_L1=0.0,osb_L2=0.0,osb_P1=0.0,osb_P2=0.0;
     double mea_L1=0.0,mea_L2=0.0,mea_P1=0.0,mea_P2=0.0;
@@ -435,19 +425,9 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     mea_L1=obs->L[0];mea_L2=obs->L[f2];
     mea_P1=obs->P[0];mea_P2=obs->P[f2];
 
-    if (opt->arprod == AR_PROD_OSB_COD) {
-        /* MW is used only by PPP-AR.  Require the exact code+phase OSBs for
-         * both selected tracking signals before accumulating WL statistics.
-         * Returning 0 here skips only this AR auxiliary observable; the float
-         * PPP measurements in corr_meas()/ppp_res() remain available. */
-        osb1=matchcposb_ar(obs,nav,0,&osb_P1,&osb_L1);
-        osb2=matchcposb_ar(obs,nav,f2,&osb_P2,&osb_L2);
-        if (osb1!=3||osb2!=3) {
-            trace(3,"PPP AR MW skipped: sat=%d sig1=%s valid1=%d sig2=%s valid2=%d\n",
-                  obs->sat,code2obs(obs->code[0]),osb1,
-                  code2obs(obs->code[f2]),osb2);
-            return 0.0;
-        }
+    if (opt->arprod >= AR_PROD_OSB_COD) {
+        if (matchcposb(obs,nav,0,&osb_P1,&osb_L1)!=3||
+            matchcposb(obs,nav,f2,&osb_P2,&osb_L2)!=3) return 0.0;
     }
     
     trace(2, "OSB P1: %f || OSB L1: %f\n\r", osb_P1, osb_L1);
@@ -467,13 +447,38 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     if (var) {
         double a=freq1/(freq1+freq2), b=freq2/(freq1+freq2);
         int sys=satsys(obs->sat,NULL);
-        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,0,0,opt,obs,nav)+
-              SQR(freq2/(freq1-freq2))*varerr_signal(sys,el,f2,0,opt,obs,nav)+
-              SQR(a)*varerr_signal(sys,el,0,1,opt,obs,nav)+
-              SQR(b)*varerr_signal(sys,el,f2,1,opt,obs,nav))/SQR(lam_wl);
+        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,0,0,opt,obs)+
+              SQR(freq2/(freq1-freq2))*varerr_signal(sys,el,f2,0,opt,obs)+
+              SQR(a)*varerr_signal(sys,el,0,1,opt,obs)+
+              SQR(b)*varerr_signal(sys,el,f2,1,opt,obs))/SQR(lam_wl);
     }
     return MW;
 #endif
+}
+
+/* GLONASS IF clocks use the P1/P2 code datum. In the absence of GLO OSBs,
+ * dated same-frequency C/A-minus-P DSBs allow FLOAT processing on that
+ * datum. This is not an integer phase calibration and cannot enable AR. */
+static int glo_float_bias(const obsd_t *obs, const nav_t *nav,
+                          const prcopt_t *opt, double *bias)
+{
+    int f,ca,precise;
+    const glo_dcb_t *dcb;
+    if (opt->arprod<AR_PROD_OSB_COD||opt->ionoopt!=IONOOPT_IFLC||
+        satsys(obs->sat,NULL)!=SYS_GLO||ppp_if2(obs,opt)!=1) return 0;
+    for (f=0;f<2;f++) {
+        if (matchcposb(obs,nav,f,NULL,NULL)) return 0;
+        ca=f?CODE_L2C:CODE_L1C;
+        precise=f?CODE_L2P:CODE_L1P;
+        bias[f]=0.0;
+        if (obs->code[f]==precise) continue;
+        if (obs->code[f]!=ca) return 0;
+        dcb=&nav->glo_dcb[obs->sat-1][f];
+        if (!dcb->valid||timediff(obs->time,dcb->ts)<0.0||
+            timediff(obs->time,dcb->te)>=0.0) return 0;
+        bias[f]=dcb->value;
+    }
+    return 1;
 }
 
 /* antenna corrected measurements --------------------------------------------*/
@@ -482,16 +487,14 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const double *dants, double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    double freq[NFREQ]={0},C1,C2;
-    int *codes;
+    double freq[NFREQ]={0},C1,C2,glo_bias[2]={0};
+    int codes[NFREQ]={0};
     int i,sys=satsys(obs->sat,NULL),frq2;
     
-    /* In OSB mode the per-signal satellite biases are already removed above,
-     * so the DCB/SSR code-bias corrections below must be skipped to avoid
-     * double-correcting the pseudoranges. */
-    int use_dcb=!(opt->arprod==AR_PROD_OSB_COD&&nav->osbs);
-
-    codes = (int *)calloc(NFREQ, sizeof(int)); /* zero-init: CODE_NONE=0 prevents false matches */
+    /* OSB and legacy DCB corrections use different clock datums. The OSB
+     * path below requires a matching code OSB and must not add legacy DCB. */
+    int use_dcb=opt->arprod<AR_PROD_OSB_COD;
+    int glo_float=glo_float_bias(obs,nav,opt,glo_bias);
     
     for (i=0;i<NFREQ;i++) {
         
@@ -499,6 +502,14 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         freq[i]=sat2freq(obs->sat,obs->code[i],nav);
         if (freq[i]==0.0||obs->L[i]==0.0||obs->P[i]==0.0) continue;
         if (testsnr(0,i,azel[1],obs->SNR[i]*SNR_UNIT,&opt->snrmask)) continue;
+
+        /* OSB clocks require code biases for the actual tracked signals.
+         * Missing code OSB is not a zero bias: do not mix an uncalibrated
+         * pseudorange with a corrected one in either IF or uncombined PPP.
+         * A missing phase OSB is allowed in FLOAT (absorbed by ambiguity);
+         * the AR and MW paths separately require both code and phase OSB. */
+        if (!use_dcb&&!(glo_float&&i<2)&&
+            !(matchcposb(obs,nav,i,NULL,NULL)&1)) continue;
         
         /* antenna phase center and phase windup correction */
         L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
@@ -510,9 +521,13 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
          * ambiguity in every AR mode, not just continuous — otherwise WL is
          * OSB-corrected while the IF float still carries the satellite phase
          * bias, so the derived NL is non-integer and AR fixes garbage. */
-        if (opt->arprod==AR_PROD_OSB_COD&&nav->osbs) {
+        if (glo_float&&i<2) {
+            /* DSB is C/A minus P: subtract it to obtain P1/P2. */
+            P[i]-=glo_bias[i];
+        }
+        else if (opt->arprod>=AR_PROD_OSB_COD&&nav->osbs) {
             double cosb=0.0,posb=0.0;
-            matchcposb_ar(obs,nav,i,&cosb,&posb);
+            matchcposb(obs,nav,i,&cosb,&posb);
             L[i]-=posb;
             P[i]-=cosb;
         }
@@ -680,14 +695,13 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     *Lc=*Pc=0.0;
     frq2=ppp_if2(obs,opt);
     
-    if (freq[0]==0.0||freq[frq2]==0.0||freq[0]==freq[frq2]) { free(codes); return; }
+    if (freq[0]==0.0||freq[frq2]==0.0||freq[0]==freq[frq2]) return;
     C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
     C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
     if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
     if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
     trace(3, "L1: %f L5: %f SYS: %d SAT: %d\n\r", L[0], L[2], sys, satno(sys, obs->sat));
     
-    free(codes);
 }
 
 /* detect cycle slip by LLI --------------------------------------------------*/
@@ -965,18 +979,23 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 }
 
 /* Reset histories before comparing observations from different signal arcs. */
-static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n)
+static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    int i,f,k,pair,changed;
-    double gap;
+    int i,f,k,pair,changed,bias,glo_float;
+    double gap,glo_bias[2];
     for (i=0;i<n&&i<MAXOBS;i++) {
         ssat_t *ss=rtk->ssat+obs[i].sat-1;
         pair=ppp_if2(obs+i,&rtk->opt);
+        glo_float=glo_float_bias(obs+i,nav,&rtk->opt,glo_bias);
         changed=0;
         for (f=0;f<NFREQ;f++) {
             if (obs[i].L[f]==0.0) continue;
+            bias=rtk->opt.arprod>=AR_PROD_OSB_COD?
+                 matchcposb(obs+i,nav,f,NULL,NULL):0;
+            if (glo_float&&f<2) bias=4;
             gap=fabs(timediff(obs[i].time,ss->pt[0][f]));
             if ((ss->ppp_code[f]&&ss->ppp_code[f]!=obs[i].code[f])||
+                (ss->ppp_code[f]&&ss->ppp_bias[f]!=bias)||
                 (ss->pt[0][f].time&&gap>2.0*fabs(rtk->tt)+DTTOL)) {
                 ss->slip[f]|=1;
                 ss->ph[0][f]=0.0;
@@ -984,6 +1003,7 @@ static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n)
                 if (f==0||f==pair) changed=1;
             }
             ss->ppp_code[f]=obs[i].code[f];
+            ss->ppp_bias[f]=(uint8_t)bias;
         }
         if (obs[i].L[0]!=0.0&&obs[i].L[pair]!=0.0) {
             if (ss->ppp_if2&&ss->ppp_if2!=pair+1) {
@@ -1012,7 +1032,7 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
         }
     }
 
-    detarc_ppp(rtk,obs,n);
+    detarc_ppp(rtk,obs,n,nav);
     detslp_dop(rtk,obs,n,nav);  /* Doppler-based — fastest, catches sharp slips */
     detslp_ll(rtk,obs,n);
     detslp_mw(rtk,obs,n,nav);
@@ -1743,7 +1763,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         
         /* phase windup model */
         if (!model_phw(rtk->sol.time,sat,nav->pcvs[sat-1].type,
-                       opt->posopt[2]?2:0,rs+i*6,rr,&rtk->ssat[sat-1].phw)) {
+                       opt->posopt[2]?2:0,rs+i*6,rr,nav,&rtk->ssat[sat-1].phw)) {
             continue;
         }
 
@@ -1836,20 +1856,8 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             nv++;
         }
     }
-    /* Validate the fixed solution with phase residuals.  Smartphone code
-     * measurements are much noisier than carrier phase; a single >4-sigma code
-     * residual must not discard an otherwise valid integer fix.  A large phase
-     * residual still rejects the fixed candidate. */
-    if (post==9&&ne>0) {
-        for (j=0;j<ne;j++) {
-            if ((frqi[j]&1)==0) { /* phase row: L1/L2/L5... */
-                trace(2,"PPP AR fixed residual rejected: sat=%d phase-row=%d res=%9.4f sig=%9.4f\n",
-                      obs[obsi[j]].sat,frqi[j]/2+1,ve[j],sqrt(vare[j]));
-                stat=0;
-                break;
-            }
-        }
-    }
+    /* reject satellite with large and max post-fit residual */
+    if (post&&ne>0&&post==9) stat=0;
     if (post&&ne>0&&post!=9) {
         vmax=ve[0]; maxobs=obsi[0]; maxfrq=frqi[0]; rej=0;
         for (j=1;j<ne;j++) {
@@ -2053,7 +2061,11 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 break;
             }
         } else if (opt->kalman == 1) {
-            if ((info=filter_vbakf(xp,Pp,H,v,R,vflg,rtk->nx,nv))) {
+            if (strstr(opt->pppopt,"-PPP-ROBUST3"))
+                info=filter_vbakf_guarded(xp,Pp,H,v,R,vflg,rtk->nx,nv);
+            else
+                info=filter_vbakf(xp,Pp,H,v,R,vflg,rtk->nx,nv);
+            if (info) {
                 trace(2,"%s ppp (%d) filter error info=%d\n",str,i+1,info);
                 break;
             }
@@ -2092,10 +2104,11 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         matcpy(xa,rtk->x,rtk->nx,1);
         /* ambiguity resolution in ppp */
         if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc) &&
-           /* Sanity gate against catastrophic false fixes.  During smartphone
-            * PPP convergence a valid AR correction can still be decimetres, so
-            * use the relaxed MAX_AR_JUMP guard instead of the former 0.5 m
-            * hard cutoff. */
+           /* sanity gate: a correct AR fix nudges the position by at most a
+            * few cm (NL-cycle-scale correction). A jump beyond MAX_AR_JUMP
+            * is a strong sign of a false fix (common on noisy/low-cost
+            * receivers where a systematic, not random, bias can fool both
+            * the NL residual gate and the LAMBDA ratio test at once). */
            SQRT(SQR(xa[0]-rtk->x[0])+SQR(xa[1]-rtk->x[1])+SQR(xa[2]-rtk->x[2]))<MAX_AR_JUMP) {
             if (ppp_res(9,obsh,n,rs,dts,var,svh,dr,exc,nav,xa,rtk,v,H,R,azel,vflg)) {
 
@@ -2139,6 +2152,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         update_stat(rtk,obs,n,stat);
 
         if (stat==SOLQ_FIX) {
+            matcpy(rtk->x,xp,rtk->nx,1);
+            matcpy(rtk->P,Pp,rtk->nx,rtk->nx);
              /* fix-and-hold: constrain float filter after minfix consecutive fixes */
             if (rtk->opt.modear==ARMODE_FIXHOLD&&rtk->nfix>=rtk->opt.minfix) {
                 holdamb_ppp(rtk,xa);

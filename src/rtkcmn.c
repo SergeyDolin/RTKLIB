@@ -147,6 +147,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
+#include <float.h>
 #ifndef WIN32
 #include <dirent.h>
 #include <time.h>
@@ -561,7 +562,7 @@ extern int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vfl
     int i,j,sat,sys_idx,qc_flag=0;
 
     for(j=0;j<nv;j++){
-        sat=(vflag[i]>>8)&0xFF;
+        sat=(vflag[j]>>8)&0xFF;
         sys_idx=satsysidx(sat);
         sat_SYS[sys_idx][nv_SYS[sys_idx]]=sat;
         v_SYS[sys_idx][nv_SYS[sys_idx]++]=pri_v[j];
@@ -1620,16 +1621,15 @@ extern int lsq(const double *A, const double *y, int n, int m, double *x,
  *
  * Two-stage algorithm:
  *   Stage 1 — Robust outlier detection: compute posterior residuals,
- *             apply t-distribution test to down-weight/reject bad measurements,
- *             producing robustified noise matrix RI.
- *   Stage 2 — VB-AKF: iteratively adapt the process covariance via an
- *             Inverse-Wishart posterior update, then compute Kalman gain/update.
+ *             apply one-pass Huber weights to individually normalised residuals.
+ *             This is not an iterated M-estimator or a full VB adaptation.
+ *   Stage 2: Kalman update with RI and Joseph covariance update.
+ *             No Inverse-Wishart process-covariance adaptation is performed.
  *
  * H convention: H is stored as [n×m] (states × measurements, column-major).
  * In math notation this equals H_math^T where H_math is [m×n]. */
 static int vbakf_core_(const double *x, const double *P, const double *H,
-                       const double *v, const double *R, const int *vflg,
-                       int n, int m,
+                       const double *v, const double *R, const int *vflg, int n, int m,
                        double *xp, double *Pp)
 {
     /* --- Stage 1 work matrices ------------------------------------------- */
@@ -1638,17 +1638,16 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     double *RI     = mat(m, m);   /* robustified R   [m×m]  */
     double *vpost  = mat(m, 1);   /* posterior resid [m×1]  */
     double *vpostR = mat(m, m);   /* R*inv(Q)        [m×m]  */
-    double *vn     = mat(m, 1);   /* normalised resid[m×1]  */
-    double *Ts     = mat(m, 1);   /* t-test stat     [m×1]  */
+    double *scale  = mat(m, 1);   /* sqrt(inverse Huber weight) */
     /* --- Stage 2 work matrices ------------------------------------------- */
     double *Dpk    = mat(n, n);   /* temp for Joseph [n×n]  */
     double *Pxz    = mat(n, m);   /* temp K*RI       [n×m]  */
     double *Kk     = mat(n, m);   /* Kalman gain     [n×m]  */
 
-    int i, j, group, count[2]={0}, info = -1;
-    double mean[2]={0}, variance[2]={0};
+    int i, j, k, info = -1;
+    const double huber_k=3.0;
 
-    if (!F||!Q||!RI||!vpost||!vpostR||!vn||!Ts||!Dpk||!Pxz||!Kk)
+    if (!F||!Q||!RI||!vpost||!vpostR||!scale||!Dpk||!Pxz||!Kk)
         goto cleanup;
 
     /* ================================================================
@@ -1666,38 +1665,42 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     matmul("NN", m, m, m,  1.0, R, Q, 0.0, vpostR);    /* vpostR = R*Q^-1   */
     matmul("NN", m, 1, m, -1.0, vpostR, v, 0.0, vpost);/* vpost = -R*Q^-1*v */
 
-    /* PPP residuals are sparse: phase/code identity comes from vflg,
-     * never from row parity. NULL denotes generic pseudo-observations. */
-    for (j=0;j<m;j++) {
-        double denom=sqrt(fmax(0.0,vpostR[j+j*m]*R[j+j*m]));
-        vn[j]=denom>0.0?fabs(vpost[j])/denom:0.0;
-        if (!vflg) continue;
-        group=(vflg[j]>>4)&1;
-        mean[group]+=vn[j];
-        count[group]++;
-    }
+    /* NULL denotes generic pseudo-observations: keep their original R.
+     * For PPP, normalise code and phase by their own covariance, without
+     * estimating a scale from the other satellites in the current epoch.
+     * C_e = R inv(H' P H + R) R is the nominal posterior residual covariance.
+     * For diagonal R this reduces to (R inv(S))_jj * R_jj.
+     * Huber information weight: a=min(1,k/z); variance factor is 1/a,
+     * NOT 1/(a*a). One reweighting pass, always from the original prior.
+     */
     if (vflg) {
-        for (i=0;i<2;i++) if (count[i]) mean[i]/=count[i];
         for (j=0;j<m;j++) {
-            group=(vflg[j]>>4)&1;
-            variance[group]+=SQR(vn[j]-mean[group]);
+            double residual_var=0.0,z,factor=1.0;
+            scale[j]=1.0;
+            if (!(R[j+j*m]>0.0)||R[j+j*m]>DBL_MAX||
+                vpost[j]!=vpost[j]||fabs(vpost[j])>DBL_MAX) goto cleanup;
+            for (k=0;k<m;k++)
+                residual_var+=vpostR[j+k*m]*R[k+j*m];
+            if (residual_var!=residual_var||fabs(residual_var)>DBL_MAX)
+                goto cleanup;
+            /* Near-zero covariance gives no numerically reliable z. Do not
+             * invent a noise floor or turn a rounding artefact into rejection. */
+            if (residual_var < -64.0*DBL_EPSILON*R[j+j*m]) goto cleanup;
+            if (residual_var<=64.0*DBL_EPSILON*R[j+j*m]) continue;
+            z=fabs(vpost[j])/sqrt(residual_var);
+            if (z!=z||z>DBL_MAX) goto cleanup;
+            if (z>huber_k) factor=z/huber_k;
+            scale[j]=sqrt(factor);
+            if (factor>1.0)
+                trace(4,"vbbra Huber: flag=%d z=%.3f variance_factor=%.3f\n",
+                      vflg[j],z,factor);
         }
-        for (i=0;i<2;i++) if (count[i]>1) variance[i]/=count[i]-1;
-        for (j=0;j<m;j++) {
-            int idx;
-            double w=1.0;
-            group=(vflg[j]>>4)&1;
-            if (count[group]<3||variance[group]<=0.0) continue;
-            idx=(count[group]>31?29:count[group]-2); /* sample variance: n-1 degrees of freedom */
-            /* Small residuals are not outliers. Down-weight only upper tail. */
-            Ts[j]=(vn[j]-mean[group])/sqrt(variance[group]);
-            if (Ts[j]>tdistb_0250[idx]&&Ts[j]<tdistb_0005[idx]) {
-                w=Ts[j]/tdistb_0250[idx]*
-                  SQR((tdistb_0005[idx]-tdistb_0250[idx])/
-                      (tdistb_0005[idx]-Ts[j]));
-            }
-            else if (Ts[j]>=tdistb_0005[idx]) w=group?1E8:1E7;
-            RI[j+j*m]*=w;
+        /* Congruence scaling also preserves correlations if R is non-diagonal.
+         * For the diagonal PPP R: RI_jj = R_jj * max(1,z_j/k). */
+        for (j=0;j<m;j++) for (i=0;i<m;i++) {
+            RI[i+j*m]=R[i+j*m]*scale[i]*scale[j];
+            if (RI[i+j*m]!=RI[i+j*m]||fabs(RI[i+j*m])>DBL_MAX)
+                goto cleanup;
         }
     }
 
@@ -1709,8 +1712,8 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
      * ambiguity states of very different magnitudes; the IW outer-product
      * term (xp-x)*(xp-x)^T is dominated by ambiguity components and
      * inflates the position covariance, degrading AR performance.
-     * The robust outlier detection in Stage 1 already provides the main
-     * benefit of the VB approach.
+     * Stage 1 changes measurement weights only; no performance claim follows
+     * from this substitution without observation-data validation.
      *
      * Joseph form:  Pp = (I-K*H)*P*(I-K*H)' + K*RI*K'
      *   — numerically superior to (I-K*H)*P for long runs because it
@@ -1754,7 +1757,7 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     }
 
 cleanup:
-    free(F); free(Q); free(RI); free(vpost); free(vpostR); free(vn); free(Ts);
+    free(F); free(Q); free(RI); free(vpost); free(vpostR); free(scale);
     free(Dpk); free(Pxz); free(Kk);
     return info;
 }
@@ -1834,7 +1837,7 @@ extern int filter(double *x, double *P, const double *H, const double *v,
 *          int    n,m       I   number of states and measurements
 * return : status (0:ok,<0:error)
 *-----------------------------------------------------------------------------*/
-extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
+static int filter_vbakf_impl(double *x, double *P, const double *H, const double *v,
                         const double *R, const int *vflg, int n, int m)
 {
     double *x_, *xp_, *P_, *Pp_, *H_;
@@ -1906,6 +1909,18 @@ extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
     free(H_);
     
     return info;
+}
+/* Default vbbra uses continuous Huber weights. */
+extern int filter_vbakf(double *x, double *P, const double *H, const double *v,
+                       const double *R, const int *vflg, int n, int m)
+{
+    return filter_vbakf_impl(x,P,H,v,R,vflg,n,m);
+}
+/* Compatibility alias: the old -PPP-ROBUST3 flag no longer changes weights. */
+extern int filter_vbakf_guarded(double *x, double *P, const double *H, const double *v,
+                               const double *R, const int *vflg, int n, int m)
+{
+    return filter_vbakf(x,P,H,v,R,vflg,n,m);
 }
 /* smoother --------------------------------------------------------------------
 * combine forward and backward filters by fixed-interval smoother as follows:
@@ -2434,20 +2449,21 @@ extern uint32_t tickget(void)
 #ifdef WIN32
     return (uint32_t)timeGetTime();
 #else
-    struct timeval  tv={0};
-    
 #ifdef CLOCK_MONOTONIC_RAW
     /* linux kernel > 2.6.28 */
-    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tv)) {
-        return tv.tv_sec*1000u+tv.tv_sec/1000000u;
+    struct timespec ts={0};
+    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&ts)) {
+        return (uint32_t)(ts.tv_sec*1000u+ts.tv_nsec/1000000u);
     }
     else {
+        struct timeval tv={0};
         gettimeofday(&tv,NULL);
-        return tv.tv_sec*1000u+tv.tv_usec/1000u;
+        return (uint32_t)(tv.tv_sec*1000u+tv.tv_usec/1000u);
     }
 #else
+    struct timeval tv={0};
     gettimeofday(&tv,NULL);
-    return tv.tv_sec*1000u+tv.tv_usec/1000u;
+    return (uint32_t)(tv.tv_sec*1000u+tv.tv_usec/1000u);
 #endif
 #endif /* WIN32 */
 }
@@ -3213,6 +3229,7 @@ static double __attribute__((unused)) corrTGD(const nav_t *nav,uint8_t code, int
         b1=gettgd(sat,nav,0);
         return -gamma*b1;
     }
+    return 0.0;
 }
 
 extern double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int sat)
@@ -3242,6 +3259,7 @@ extern double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int 
     else if(sys==SYS_QZS){
         return 0.0;
     }
+    return 0.0;
 }
 
 extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias,uint8_t code,int frq,int sat)
@@ -3353,15 +3371,16 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
         }
         return dcb;
     }
+    return 0.0;
 }
 
 extern double corr_code_bias(const prcopt_t *popt,const nav_t *nav,const obsd_t *obs,int frq)
 {
     double isc=0.0,dcb=0.0;
 
-    isc=corrISC(popt,nav->cbias[obs->sat-1],obs->code[frq],obs->sat);
+    isc=corrISC(popt,&nav->cbias[obs->sat-1][0][0],obs->code[frq],obs->sat);
 
-    dcb=corrDCB(popt,nav,nav->cbias[obs->sat-1],obs->code[frq],frq,obs->sat);
+    dcb=corrDCB(popt,nav,&nav->cbias[obs->sat-1][0][0],obs->code[frq],frq,obs->sat);
 
     return isc+dcb;
 }
@@ -3864,84 +3883,48 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x10) {free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;}
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
-}
-
-/* Exact signal lookup. Return bit 0 for code and bit 1 for phase availability.
- * Validity is independent of the bias value: an explicitly stored zero is valid.
- * Biases are never extrapolated or borrowed from another tracking code. */
-extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f,
-                     double *cbias, double *pbias)
-{
-    int i,sat,code,valid;
-    double dt;
-    const osb_t *osb;
-    if (cbias) *cbias=0.0;
-    if (pbias) *pbias=0.0;
-    if (!obs||!nav||f<0||f>=NFREQ||!nav->osbs||
-        !nav->osbs->sat_osb||nav->osbs->dt<=0.0) return 0;
-    sat=obs->sat;
-    code=obs->code[f];
-    if (sat<=0||sat>MAXSAT||code<=0||code>=MAXCODE) return 0;
-    dt=timediff(obs->time,nav->osbs->tmin);
-    if (dt<0.0||timediff(obs->time,nav->osbs->tmax)>=0.0) return 0;
-    i=(int)floor(dt/nav->osbs->dt);
-    osb=nav->osbs->sat_osb+i;
-    valid=osb->valid[sat-1][code];
-    if (cbias&&(valid&1)) *cbias=osb->code[sat-1][code];
-    if (pbias&&(valid&2)) *pbias=osb->phase[sat-1][code];
-    return valid;
-}
-
-/* PPP-AR OSB lookup ----------------------------------------------------------
- * Code OSB is observable-specific and therefore must match obs->code[f]
- * exactly. Phase OSBs in WUM all-frequency RAP products may be published
- * under another tracking attribute on the same carrier (for example Q/X).
- * For AR only, if the exact phase OSB is absent, use a published phase OSB
- * from the same satellite and the same carrier frequency.
- *
- * Return bits are identical to matchcposb(): bit0=code, bit1=phase.
- * The code OSB is never borrowed from another tracking code.
- * --------------------------------------------------------------------------*/
-extern int matchcposb_ar(const obsd_t *obs, const nav_t *nav, int f,
-                        double *cbias, double *pbias)
-{
-    int i,sat,code,valid,c,phase_code=0;
-    double dt,freq0,freq,phase=0.0;
-    const osb_t *osb;
-
-    valid=matchcposb(obs,nav,f,cbias,pbias);
-    if (valid&2) return valid;
-
-    if (!obs||!nav||f<0||f>=NFREQ||!nav->osbs||
-        !nav->osbs->sat_osb||nav->osbs->dt<=0.0) return valid;
-
-    sat=obs->sat;
-    code=obs->code[f];
-    if (sat<=0||sat>MAXSAT||code<=0||code>=MAXCODE) return valid;
-
-    freq0=sat2freq(sat,code,nav);
-    if (freq0<=0.0) return valid;
-
-    dt=timediff(obs->time,nav->osbs->tmin);
-    if (dt<0.0||timediff(obs->time,nav->osbs->tmax)>=0.0) return valid;
-    i=(int)floor(dt/nav->osbs->dt);
-    osb=nav->osbs->sat_osb+i;
-
-    for (c=1;c<MAXCODE;c++) {
-        if (!(osb->valid[sat-1][c]&2)) continue;
-        freq=sat2freq(sat,c,nav);
-        if (freq<=0.0||fabs(freq-freq0)>1.0) continue;
-        phase=osb->phase[sat-1][c];
-        phase_code=c;
-        break;
+    if (opt&0x80) {
+        int i;
+        for (i=0;i<MAXSAT;i++) {
+            free(nav->att[i].data);
+            nav->att[i].data=NULL;
+            nav->att[i].n=nav->att[i].nmax=0;
+        }
     }
-    if (!phase_code) return valid;
+}
 
-    if (pbias) *pbias=phase;
-    valid|=2;
-    trace(3,"PPP AR phase OSB alias sat=%d obs=%s phase_from=%s\\n",
-          sat,code2obs(code),code2obs(phase_code));
-    return valid;
+extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
+    int i,sat,code,flags;
+    double elapsed;
+
+    if(cbias) *cbias=0.0;
+    if(pbias) *pbias=0.0;
+    if(!obs||!nav||f<0||f>=NFREQ+NEXOBS) return 0;
+    sat=obs->sat;
+    code=obs->code[f];
+    if(sat<1||sat>MAXSAT||code<=0||code>=MAXCODE) return 0;
+    if(!nav->osbs||!nav->osbs->sat_osb||nav->osbs->dt<=0.0) return 0;
+    elapsed=timediff(obs->time,nav->osbs->tmin);
+    /* Do not extrapolate a bias outside the product's validity interval.
+     * Check before conversion: C truncation maps a small negative time to 0. */
+    if(elapsed<0.0||timediff(obs->time,nav->osbs->tmax)>0.0) return 0;
+    i=(int)(elapsed/nav->osbs->dt);
+
+    /* Try exact code first. A zero bias is still a valid product value, so
+     * use the explicit presence bits rather than testing the value itself. */
+    flags=nav->osbs->sat_osb[i].valid[sat-1][code]&3;
+    /* Tracking channels are distinct observables. An OSB for Q or B is
+     * not an OSB for X, even when the carrier frequency is identical. */
+    if(cbias&&(flags&1)) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
+    if(pbias&&(flags&2)) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
+    return flags;
+}
+
+/* Compatibility entry point for PPP-AR call sites in existing builds. */
+extern int matchcposb_ar(const obsd_t *obs, const nav_t *nav, int f,
+                         double *cbias, double *pbias)
+{
+    return matchcposb(obs,nav,f,cbias,pbias);
 }
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
@@ -4369,10 +4352,20 @@ extern int expath(const char *path, char *paths[], int nmax)
 /* Secondary signal slot for the PPP ionosphere-free combination. */
 extern int ppp_if2(const obsd_t *obs, const prcopt_t *opt)
 {
-    /* CODE GPS/Galileo OSBs use E1/E5a, not E1/E5b. Slot 1 is E5b
-     * for Galileo. Use the same pair in IF, MW, slip detection and AR. */
-    if (opt->arprod==AR_PROD_OSB_COD&&satsys(obs->sat,NULL)==SYS_GAL)
+    /* GRG OSBs cover BDS B1C/B2a and Galileo E1/E5a. With GRG, BDS slot 1
+     * is B2I, which has no matching OSB; use slot 2 (B2a) with B1C in slot 0. */
+    if (opt->arprod==AR_PROD_OSB_GRG&&opt->nf>=3&&
+        satsys(obs->sat,NULL)==SYS_CMP&&obs->L[2]!=0.0&&obs->P[2]!=0.0&&
+        code2idx(SYS_CMP,obs->code[0])==0&&
+        code2idx(SYS_CMP,obs->code[2])==2) {
         return 2;
+    }
+    /* CODE and GRG rapid OSB products use Galileo E1/E5a (slots 0/2),
+     * while the generic second slot is E5b (slot 1). Prefer E5a for GRG OSB. */
+    if (opt->arprod>=AR_PROD_OSB_COD&&opt->nf>=3&&
+        satsys(obs->sat,NULL)==SYS_GAL&&obs->L[2]!=0.0&&obs->P[2]!=0.0) {
+        return 2;
+    }
     return opt->freqopt||obs->L[1]==0.0?2:1;
 }
 
