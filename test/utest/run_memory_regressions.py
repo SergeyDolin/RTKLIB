@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ('rtkcmn rinex rtkpos postpos solution lambda geoid sbas preceph pntpos '
            'ephemeris options ppp ppp_ar rtcm rtcm2 rtcm3 rtcm3e ionex tides ambupd gpt3').split()
-TESTS = ['t_excsats']
+TESTS = ['t_excsats', 't_vbakf_bounds']
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

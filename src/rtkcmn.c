@@ -1665,9 +1665,11 @@ static int vbakf_core_(const double *x, const double *P, const double *H,
     matmul("NN", m, m, m,  1.0, R, Q, 0.0, vpostR);    /* vpostR = R*Q^-1   */
     matmul("NN", m, 1, m, -1.0, vpostR, v, 0.0, vpost);/* vpost = -R*Q^-1*v */
 
-    /* Split measurements: even indices = phase, odd = code */
-    n_cp = m / 2;
-    n_pr = m - n_cp;
+    /* Preserve the legacy even/odd positional groups. The caller can compact
+     * missing/rejected residuals, so parity is not a guaranteed phase/code tag.
+     * Count the actual slots indexed below: for odd m the last slot is even. */
+    n_cp = m - m / 2;
+    n_pr = m / 2;
 
     /* Normalised residuals */
     for (j = 0; j < m; j++) {
