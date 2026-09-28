@@ -561,7 +561,6 @@ static void readpreceph(char **infile, int n, const prcopt_t *prcopt, const filo
     } else if(ppp&&prcopt->arprod>=AR_PROD_OSB_COD){
         readosb(fopt->bia,nav);
     }
-    if (ppp&&fopt->att[0]) readorbex(fopt->att,nav);
     /* read sbas message files */
     for (i=0;i<n;i++) {
         if (strstr(infile[i],"%r")||strstr(infile[i],"%b")) continue;
@@ -598,17 +597,22 @@ static void freepreceph(nav_t *nav, sbs_t *sbs)
     free(nav->peph); nav->peph=NULL; nav->ne=nav->nemax=0;
     free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;
     free(nav->seph); nav->seph=NULL; nav->ns=nav->nsmax=0;
-    for (i=0;i<MAXSAT;i++) {
-        free(nav->att[i].data);
-        nav->att[i].data=NULL;
-        nav->att[i].n=nav->att[i].nmax=0;
-    }
     free(sbs->msgs); sbs->msgs=NULL; sbs->n =sbs->nmax =0;
     for (i=0;i<nav->nt;i++) {
         free(nav->tec[i].data);
         free(nav->tec[i].rms );
     }
     free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;
+    if (nav->osbs) {
+        free(nav->osbs->sat_osb);
+        free(nav->osbs);
+        nav->osbs=NULL;
+    }
+    if (nav->upds) {
+        free(nav->upds->nls.data);
+        free(nav->upds);
+        nav->upds=NULL;
+    }
     
     if (fp_rtcm) fclose(fp_rtcm);
     free_rtcm(&rtcm);
@@ -635,24 +639,12 @@ static int readobsnav(gtime_t ts, gtime_t te, double ti, char **infile,
             if (obs->n>nobs) rcv++;
             ind=index[i]; nobs=obs->n; 
         }
-        /* GRG OSBs provide BDS B1C/B2a biases (C1P/C1X and C5P/C5X),
-         * but the default BDS priority selects B1I first. Prefer B1C so the
-         * selected measurement has a matching OSB. */
-        {
-            char rnxopt[256];
-            const char *opt=prcopt->rnxopt[rcv<=1?0:1];
-            if (rcv<=1&&prcopt->arprod==AR_PROD_OSB_GRG&&
-                !strstr(opt,"-CL1P")) {
-                snprintf(rnxopt,sizeof(rnxopt),"%s%s-CL1P",opt,*opt?" ":"");
-                opt=rnxopt;
-            }
-            /* read rinex obs and nav file */
-            if (readrnxt(infile[i],rcv,ts,te,ti,opt,obs,nav,
+        /* read rinex obs and nav file */
+        if (readrnxt(infile[i],rcv,ts,te,ti,prcopt->rnxopt[rcv<=1?0:1],obs,nav,
                      rcv<=2?sta+rcv-1:NULL)<0) {
-                checkbrk("error : insufficient memory");
-                trace(1,"insufficient memory\n");
-                return 0;
-            }
+            checkbrk("error : insufficient memory");
+            trace(1,"insufficient memory\n");
+            return 0;
         }
     }
     if (obs->n<=0) {
@@ -1045,9 +1037,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
         rbf=(double *)malloc(sizeof(double)*nepoch*3);
         rbb=(double *)malloc(sizeof(double)*nepoch*3);
         
-        /* All four buffers are required by combined forward/backward mode.
-         * Checking only solf/solb can leave rbf/rbb NULL and crash in procpos. */
-        if (solf&&solb&&rbf&&rbb) {
+        if (solf&&solb) {
             isolf=isolb=0;
             ppp_set_backward(0);                          /* ensure CPP in forward mode */
             procpos(NULL,&popt_,sopt,1); /* forward */

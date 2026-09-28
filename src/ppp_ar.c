@@ -223,15 +223,6 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
             if(sys!=sat_sys[i]) continue;
 
             k=ppp_if2(obs+j,&rtk->opt);
-            if (rtk->opt.arprod>=AR_PROD_OSB_COD) {
-                double cb1=0.0,pb1=0.0,cb2=0.0,pb2=0.0;
-                /* MW WL fixing needs code OSBs and the IF float ambiguity
-                 * needs phase OSBs. Do not rank/fix a satellite pair with
-                 * missing signal-level product entries as if those biases
-                 * were zero. */
-                if ((matchcposb(obs+j,nav,0,&cb1,&pb1)&3)!=3||
-                    (matchcposb(obs+j,nav,k,&cb2,&pb2)&3)!=3) continue;
-            }
             if ((rtk->ssat[obs[j].sat-1].slip[0]&1)||
                 (rtk->ssat[obs[j].sat-1].slip[k]&1)||
                 !rtk->ssat[obs[j].sat-1].half[0]||
@@ -297,9 +288,7 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
             for (ref_sat_idx=0;ref_sat_idx<j;ref_sat_idx++) {
                 r=idxs[ref_sat_idx]; fr=ppp_if2(obs+r,&rtk->opt);
                 if (f1==sat2freq(obs[r].sat,obs[r].code[0],nav)&&
-                    f2==sat2freq(obs[r].sat,obs[r].code[fr],nav)&&
-                    obs[u].code[0]==obs[r].code[0]&&
-                    obs[u].code[fu]==obs[r].code[fr]) break;
+                    f2==sat2freq(obs[r].sat,obs[r].code[fr],nav)) break;
             }
             if (ref_sat_idx==j) continue;
             sat1[ns]=sat_no[j];
@@ -539,8 +528,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     double *sd_nl_fcb,*Qnl;
 
     /* generate satellite SD */
-    ns=gen_sat_sd(rtk,nav,obs,n,exc,sat1,sat2,iu,ir,0,el);
-    if (!ns) return 0;
+    if(!(ns=gen_sat_sd(rtk,nav,obs,n,exc,sat1,sat2,iu,ir,0,el))) return 0;
 
     for(i=0;i<MAXSAT;i++){
         rtk->sdamb[i].nl=0.0;
@@ -860,9 +848,7 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
     prcopt_t opt=rtk->opt;
     rtk->sol.ratio=0.0;
     if (opt.modear==ARMODE_OFF||opt.arprod==0) return 0;
-    if (opt.arprod>=AR_PROD_OSB_COD&&!nav->osbs) {
-        return 0;
-    }
+    if (opt.arprod==AR_PROD_OSB_COD&&!nav->osbs) return 0;
     if (opt.arprod==AR_PROD_UPD&&!nav->upds) return 0;
 
     if(opt.thresar[0]<1.0){

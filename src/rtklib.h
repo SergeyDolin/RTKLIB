@@ -909,14 +909,9 @@ typedef struct {
 typedef struct {
     gtime_t tmin,tmax;
     double dt;
+    int n;                              /* allocated number of time slots */
     osb_t *sat_osb;
 }osbs_t;
-
-typedef struct {
-    gtime_t ts,te;       /* validity of differential code bias */
-    double value;       /* C1C-C1P or C2C-C2P (m) */
-    int valid;
-}glo_dcb_t;
 
 typedef union {
     struct {
@@ -928,16 +923,6 @@ typedef union {
 typedef struct {
     double q0,q1,q2,q3;
 }quat_t;
-
-typedef struct {
-    gtime_t time;
-    quat_t q;
-} att_epoch_t;
-
-typedef struct {
-    int n,nmax;
-    att_epoch_t *data;
-} att_sat_t;
 
 typedef union {
     struct{
@@ -976,7 +961,6 @@ typedef struct {        /* navigation data type */
     double ion_irn[8];  /* IRNSS iono model parameters {a0,a1,a2,a3,b0,b1,b2,b3} */
     int glo_fcn[32];    /* GLONASS FCN + 8 */
     double cbias[MAXSAT][MAXCODE][MAXCODE]; /* satellite DCB observation codes (m) */
-    glo_dcb_t glo_dcb[MAXSAT][2]; /* dated C/A-to-P biases for GLO IF FLOAT */
     float rbias[MAXRCV][2][3]; /* receiver DCB (0:P1-P2,1:P1-C1,2:P2-C2) (m) */
     double wlbias[MAXSAT]; /* wide-lane bias (cycle) */
     pcv_t pcvs[MAXSAT]; /* satellite antenna pcv */
@@ -987,7 +971,6 @@ typedef struct {        /* navigation data type */
     upds_t *upds;
     fcbs_t *fcbs;
     osbs_t *osbs;
-    att_sat_t att[MAXSAT]; /* satellite attitude from ORBEX */
 } nav_t;
 
 typedef struct {        /* station parameter type */
@@ -1245,7 +1228,6 @@ typedef struct {        /* file options type */
     char nl     [MAXSTRPATH]; /* nl ambiguty data file */
     char *updf[3];
     char bia    [MAXSTRPATH];
-    char att    [MAXSTRPATH]; /* satellite attitude ORBEX file */
     char gpt3   [MAXSTRPATH]; /* GPT3 grid file (gpt3_5.grd) */
 } filopt_t;
 
@@ -1335,7 +1317,6 @@ typedef struct {        /* satellite status type */
     double hatch_L[NFREQ]; /* prev phase for Hatch filter (m) */
     double ppp_dop[NFREQ]; /* previous Doppler for trapezoidal phase prediction */
     uint8_t ppp_code[NFREQ]; /* signal identity of the previous PPP arc */
-    uint8_t ppp_bias[NFREQ]; /* previous arc bias mode: OSB=1/2, GLO DCB=4 */
     uint8_t ppp_if2; /* previous secondary IF slot + 1; zero: no arc */
     int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
@@ -1991,9 +1972,6 @@ EXPORT int  peph2pos(gtime_t time, int sat, const nav_t *nav, int opt,
                      double *rs, double *dts, double *var);
 EXPORT void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
                       double *dant);
-EXPORT int readorbex(const char *file, nav_t *nav);
-EXPORT int satatt(gtime_t time, int sat, const nav_t *nav, double *ex,
-                  double *ey, double *ez);
 EXPORT int  satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
                    const nav_t *nav, double *rs, double *dts, double *var,
                    int *svh);
@@ -2188,9 +2166,7 @@ EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
 
 
 /* observation model */
-/* match OSB; return bit 0 if code bias found, bit 1 if phase bias found */
 EXPORT int matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
-EXPORT int matchcposb_ar(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
 EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);

@@ -198,7 +198,6 @@ EXPORT opt_t sysopts[]={
     {"file-ionofile",   2,  (void *)&filopt_.iono,       ""     },
     {"file-dcbfile",    2,  (void *)&filopt_.dcb,        ""     },
     {"file-osbfile",    2,  (void *)&filopt_.bia,        ""     },
-    {"file-attfile",    2,  (void *)&filopt_.att,        ""     },
     {"file-ewlamb",     2,  (void *)&filopt_.ewl,        ""     },
     {"file-wlamb",      2,  (void *)&filopt_.wl,         ""     },
     {"file-nlamb",      2,  (void *)&filopt_.nl,         ""     },
@@ -217,7 +216,8 @@ static void chop(char *str)
 {
     char *p;
     if ((p=strchr(str,'#'))) *p='\0'; /* comment */
-    for (p=str+strlen(str)-1;p>=str&&!isgraph((int)*p);p--) *p='\0';
+    p=str+strlen(str);
+    while (p>str&&!isgraph((unsigned char)p[-1])) *--p='\0';
 }
 /* enum to string ------------------------------------------------------------*/
 static int enum2str(char *s, const char *comment, int val)
@@ -239,27 +239,40 @@ static int enum2str(char *s, const char *comment, int val)
 /* string to enum ------------------------------------------------------------*/
 static int str2enum(const char *str, const char *comment, int *val)
 {
-    const char *p;
-    const char *q;
-    char s[32];
+    const char *p=comment,*end;
+    char *tail;
+    long number;
+    size_t len;
 
-    /* Empty values are invalid and strstr(comment, "") returns comment,
-     * which would make the old p-1 check read before the string. */
-    if (!str||!*str||!comment||!val) return 0;
-    
-    for (p=comment;;p++) {
-       if (!(p=strstr(p,str))) break;
-       if (p==comment||*(p-1)!=':') continue;
-       q=p-2;
-       while (q>comment&&'0'<=q[-1]&&q[-1]<='9') q--;
-       return sscanf(q,"%d",val)==1;
-    }
-    sprintf(s,"%.30s:",str);
-    if ((p=strstr(comment,s))) { /* number  */
-        return sscanf(p,"%d",val)==1;
-    }
-    return 0; 
+    while (*str==' '||*str=='\t') str++;
 
+    while (*p) {
+        number=strtol(p,&tail,10);
+        if (tail==p||*tail!=':') return 0;
+        end=strchr(tail+1,',');
+        if (!end) end=tail+1+strlen(tail+1);
+        len=(size_t)(end-(tail+1));
+        if (strlen(str)==len&&!strncmp(str,tail+1,len)) {
+            *val=(int)number;
+            return 1;
+        }
+        if (end==tail+1+strlen(tail+1)) break;
+        p=end+1;
+    }
+    number=strtol(str,&tail,10);
+    if (tail==str||*tail!='\0') return 0;
+    for (p=comment;*p;) {
+        long candidate=strtol(p,&tail,10);
+        if (tail==p||*tail!=':') break;
+        if (candidate==number) {
+            *val=(int)number;
+            return 1;
+        }
+        p=strchr(tail+1,',');
+        if (!p) break;
+        p++;
+    }
+    return 0;
 }
 /* search option ---------------------------------------------------------------
 * search option record

@@ -258,14 +258,11 @@ extern int yaw_angle(int sat, const char *type, int opt, double beta, double mu,
 }
 /* satellite attitude model --------------------------------------------------*/
 static int sat_yaw(gtime_t time, int sat, const char *type, int opt,
-                   const double *rs, const nav_t *nav, double *exs, double *eys)
+                   const double *rs, double *exs, double *eys)
 {
     double rsun[3],ri[6],es[3],esun[3],n[3],p[3],en[3],ep[3],ex[3],E,beta,mu;
-    double ezs[3];
     double yaw,cosy,siny,erpv[5]={0};
     int i;
-
-    if (satatt(time,sat,nav,exs,eys,ezs)) return 1;
     
     sunmoonpos(gpst2utc(time),erpv,rsun,NULL,NULL);
     
@@ -298,8 +295,7 @@ static int sat_yaw(gtime_t time, int sat, const char *type, int opt,
 }
 /* phase windup model --------------------------------------------------------*/
 static int model_phw(gtime_t time, int sat, const char *type, int opt,
-                     const double *rs, const double *rr, const nav_t *nav,
-                     double *phw)
+                     const double *rs, const double *rr, double *phw)
 {
     double exs[3],eys[3],ek[3],exr[3],eyr[3],eks[3],ekr[3],E[9];
     double dr[3],ds[3],drs[3],r[3],pos[3],cosp,ph;
@@ -308,7 +304,7 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     if (opt<=0) return 1; /* no phase windup */
     
     /* satellite yaw attitude model */
-    if (!sat_yaw(time,sat,type,opt,rs,nav,exs,eys)) return 0;
+    if (!sat_yaw(time,sat,type,opt,rs,exs,eys)) return 0;
     
     /* unit vector satellite to receiver */
     for (i=0;i<3;i++) r[i]=rr[i]-rs[i];
@@ -426,8 +422,10 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     mea_P1=obs->P[0];mea_P2=obs->P[f2];
 
     if (opt->arprod >= AR_PROD_OSB_COD) {
-        if (matchcposb(obs,nav,0,&osb_P1,&osb_L1)!=3||
-            matchcposb(obs,nav,f2,&osb_P2,&osb_L2)!=3) return 0.0;
+        if (matchcposb(obs, nav, 0, &osb_P1, &osb_L1) != 3 ||
+            matchcposb(obs, nav, f2, &osb_P2, &osb_L2) != 3) {
+            return 0.0;
+        }
     }
     
     trace(2, "OSB P1: %f || OSB L1: %f\n\r", osb_P1, osb_L1);
@@ -456,252 +454,212 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
 #endif
 }
 
-/* GLONASS IF clocks use the P1/P2 code datum. In the absence of GLO OSBs,
- * dated same-frequency C/A-minus-P DSBs allow FLOAT processing on that
- * datum. This is not an integer phase calibration and cannot enable AR. */
-static int glo_float_bias(const obsd_t *obs, const nav_t *nav,
-                          const prcopt_t *opt, double *bias)
-{
-    int f,ca,precise;
-    const glo_dcb_t *dcb;
-    if (opt->arprod<AR_PROD_OSB_COD||opt->ionoopt!=IONOOPT_IFLC||
-        satsys(obs->sat,NULL)!=SYS_GLO||ppp_if2(obs,opt)!=1) return 0;
-    for (f=0;f<2;f++) {
-        if (matchcposb(obs,nav,f,NULL,NULL)) return 0;
-        ca=f?CODE_L2C:CODE_L1C;
-        precise=f?CODE_L2P:CODE_L1P;
-        bias[f]=0.0;
-        if (obs->code[f]==precise) continue;
-        if (obs->code[f]!=ca) return 0;
-        dcb=&nav->glo_dcb[obs->sat-1][f];
-        if (!dcb->valid||timediff(obs->time,dcb->ts)<0.0||
-            timediff(obs->time,dcb->te)>=0.0) return 0;
-        bias[f]=dcb->value;
-    }
-    return 1;
-}
-
 /* antenna corrected measurements --------------------------------------------*/
 static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const prcopt_t *opt, const double *dantr,
                       const double *dants, double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    double freq[NFREQ]={0},C1,C2,glo_bias[2]={0};
-    int codes[NFREQ]={0};
-    int i,sys=satsys(obs->sat,NULL),frq2;
-    
-    /* OSB and legacy DCB corrections use different clock datums. The OSB
-     * path below requires a matching code OSB and must not add legacy DCB. */
-    int use_dcb=opt->arprod<AR_PROD_OSB_COD;
-    int glo_float=glo_float_bias(obs,nav,opt,glo_bias);
-    
-    for (i=0;i<NFREQ;i++) {
-        
-        L[i]=P[i]=0.0;
-        freq[i]=sat2freq(obs->sat,obs->code[i],nav);
-        if (freq[i]==0.0||obs->L[i]==0.0||obs->P[i]==0.0) continue;
-        if (testsnr(0,i,azel[1],obs->SNR[i]*SNR_UNIT,&opt->snrmask)) continue;
+    double freq[NFREQ] = {0}, C1, C2;
+    int *codes;
+    int i, sys = satsys(obs->sat, NULL), frq2;
 
-        /* OSB clocks require code biases for the actual tracked signals.
-         * Missing code OSB is not a zero bias: do not mix an uncalibrated
-         * pseudorange with a corrected one in either IF or uncombined PPP.
-         * A missing phase OSB is allowed in FLOAT (absorbed by ambiguity);
-         * the AR and MW paths separately require both code and phase OSB. */
-        if (!use_dcb&&!(glo_float&&i<2)&&
-            !(matchcposb(obs,nav,i,NULL,NULL)&1)) continue;
-        
+    int use_dcb = !(opt->arprod >= AR_PROD_OSB_COD && nav->osbs);
+
+    codes = (int *)calloc(NFREQ, sizeof(int));
+    if (!codes) {
+        *Lc = *Pc = 0.0;
+        return;
+    }
+
+    for (i = 0; i < NFREQ; i++) {
+        int osb_flags = 0;
+        double cosb = 0.0, posb = 0.0;
+
+        L[i] = P[i] = 0.0;
+
+        freq[i] = sat2freq(obs->sat, obs->code[i], nav);
+        if (freq[i] == 0.0 || obs->L[i] == 0.0 || obs->P[i] == 0.0) continue;
+        if (testsnr(0, i, azel[1], obs->SNR[i] * SNR_UNIT, &opt->snrmask)) continue;
+
+        /*
+         * Для OSB-режима нужен code OSB. Отсутствие phase OSB не запрещает
+         * float-измерение: фазовая неоднозначность может поглотить эту поправку.
+         */
+        if (opt->arprod >= AR_PROD_OSB_COD && nav->osbs) {
+            osb_flags = matchcposb(obs, nav, i, &cosb, &posb);
+            if (!(osb_flags & 1)) continue;
+        }
+
         /* antenna phase center and phase windup correction */
-        L[i]=obs->L[i]*CLIGHT/freq[i]-dants[i]-dantr[i]-phw*CLIGHT/freq[i];
-        P[i]=obs->P[i]-dants[i]-dantr[i];
+        L[i] = obs->L[i] * CLIGHT / freq[i] -
+               dants[i] - dantr[i] - phw * CLIGHT / freq[i];
+        P[i] = obs->P[i] - dants[i] - dantr[i];
 
-         
-        /* Apply OSB corrections for PPP-AR.  Gate on the product type only
-         * (mirrors mwmeas): the phase OSB must be removed from the IF float
-         * ambiguity in every AR mode, not just continuous — otherwise WL is
-         * OSB-corrected while the IF float still carries the satellite phase
-         * bias, so the derived NL is non-integer and AR fixes garbage. */
-        if (glo_float&&i<2) {
-            /* DSB is C/A minus P: subtract it to obtain P1/P2. */
-            P[i]-=glo_bias[i];
-        }
-        else if (opt->arprod>=AR_PROD_OSB_COD&&nav->osbs) {
-            double cosb=0.0,posb=0.0;
-            matchcposb(obs,nav,i,&cosb,&posb);
-            L[i]-=posb;
-            P[i]-=cosb;
-        }
+        /* Apply available OSBs in meters. */
+        if (osb_flags & 2) L[i] -= posb;
+        if (osb_flags & 1) P[i] -= cosb;
 
         codes[i] = obs->code[i];
+
         if (sys == SYS_GAL) {
-            trace(2,"CODE: %d, P[%f]: %f\n\r",obs->code[i], freq[i], obs->P[i]-dants[i]-dantr[i]);
+            trace(2, "CODE: %d, P[%f]: %f\n\r",
+                  obs->code[i], freq[i],
+                  obs->P[i] - dants[i] - dantr[i]);
         }
     }
 
-    if (use_dcb&&sys==SYS_GPS) 
-    {
-        
-        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
-        {
-            if (codes[0]==CODE_L1C)
-            {   
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];   
-                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
+    if (use_dcb && sys == SYS_GPS) {
+        if (nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1W] == 0.0) {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L1W - 1];
+                L[0] += nav->ssr[obs->sat - 1].pbias[CODE_L1C - 1];
             }
-            if (codes[1]==CODE_L2W)
-            {
-                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
-                L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
+            if (codes[1] == CODE_L2W) {
+                P[1] -= nav->ssr[obs->sat - 1].cbias[CODE_L2W - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L2W - 1];
+                L[1] -= nav->ssr[obs->sat - 1].pbias[CODE_L2W - 1];
             }
-            if (codes[2]==CODE_L5Q)
-            {
-                P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
-                L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
+            if (codes[2] == CODE_L5Q) {
+                P[2] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L5Q - 1];
+                L[2] += nav->ssr[obs->sat - 1].pbias[CODE_L5Q - 1];
             }
         }
-        else
-        {
-            if (codes[0]==CODE_L1C)
-            {
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];
+        else {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1W];
             }
-            if (codes[1]==CODE_L2W)
-            {
-                P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
+            if (codes[1] == CODE_L2W) {
+                P[1] -= nav->cbias[obs->sat - 1][CODE_L2C][CODE_L2W];
             }
-            if (codes[2]==CODE_L5Q)
-            {
-                P[2]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
-            }
-        }
-    }
-    if (use_dcb&&sys==SYS_GLO)
-    {
-        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P] == 0.0)
-        {
-            if (codes[0]==CODE_L1C)
-            {
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1P-1];
-            }
-            if (codes[1]==CODE_L2P)
-            {
-                P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L2C-1]-nav->ssr[obs->sat-1].cbias[CODE_L2P-1];
-            }
-        }
-        else
-        {
-            if (codes[0]==CODE_L1C)
-            {   
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1P];   
-            }
-            if (codes[1]==CODE_L2P)
-            {
-                P[1]+=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2P];
-            }
-        }
-    }
-    if (use_dcb&&sys == SYS_GAL)
-    {
-        /* NOTE: condition == 0.0 means no RINEX DCB loaded → use SSR biases.
-         * Original code had != 0.0 which was inverted vs GPS/QZS/GLO/BDS pattern,
-         * causing Galileo to get zero correction when using SSR-only stream. */
-        if (nav->cbias[obs->sat-1][CODE_L1X][CODE_L5Q] == 0.0)
-        {
-            if (codes[0]==CODE_L1X||codes[0]==CODE_L1B||codes[0]==CODE_L1C)
-            {
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1X-1];
-                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
-            }
-            if (codes[1]==CODE_L7X)
-            {
-                P[1]+=nav->ssr[obs->sat-1].cbias[CODE_L7Q-1]-nav->ssr[obs->sat-1].cbias[CODE_L7X-1];
-                L[1]+=nav->ssr[obs->sat-1].pbias[CODE_L7Q-1];
-            }
-        }
-        else
-        {
-            if (codes[0]==CODE_L1C||codes[0]==CODE_L1X||codes[0]==CODE_L1B) {  /* E1 */
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
-            }
-            if (codes[2]==CODE_L5Q||codes[2]==CODE_L5X) {  /* E5a */
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L5X];
-            }
-            if (codes[2]==CODE_L7X) {  /* E5b */
-                P[2]-=nav->cbias[obs->sat-1][CODE_L1X][CODE_L7X];
-            }
-        }
-    }
-    
-    if (use_dcb&&sys == SYS_QZS)
-    {
-        if (nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W] == 0.0)
-        {
-            if (codes[0]==CODE_L1C)
-            {   
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L1W-1];   
-                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L1C-1];
-            }
-            if (codes[1]==CODE_L2W)
-            {
-                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L2W-1]-nav->ssr[obs->sat-1].cbias[CODE_L2W-1];
-                L[1]-=nav->ssr[obs->sat-1].pbias[CODE_L2W-1];
-            }
-            if (codes[2]==CODE_L5Q)
-            {
-                P[2]+=nav->ssr[obs->sat-1].cbias[CODE_L1C-1]-nav->ssr[obs->sat-1].cbias[CODE_L5Q-1];
-                L[2]+=nav->ssr[obs->sat-1].pbias[CODE_L5Q-1];
-            }
-        }
-        else
-        {
-            if (codes[0]==CODE_L1C)
-            {
-                P[0]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L1W];
-            }
-            if (codes[1]==CODE_L2W)
-            {
-                P[1]-=nav->cbias[obs->sat-1][CODE_L2C][CODE_L2W];
-            }
-            if (codes[2]==CODE_L5Q)
-            {
-                P[2]+=nav->cbias[obs->sat-1][CODE_L1C][CODE_L5Q];
+            if (codes[2] == CODE_L5Q) {
+                P[2] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L5Q];
             }
         }
     }
 
-    if (use_dcb&&sys == SYS_CMP)
-    {
-        if (nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I] == 0.0) {
-            if (obs->code[0]==CODE_L2I)
-            {
-                P[0]+=nav->ssr[obs->sat-1].cbias[CODE_L2I-1]-nav->ssr[obs->sat-1].cbias[CODE_L6I-1];
-                L[0]+=nav->ssr[obs->sat-1].pbias[CODE_L2I-1];
+    if (use_dcb && sys == SYS_GLO) {
+        if (nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1P] == 0.0) {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L1P - 1];
             }
-            if (obs->code[1]==CODE_L7I)
-            {
-                P[1]-=nav->ssr[obs->sat-1].cbias[CODE_L7I-1];
-                L[1]+=nav->ssr[obs->sat-1].pbias[CODE_L7I-1];
-            }
-        } else {
-            if (codes[0]==CODE_L2I)
-            {   
-                P[0]+=nav->cbias[obs->sat-1][CODE_L2I][CODE_L6I];   
+            if (codes[1] == CODE_L2P) {
+                P[1] += nav->ssr[obs->sat - 1].cbias[CODE_L2C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L2P - 1];
             }
         }
-
+        else {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1P];
+            }
+            if (codes[1] == CODE_L2P) {
+                P[1] += nav->cbias[obs->sat - 1][CODE_L2C][CODE_L2P];
+            }
+        }
     }
-    
+
+    if (use_dcb && sys == SYS_GAL) {
+        if (nav->cbias[obs->sat - 1][CODE_L1X][CODE_L5Q] == 0.0) {
+            if (codes[0] == CODE_L1X ||
+                codes[0] == CODE_L1B ||
+                codes[0] == CODE_L1C) {
+                P[0] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L1X - 1];
+                L[0] += nav->ssr[obs->sat - 1].pbias[CODE_L1C - 1];
+            }
+            if (codes[1] == CODE_L7X) {
+                P[1] += nav->ssr[obs->sat - 1].cbias[CODE_L7Q - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L7X - 1];
+                L[1] += nav->ssr[obs->sat - 1].pbias[CODE_L7Q - 1];
+            }
+        }
+        else {
+            if (codes[0] == CODE_L1C ||
+                codes[0] == CODE_L1X ||
+                codes[0] == CODE_L1B) {
+                P[0] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L5Q];
+            }
+            if (codes[2] == CODE_L5Q || codes[2] == CODE_L5X) {
+                P[2] -= nav->cbias[obs->sat - 1][CODE_L1X][CODE_L5X];
+            }
+            if (codes[2] == CODE_L7X) {
+                P[2] -= nav->cbias[obs->sat - 1][CODE_L1X][CODE_L7X];
+            }
+        }
+    }
+
+    if (use_dcb && sys == SYS_QZS) {
+        if (nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1W] == 0.0) {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L1W - 1];
+                L[0] += nav->ssr[obs->sat - 1].pbias[CODE_L1C - 1];
+            }
+            if (codes[1] == CODE_L2W) {
+                P[1] -= nav->ssr[obs->sat - 1].cbias[CODE_L2W - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L2W - 1];
+                L[1] -= nav->ssr[obs->sat - 1].pbias[CODE_L2W - 1];
+            }
+            if (codes[2] == CODE_L5Q) {
+                P[2] += nav->ssr[obs->sat - 1].cbias[CODE_L1C - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L5Q - 1];
+                L[2] += nav->ssr[obs->sat - 1].pbias[CODE_L5Q - 1];
+            }
+        }
+        else {
+            if (codes[0] == CODE_L1C) {
+                P[0] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L1W];
+            }
+            if (codes[1] == CODE_L2W) {
+                P[1] -= nav->cbias[obs->sat - 1][CODE_L2C][CODE_L2W];
+            }
+            if (codes[2] == CODE_L5Q) {
+                P[2] += nav->cbias[obs->sat - 1][CODE_L1C][CODE_L5Q];
+            }
+        }
+    }
+
+    if (use_dcb && sys == SYS_CMP) {
+        if (nav->cbias[obs->sat - 1][CODE_L2I][CODE_L6I] == 0.0) {
+            if (obs->code[0] == CODE_L2I) {
+                P[0] += nav->ssr[obs->sat - 1].cbias[CODE_L2I - 1] -
+                        nav->ssr[obs->sat - 1].cbias[CODE_L6I - 1];
+                L[0] += nav->ssr[obs->sat - 1].pbias[CODE_L2I - 1];
+            }
+            if (obs->code[1] == CODE_L7I) {
+                P[1] -= nav->ssr[obs->sat - 1].cbias[CODE_L7I - 1];
+                L[1] += nav->ssr[obs->sat - 1].pbias[CODE_L7I - 1];
+            }
+        }
+        else {
+            if (codes[0] == CODE_L2I) {
+                P[0] += nav->cbias[obs->sat - 1][CODE_L2I][CODE_L6I];
+            }
+        }
+    }
+
     /* iono-free LC */
-    *Lc=*Pc=0.0;
-    frq2=ppp_if2(obs,opt);
-    
-    if (freq[0]==0.0||freq[frq2]==0.0||freq[0]==freq[frq2]) return;
-    C1= SQR(freq[0])/(SQR(freq[0])-SQR(freq[frq2]));
-    C2=-SQR(freq[frq2])/(SQR(freq[0])-SQR(freq[frq2]));
-    if (L[0]!=0.0&&L[frq2]!=0.0) *Lc=C1*L[0]+C2*L[frq2];
-    if (P[0]!=0.0&&P[frq2]!=0.0) *Pc=C1*P[0]+C2*P[frq2];
-    trace(3, "L1: %f L5: %f SYS: %d SAT: %d\n\r", L[0], L[2], sys, satno(sys, obs->sat));
-    
+    *Lc = *Pc = 0.0;
+    frq2 = ppp_if2(obs, opt);
+
+    if (freq[0] == 0.0 || freq[frq2] == 0.0 || freq[0] == freq[frq2]) {
+        free(codes);
+        return;
+    }
+
+    C1 = SQR(freq[0]) / (SQR(freq[0]) - SQR(freq[frq2]));
+    C2 = -SQR(freq[frq2]) / (SQR(freq[0]) - SQR(freq[frq2]));
+
+    if (L[0] != 0.0 && L[frq2] != 0.0) *Lc = C1 * L[0] + C2 * L[frq2];
+    if (P[0] != 0.0 && P[frq2] != 0.0) *Pc = C1 * P[0] + C2 * P[frq2];
+
+    trace(3, "L1: %f L5: %f SYS: %d SAT: %d\n\r",
+          L[0], L[2], sys, satno(sys, obs->sat));
+
+    free(codes);
 }
 
 /* detect cycle slip by LLI --------------------------------------------------*/
@@ -979,23 +937,18 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 }
 
 /* Reset histories before comparing observations from different signal arcs. */
-static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
+static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n)
 {
-    int i,f,k,pair,changed,bias,glo_float;
-    double gap,glo_bias[2];
+    int i,f,k,pair,changed;
+    double gap;
     for (i=0;i<n&&i<MAXOBS;i++) {
         ssat_t *ss=rtk->ssat+obs[i].sat-1;
         pair=ppp_if2(obs+i,&rtk->opt);
-        glo_float=glo_float_bias(obs+i,nav,&rtk->opt,glo_bias);
         changed=0;
         for (f=0;f<NFREQ;f++) {
             if (obs[i].L[f]==0.0) continue;
-            bias=rtk->opt.arprod>=AR_PROD_OSB_COD?
-                 matchcposb(obs+i,nav,f,NULL,NULL):0;
-            if (glo_float&&f<2) bias=4;
             gap=fabs(timediff(obs[i].time,ss->pt[0][f]));
             if ((ss->ppp_code[f]&&ss->ppp_code[f]!=obs[i].code[f])||
-                (ss->ppp_code[f]&&ss->ppp_bias[f]!=bias)||
                 (ss->pt[0][f].time&&gap>2.0*fabs(rtk->tt)+DTTOL)) {
                 ss->slip[f]|=1;
                 ss->ph[0][f]=0.0;
@@ -1003,7 +956,6 @@ static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                 if (f==0||f==pair) changed=1;
             }
             ss->ppp_code[f]=obs[i].code[f];
-            ss->ppp_bias[f]=(uint8_t)bias;
         }
         if (obs[i].L[0]!=0.0&&obs[i].L[pair]!=0.0) {
             if (ss->ppp_if2&&ss->ppp_if2!=pair+1) {
@@ -1032,7 +984,7 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
         }
     }
 
-    detarc_ppp(rtk,obs,n,nav);
+    detarc_ppp(rtk,obs,n);
     detslp_dop(rtk,obs,n,nav);  /* Doppler-based — fastest, catches sharp slips */
     detslp_ll(rtk,obs,n);
     detslp_mw(rtk,obs,n,nav);
@@ -1741,6 +1693,10 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     
     for (i=0;i<n&&i<MAXOBS;i++) {
         sat=obs[i].sat;
+        if (sat<1||sat>MAXSAT) {
+            exc[i]=1;
+            continue;
+        }
         
         if ((r=geodist(rs+i*6,rr,e))<=0.0||
             satazel(pos,e,azel+i*2)<opt->elmin) {
@@ -1763,7 +1719,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
         
         /* phase windup model */
         if (!model_phw(rtk->sol.time,sat,nav->pcvs[sat-1].type,
-                       opt->posopt[2]?2:0,rs+i*6,rr,nav,&rtk->ssat[sat-1].phw)) {
+                       opt->posopt[2]?2:0,rs+i*6,rr,&rtk->ssat[sat-1].phw)) {
             continue;
         }
 
@@ -1937,7 +1893,7 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
         }
     }
 
-    for(i=0;i<6;i++){
+    for(i=0;i<NSYS;i++){
         irc=IC(i,opt);
         rtk->sol.dtr[i]=(rtk->x[irc]-(i?rtk->x[IC(0,opt)]:0.0))/CLIGHT;
     }
@@ -1984,6 +1940,9 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     double *rs,*dts,*var,*v,*H,*R,*azel,*xp,*Pp,*xa,*Pa,*bias,dr[3]={0},rr[3];
     char str[32];
     int i,j,nv,info,svh[MAXOBS],exc[MAXOBS]={0},stat=SOLQ_NONE,vflg[MAXOBS*NFREQ*2+1];
+
+    if (n<=0) return;
+    if (n>MAXOBS) n=MAXOBS;
     
     time2str(obs[0].time,str,2);
     trace(3,"pppos   : time=%s nx=%d n=%d\n",str,rtk->nx,n);

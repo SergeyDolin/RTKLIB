@@ -562,7 +562,7 @@ extern int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vfl
     int i,j,sat,sys_idx,qc_flag=0;
 
     for(j=0;j<nv;j++){
-        sat=(vflag[j]>>8)&0xFF;
+        sat=(vflag[i]>>8)&0xFF;
         sys_idx=satsysidx(sat);
         sat_SYS[sys_idx][nv_SYS[sys_idx]]=sat;
         v_SYS[sys_idx][nv_SYS[sys_idx]++]=pri_v[j];
@@ -2449,21 +2449,20 @@ extern uint32_t tickget(void)
 #ifdef WIN32
     return (uint32_t)timeGetTime();
 #else
+    struct timeval  tv={0};
+    
 #ifdef CLOCK_MONOTONIC_RAW
     /* linux kernel > 2.6.28 */
-    struct timespec ts={0};
-    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&ts)) {
-        return (uint32_t)(ts.tv_sec*1000u+ts.tv_nsec/1000000u);
+    if (!clock_gettime(CLOCK_MONOTONIC_RAW,&tv)) {
+        return tv.tv_sec*1000u+tv.tv_sec/1000000u;
     }
     else {
-        struct timeval tv={0};
         gettimeofday(&tv,NULL);
-        return (uint32_t)(tv.tv_sec*1000u+tv.tv_usec/1000u);
+        return tv.tv_sec*1000u+tv.tv_usec/1000u;
     }
 #else
-    struct timeval tv={0};
     gettimeofday(&tv,NULL);
-    return (uint32_t)(tv.tv_sec*1000u+tv.tv_usec/1000u);
+    return tv.tv_sec*1000u+tv.tv_usec/1000u;
 #endif
 #endif /* WIN32 */
 }
@@ -3229,7 +3228,6 @@ static double __attribute__((unused)) corrTGD(const nav_t *nav,uint8_t code, int
         b1=gettgd(sat,nav,0);
         return -gamma*b1;
     }
-    return 0.0;
 }
 
 extern double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int sat)
@@ -3259,7 +3257,6 @@ extern double corrISC(const prcopt_t *popt,const double *cbias,uint8_t code,int 
     else if(sys==SYS_QZS){
         return 0.0;
     }
-    return 0.0;
 }
 
 extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias,uint8_t code,int frq,int sat)
@@ -3371,16 +3368,15 @@ extern double corrDCB(const prcopt_t *popt,const nav_t *nav, const double *cbias
         }
         return dcb;
     }
-    return 0.0;
 }
 
 extern double corr_code_bias(const prcopt_t *popt,const nav_t *nav,const obsd_t *obs,int frq)
 {
     double isc=0.0,dcb=0.0;
 
-    isc=corrISC(popt,&nav->cbias[obs->sat-1][0][0],obs->code[frq],obs->sat);
+    isc=corrISC(popt,nav->cbias[obs->sat-1],obs->code[frq],obs->sat);
 
-    dcb=corrDCB(popt,nav,&nav->cbias[obs->sat-1][0][0],obs->code[frq],frq,obs->sat);
+    dcb=corrDCB(popt,nav,nav->cbias[obs->sat-1],obs->code[frq],frq,obs->sat);
 
     return isc+dcb;
 }
@@ -3883,48 +3879,88 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x10) {free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;}
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
-    if (opt&0x80) {
-        int i;
-        for (i=0;i<MAXSAT;i++) {
-            free(nav->att[i].data);
-            nav->att[i].data=NULL;
-            nav->att[i].n=nav->att[i].nmax=0;
+}
+
+extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f,
+                      double *cbias, double *pbias)
+{
+    int i, sys, sat, code;
+    int fallback = 0;
+    int flags = 0, valid;
+    double slot;
+
+    if (cbias) *cbias = 0.0;
+    if (pbias) *pbias = 0.0;
+
+    if (!obs || !nav || f < 0 || f >= NFREQ + NEXOBS) return 0;
+
+    sat  = obs->sat;
+    code = obs->code[f];
+
+    if (sat < 1 || sat > MAXSAT || code < 1 || code >= MAXCODE ||
+        !nav->osbs || !nav->osbs->sat_osb ||
+        nav->osbs->n <= 0 || nav->osbs->dt <= 0.0) {
+        return 0;
+    }
+
+    slot = timediff(obs->time, nav->osbs->tmin) / nav->osbs->dt;
+    if (!(slot >= 0.0)) return 0;
+
+    i = slot >= nav->osbs->n ? nav->osbs->n - 1 : (int)slot;
+
+    /* Сначала берём OSB для точного кода сигнала. */
+    valid = nav->osbs->sat_osb[i].valid[sat - 1][code] & 3;
+
+    if (valid & 1) {
+        if (cbias) *cbias = nav->osbs->sat_osb[i].code[sat - 1][code];
+        flags |= 1;
+    }
+    if (valid & 2) {
+        if (pbias) *pbias = nav->osbs->sat_osb[i].phase[sat - 1][code];
+        flags |= 2;
+    }
+
+    /*
+     * Запасное соответствие кодов:
+     * Galileo L1B <-> L1X, GPS/QZSS L5Q <-> L5X.
+     */
+    sys = satsys(sat, NULL);
+
+    if (sys == SYS_GAL && code == CODE_L1B) {
+        fallback = CODE_L1X;
+    }
+    else if (sys == SYS_GAL && code == CODE_L1X) {
+        fallback = CODE_L1B;
+    }
+    else if ((sys == SYS_GPS || sys == SYS_QZS) && code == CODE_L5Q) {
+        fallback = CODE_L5X;
+    }
+    else if ((sys == SYS_GPS || sys == SYS_QZS) && code == CODE_L5X) {
+        fallback = CODE_L5Q;
+    }
+
+    /*
+     * Если для точного кода есть только одна из двух поправок,
+     * запасной код может дать недостающую.
+     */
+    if (fallback > 0 && fallback < MAXCODE) {
+        valid = nav->osbs->sat_osb[i].valid[sat - 1][fallback] & 3;
+
+        if (!(flags & 1) && (valid & 1)) {
+            if (cbias) {
+                *cbias = nav->osbs->sat_osb[i].code[sat - 1][fallback];
+            }
+            flags |= 1;
+        }
+        if (!(flags & 2) && (valid & 2)) {
+            if (pbias) {
+                *pbias = nav->osbs->sat_osb[i].phase[sat - 1][fallback];
+            }
+            flags |= 2;
         }
     }
-}
 
-extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f, double *cbias, double *pbias){
-    int i,sat,code,flags;
-    double elapsed;
-
-    if(cbias) *cbias=0.0;
-    if(pbias) *pbias=0.0;
-    if(!obs||!nav||f<0||f>=NFREQ+NEXOBS) return 0;
-    sat=obs->sat;
-    code=obs->code[f];
-    if(sat<1||sat>MAXSAT||code<=0||code>=MAXCODE) return 0;
-    if(!nav->osbs||!nav->osbs->sat_osb||nav->osbs->dt<=0.0) return 0;
-    elapsed=timediff(obs->time,nav->osbs->tmin);
-    /* Do not extrapolate a bias outside the product's validity interval.
-     * Check before conversion: C truncation maps a small negative time to 0. */
-    if(elapsed<0.0||timediff(obs->time,nav->osbs->tmax)>0.0) return 0;
-    i=(int)(elapsed/nav->osbs->dt);
-
-    /* Try exact code first. A zero bias is still a valid product value, so
-     * use the explicit presence bits rather than testing the value itself. */
-    flags=nav->osbs->sat_osb[i].valid[sat-1][code]&3;
-    /* Tracking channels are distinct observables. An OSB for Q or B is
-     * not an OSB for X, even when the carrier frequency is identical. */
-    if(cbias&&(flags&1)) *cbias=nav->osbs->sat_osb[i].code[sat-1][code];
-    if(pbias&&(flags&2)) *pbias=nav->osbs->sat_osb[i].phase[sat-1][code];
     return flags;
-}
-
-/* Compatibility entry point for PPP-AR call sites in existing builds. */
-extern int matchcposb_ar(const obsd_t *obs, const nav_t *nav, int f,
-                         double *cbias, double *pbias)
-{
-    return matchcposb(obs,nav,f,cbias,pbias);
 }
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
@@ -4352,20 +4388,6 @@ extern int expath(const char *path, char *paths[], int nmax)
 /* Secondary signal slot for the PPP ionosphere-free combination. */
 extern int ppp_if2(const obsd_t *obs, const prcopt_t *opt)
 {
-    /* GRG OSBs cover BDS B1C/B2a and Galileo E1/E5a. With GRG, BDS slot 1
-     * is B2I, which has no matching OSB; use slot 2 (B2a) with B1C in slot 0. */
-    if (opt->arprod==AR_PROD_OSB_GRG&&opt->nf>=3&&
-        satsys(obs->sat,NULL)==SYS_CMP&&obs->L[2]!=0.0&&obs->P[2]!=0.0&&
-        code2idx(SYS_CMP,obs->code[0])==0&&
-        code2idx(SYS_CMP,obs->code[2])==2) {
-        return 2;
-    }
-    /* CODE and GRG rapid OSB products use Galileo E1/E5a (slots 0/2),
-     * while the generic second slot is E5b (slot 1). Prefer E5a for GRG OSB. */
-    if (opt->arprod>=AR_PROD_OSB_COD&&opt->nf>=3&&
-        satsys(obs->sat,NULL)==SYS_GAL&&obs->L[2]!=0.0&&obs->P[2]!=0.0) {
-        return 2;
-    }
     return opt->freqopt||obs->L[1]==0.0?2:1;
 }
 
