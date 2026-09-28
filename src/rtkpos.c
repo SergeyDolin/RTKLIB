@@ -1787,6 +1787,7 @@ extern void rtkinit(rtk_t *rtk, const prcopt_t *opt)
     rtk->xa=zeros(rtk->na,1);
     rtk->Pa=zeros(rtk->na,rtk->na);
     rtk->nfix=rtk->neb=0;
+    rtk->excsats=0; /* start partial-AR exclusion cursor for a new solution */
     rtk->amb_hash=rtk->amb_hash_prev=0;
     for (i=0;i<MAXSAT;i++) {
         rtk->ambc[i]=ambc0;

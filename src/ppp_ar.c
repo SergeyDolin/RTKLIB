@@ -918,7 +918,7 @@ extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,co
                 arsats[ar++]=i;
             }
         }
-        if(rtk->excsats<ar){
+        if(rtk->excsats>=0&&rtk->excsats<ar){
             sat=obs[arsats[rtk->excsats]].sat;
             for(f=0;f<nf;f++){
                 lockc[f]=rtk->ssat[sat-1].lock[f];
@@ -933,7 +933,8 @@ extern int manage_ppp_ar(rtk_t *rtk,double *bias,double *xa,double *Pa,int nf,co
 
 
     /* restore exclude sat if still no fix or significant increase in ar ration */
-    if(excflag&&(rtk->sol.ratio<rtk->sol.thres)&&(rtk->sol.ratio<(1.5*rtk->sol.prevf_ratio))){
+    if(excflag&&rtk->excsats>=0&&rtk->excsats<ar&&
+       (rtk->sol.ratio<rtk->sol.thres)&&(rtk->sol.ratio<(1.5*rtk->sol.prevf_ratio))){
         sat=obs[arsats[rtk->excsats++]].sat;
         for(f=0;f<nf;f++) rtk->ssat[sat-1].lock[f]=lockc[f];
     }
