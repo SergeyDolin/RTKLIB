@@ -63,7 +63,7 @@ static char snrmask_[NFREQ][1024];
 #define TIDEOPT "0:off,1:on,2:otl"
 #define PHWOPT  "0:off,1:on,2:precise"
 #define KALMAN  "0:base,1:vbbra"
-#define ARPROD  "0:off,1:fcb,2:upd,3:osb_cod"
+#define ARPROD  "0:off,1:fcb,2:upd,3:osb_cod,4:osb_grg"
 
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
@@ -216,7 +216,8 @@ static void chop(char *str)
 {
     char *p;
     if ((p=strchr(str,'#'))) *p='\0'; /* comment */
-    for (p=str+strlen(str)-1;p>=str&&!isgraph((int)*p);p--) *p='\0';
+    p=str+strlen(str);
+    while (p>str&&!isgraph((unsigned char)p[-1])) *--p='\0';
 }
 /* enum to string ------------------------------------------------------------*/
 static int enum2str(char *s, const char *comment, int val)
@@ -238,21 +239,40 @@ static int enum2str(char *s, const char *comment, int val)
 /* string to enum ------------------------------------------------------------*/
 static int str2enum(const char *str, const char *comment, int *val)
 {
-    const char *p;
-    char s[32];
-    
-    for (p=comment;;p++) {
-       if (!(p=strstr(p,str))) break;
-       if (*(p-1)!=':') continue;
-       for (p-=2;'0'<=*p&&*p<='9';p--) ;
-       return sscanf(p+1,"%d",val)==1;
-    }
-    sprintf(s,"%.30s:",str);
-    if ((p=strstr(comment,s))) { /* number  */
-        return sscanf(p,"%d",val)==1;
-    }
-    return 0; 
+    const char *p=comment,*end;
+    char *tail;
+    long number;
+    size_t len;
 
+    while (*str==' '||*str=='\t') str++;
+
+    while (*p) {
+        number=strtol(p,&tail,10);
+        if (tail==p||*tail!=':') return 0;
+        end=strchr(tail+1,',');
+        if (!end) end=tail+1+strlen(tail+1);
+        len=(size_t)(end-(tail+1));
+        if (strlen(str)==len&&!strncmp(str,tail+1,len)) {
+            *val=(int)number;
+            return 1;
+        }
+        if (end==tail+1+strlen(tail+1)) break;
+        p=end+1;
+    }
+    number=strtol(str,&tail,10);
+    if (tail==str||*tail!='\0') return 0;
+    for (p=comment;*p;) {
+        long candidate=strtol(p,&tail,10);
+        if (tail==p||*tail!=':') break;
+        if (candidate==number) {
+            *val=(int)number;
+            return 1;
+        }
+        p=strchr(tail+1,',');
+        if (!p) break;
+        p++;
+    }
+    return 0;
 }
 /* search option ---------------------------------------------------------------
 * search option record

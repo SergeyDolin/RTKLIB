@@ -13,6 +13,7 @@
             2025/07/29  2.0  AR
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
+#include <float.h>
 
 #define SQR(x)      ((x)*(x))
 #define SQRT(x)     ((x)<=0.0||(x)!=(x)?0.0:sqrt(x))
@@ -200,10 +201,10 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
                       int n, const int *exc, int *sat1, int *sat2, int *iu,
                       int *ir, int f, double *el){
     const int sat_sys[]={SYS_GPS,SYS_GLO,SYS_GAL,SYS_CMP,0};
-    double elmask,el_temp[MAXOBS]={0};
+    double elmask,el_temp[MAXOBS]={0},mwvar[MAXOBS]={0};
     int i,j,k,m=0,ns=0,prn,idxs[MAXOBS]={0},sat_no[MAXOBS]={0},frq=f==-1?0:f;
-    int osb1=0,osb2=0;
     int ref_sat_idx=0,sys;
+    int mwref=strstr(rtk->opt.pppopt,"-PPP-MWREF")!=NULL;
 
     elmask=MAX(rtk->opt.elmin,rtk->opt.elmaskar);
 
@@ -222,28 +223,10 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
             if(sys!=sat_sys[i]) continue;
 
             k=ppp_if2(obs+j,&rtk->opt);
-
-            /* Exact OSBs are required only for integer ambiguity resolution.
-             * A satellite without the exact code+phase OSB for either signal
-             * remains usable by the float PPP filter in ppp.c, but it must not
-             * enter the WL/NL/LAMBDA pool because its ambiguity datum is not
-             * guaranteed to be integer-compatible. */
-            if (rtk->opt.arprod==AR_PROD_OSB_COD) {
-                osb1=matchcposb_ar(obs+j,nav,0,NULL,NULL);
-                osb2=matchcposb_ar(obs+j,nav,k,NULL,NULL);
-                if (osb1!=3||osb2!=3) {
-                    trace(2,"PPP AR OSB reject sat=%d sig1=%s valid1=%d sig2=%s valid2=%d\n",
-                          obs[j].sat,code2obs(obs[j].code[0]),osb1,
-                          code2obs(obs[j].code[k]),osb2);
-                    continue;
-                }
-            }
-
-            /* Keep the working slip logic.  Do not reintroduce the additional
-             * half[] gate here: that gate was a regression for these smartphone
-             * data.  Cycle slips still reset the AR lock counter normally. */
             if ((rtk->ssat[obs[j].sat-1].slip[0]&1)||
-                (rtk->ssat[obs[j].sat-1].slip[k]&1)) {
+                (rtk->ssat[obs[j].sat-1].slip[k]&1)||
+                !rtk->ssat[obs[j].sat-1].half[0]||
+                !rtk->ssat[obs[j].sat-1].half[k]) {
                 rtk->ssat[obs[j].sat-1].lock[f]=-rtk->opt.minlock;
                 continue;
             }
@@ -264,6 +247,13 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
         iamb=rtk->tc?xiAmb(&rtk->opt.insopt,obs[j].sat,0):IB(obs[j].sat,0,&rtk->opt);
         if(SQRT(rtk->P[iamb+iamb*rtk->nx])>0.30){continue;}
 #endif
+            if (mwref) {
+                double q=rtk->ssat[obs[j].sat-1].mw[3];
+                /* Reject unavailable/invalid MW means before reference selection. */
+                if (!(rtk->ssat[obs[j].sat-1].mw[2]>0.0)||
+                    !(q>0.0)||q>DBL_MAX) continue;
+                mwvar[m]=q;
+            }
             sat_no[m]=obs[j].sat;
             el_temp[m]=rtk->ssat[obs[j].sat-1].azel[1];
             idxs[m]=j;
@@ -273,13 +263,20 @@ static int gen_sat_sd(rtk_t *rtk,const nav_t *nav, const obsd_t *obs,
         if(m<=0) continue;
 
         for(j=0;j<m-1;j++) for(k=j+1;k<m;k++){
-            if(el_temp[j]>=el_temp[k]) continue;
+            if (mwref) {
+                if (mwvar[j]<mwvar[k]||
+                    (mwvar[j]==mwvar[k]&&el_temp[j]>=el_temp[k])) continue;
+            }
+            else if(el_temp[j]>=el_temp[k]) continue;
             SWAP_I(sat_no[j],sat_no[k]);
             SWAP_I(idxs[j],idxs[k]);
             SWAP_D(el_temp[j],el_temp[k]);
+            SWAP_D(mwvar[j],mwvar[k]);
         }
 
-        /* generate SD referenced to max elecation angel */
+        /* The first compatible carrier pair is the reference. Default: highest
+         * elevation. MWREF: smallest MW mean variance, elevation breaks ties.
+         * For independent MW estimates Var(SD)=Var(sat)+Var(ref). */
         ref_sat_idx=0;
         for(j=0;j<m;j++){
             int u=idxs[j], r, fu=ppp_if2(obs+u,&rtk->opt), fr;
@@ -467,7 +464,7 @@ static int fix_sol(rtk_t *rtk,const obsd_t *obs,const nav_t *nav,const double *s
         lam_nl=lam1*lam2/(lam2+lam1);
         gamma=CLIGHT*frq2/(SQR(frq1)-SQR(frq2));
 
-        if(opt.arprod == AR_PROD_OSB_COD){
+        if(opt.arprod >= AR_PROD_OSB_COD){
             /* Bl[i] holds the LAMBDA-fixed SD-NL integer for every entry
              * 0..nb-1; a fixed value of 0 is a valid integer, so reconstruct
              * the IF bias unconditionally (do not fall back to the float). */
@@ -531,12 +528,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
     double *sd_nl_fcb,*Qnl;
 
     /* generate satellite SD */
-    if(!(ns=gen_sat_sd(rtk,nav,obs,n,exc,sat1,sat2,iu,ir,0,el))) {
-        trace(2,"PPP AR: no single-difference candidates after OSB/lock/signal checks\n");
-        rtk->nb_ar=0;
-        return 0;
-    }
-    trace(2,"PPP AR: SD candidates=%d\n",ns);
+    if(!(ns=gen_sat_sd(rtk,nav,obs,n,exc,sat1,sat2,iu,ir,0,el))) return 0;
 
     for(i=0;i<MAXSAT;i++){
         rtk->sdamb[i].nl=0.0;
@@ -617,7 +609,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
             } else {
                 wl_fcb_g = nav->wlbias[sat-1] - nav->wlbias[ref_sat-1];
             }
-            wl_a = (opt.arprod == AR_PROD_OSB_COD) ? sd_wl_g : sd_wl_g - wl_fcb_g;
+            wl_a = (opt.arprod >= AR_PROD_OSB_COD) ? sd_wl_g : sd_wl_g - wl_fcb_g;
 
             /* collect WL fractional part for Step-1 IFB estimation */
             glo_dk[n_glo_wl]      = dk;
@@ -686,7 +678,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
              * those biases are wrong — skip them to avoid corrupting WL. */
             if (f2==2) continue; /* no compatible L1/L5 FCB/UPD supplied */
             wl_amb = sd_wl-wl_fcb;
-        } else if(opt.arprod == AR_PROD_OSB_COD){
+        } else if(opt.arprod >= AR_PROD_OSB_COD){
             wl_amb = sd_wl;  /* OSBs already applied per-signal in mwmeas() */
         }
 
@@ -722,7 +714,7 @@ static int pppar_IF_ILS(rtk_t *rtk,double *xa,double *bias, const obsd_t *obs,
         nl_amb=0.0;
         nl_fcb1=0.0; nl_fcb2=0.0;
 
-        if(opt.arprod == AR_PROD_OSB_COD){
+        if(opt.arprod >= AR_PROD_OSB_COD){
             nl_amb = (sd_if-gamma*newround(wl_amb))/lam_nl;
             trace(2, "SAT: %d; NL: %f\n\r", i, nl_amb);
         } else if(opt.arprod == AR_PROD_UPD&&f2!=2&&
@@ -850,8 +842,9 @@ extern void holdamb_ppp(rtk_t *rtk, const double *xa)
 /* ambiguity resolution in ppp -----------------------------------------------*/
 extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const obsd_t *obs,int ns,const nav_t *nav, int *exc)
 {
-    int nb=0;
+    int i,ipos=0,npos=3,nb=0;
     float ratio_post=0.0;
+    double var=0.0;
     prcopt_t opt=rtk->opt;
     rtk->sol.ratio=0.0;
     if (opt.modear==ARMODE_OFF||opt.arprod==0) return 0;
@@ -863,14 +856,13 @@ extern int ppp_ar(rtk_t *rtk,double *bias, double *xa,double *Pa,int nf, const o
         return 0;
     }
 
-    /* Do not gate PPP-AR by position sigma using thresar[2].
-     * thresar[2] is an ambiguity-domain residual threshold (cycles), not a
-     * position-uncertainty threshold in metres.  Reusing it here prevented AR
-     * from even being attempted on smartphone PPP while the float solution was
-     * still at the decimetre level.  LAMBDA ratio, WL/NL residual tests and the
-     * fixed-solution residual validation below remain the AR quality gates. */
-    trace(2,"PPP AR attempt: modear=%d arprod=%d ionoopt=%d nb_prev=%d\n",
-          opt.modear,opt.arprod,opt.ionoopt,rtk->nb_ar);
+    /* skip AR if position variance too high to avoid false fix */
+    for(i=ipos;i<ipos+npos;i++) var+=SQRT(rtk->P[i+i*rtk->nx]);
+    var=var/3.0; /* maintain compatibility with previous code */
+    if(var>opt.thresar[2]){
+        trace(2,"position variance too large, var=%7.3f thres=%7.3f\n", var,opt.thresar[2]);
+        return 0;
+    }
 
     if(rtk->opt.ionoopt==IONOOPT_IFLC){
         nb=pppar_IF_ILS(rtk,xa,bias,obs,ns,exc,nav);

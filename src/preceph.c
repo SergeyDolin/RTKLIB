@@ -50,6 +50,8 @@
 *                           fix bug on reading SP3 file extension
 *-----------------------------------------------------------------------------*/
 #include "rtklib.h"
+#include <float.h>
+#include <limits.h>
 
 #define SQR(x)      ((x)*(x))
 
@@ -65,6 +67,7 @@ typedef struct {
     gtime_t ts,te;
     int code;
     int type;
+    int unit_cyc;  /* phase OSB is in cycles */
     double bia;
 }bias_t;
 
@@ -395,7 +398,7 @@ static int readupdf_nl(const char *file, nl_upds_t *nls)
 {
     FILE *fp;
     char buff[200]={'\0'};
-    int sat,ep=0;
+    int sat,oldmax;
     mjd_t mjd;
     gtime_t t={0};
     nl_upd_t *nl_data_temp;
@@ -414,39 +417,45 @@ static int readupdf_nl(const char *file, nl_upds_t *nls)
             mjd.ds.sn=(long) str2num(buff,20,12);
             mjd.ds.tos=0.0;
             mjd2time(&mjd,&t);
-            ep++;
-            nls->n=ep;
+            if (nls->n>=nls->nmax) {
+                oldmax=nls->nmax;
+                nls->nmax+=1024;
+                nl_data_temp=(nl_upd_t *)realloc(nls->data,
+                                                 sizeof(nl_upd_t)*nls->nmax);
+                if (!nl_data_temp) {
+                    fclose(fp);
+                    return -1;
+                }
+                nls->data=nl_data_temp;
+                memset(nls->data+oldmax,0,
+                       sizeof(nl_upd_t)*(nls->nmax-oldmax));
+            }
+            nls->data[nls->n].ts=t;
+            nls->data[nls->n].te=timeadd(t,30.0);
+            nls->n++;
             continue;
         }
         sat=satid2no(buff+1);
-        if(sat<=0) continue;
-        if(nls->n>=nls->nmax){
-            nls->nmax+=1024;
-            if(!(nl_data_temp=(nl_upd_t *)realloc(nls->data, sizeof(nl_upd_t)*nls->nmax))){
-                free(nls->data);
-                nls->data=NULL;
-                nls->n=nls->nmax=0;
-                return -1;
-            }
-            nls->data=nl_data_temp;
-        }
-        nls->data[ep-1].ts=t;
-        nls->data[ep-1].te=timeadd(t,30.0);
-        nls->data[ep-1].nl[sat-1]=str2num(buff,15,8);
-        nls->data[ep-1].std[sat-1]=str2num(buff,25,8);
+        if(sat<=0||nls->n<=0) continue;
+        nls->data[nls->n-1].nl[sat-1]=str2num(buff,15,8);
+        nls->data[nls->n-1].std[sat-1]=str2num(buff,25,8);
     }
     fclose(fp);
-    return 0;
+    return 1;
 }
 
 extern int readupd(const prcopt_t *opt,char *file_ewl,char *file_wl,char *file_nl, nav_t *nav)
 {
-    nav->upds=(void *)malloc(sizeof(upds_t));
-    readupdf_ewl(file_ewl,&nav->upds->wls);
-    readupdf_wl(file_wl,&nav->upds->wls);
-    readupdf_nl(file_nl,&nav->upds->nls);
-
-    return 0;
+    if (!(nav->upds=(upds_t *)calloc(1,sizeof(upds_t)))) return 0;
+    if (readupdf_ewl(file_ewl,&nav->upds->wls)!=1||
+        readupdf_wl(file_wl,&nav->upds->wls)!=1||
+        readupdf_nl(file_nl,&nav->upds->nls)!=1) {
+        free(nav->upds->nls.data);
+        free(nav->upds);
+        nav->upds=NULL;
+        return 0;
+    }
+    return 1;
 }
 
 static int __attribute__((unused)) biasstr2time(const char *s, int i, int n, gtime_t *t) {
@@ -481,7 +490,10 @@ static int biasstr2time_str(const char *s, gtime_t *time)
 {
     int year, doy, sec;
     if (sscanf(s, "%d:%d:%d", &year, &doy, &sec) != 3) return -1;
-    *time = timeadd(epoch2time((double[]){year, 1, 1, 0, 0, 0}), (doy - 1) * 86400.0 + sec);
+    if (year<1970||year>2099||doy<1||doy>(year%4==0?366:365)||
+        sec<0||sec>86400) return -1;
+    *time = timeadd(epoch2time((double[]){year, 1, 1, 0, 0, 0}),
+                    (doy - 1) * 86400.0 + sec);
     return 0;
 }
 
@@ -539,7 +551,8 @@ static int readosbf(const char *file, biases_t *sat_bias) {
         n = sscanf(p, "OSB %15s %15s %15s %19s %19s %7s %lf %lf",
                    svn, prn, obs, t1s, t2s, unit, &val, &std);
 
-        if (n != 8 || strcmp(unit, "ns") != 0) {
+        if (n != 8 ||
+            (strcmp(unit, "ns") != 0 && strcmp(unit, "cyc") != 0)) {
             p += 4;
             continue;
         }
@@ -557,10 +570,16 @@ static int readosbf(const char *file, biases_t *sat_bias) {
         if (code <= 0 || code >= MAXCODE) { p += 4; continue; }
 
         int range = (obs[0] == 'C') ? 1 : (obs[0] == 'L') ? 0 : -1;
-        if (range < 0) { p += 4; continue; }
+
+        /* Code OSB in cycles is invalid; phase OSB may be in ns or cycles. */
+        if (range < 0 || (range && strcmp(unit, "cyc") == 0)) {
+            p += 4;
+            continue;
+        }
 
         gtime_t t1, t2;
-        if (biasstr2time_str(t1s, &t1) || biasstr2time_str(t2s, &t2)) {
+        if (biasstr2time_str(t1s, &t1) || biasstr2time_str(t2s, &t2)||
+            timediff(t2,t1)<=0.0||!(fabs(val)<=DBL_MAX)) {
             p += 4;
             continue;
         }
@@ -583,7 +602,9 @@ static int readosbf(const char *file, biases_t *sat_bias) {
         b->sat = sat;
         b->code = code;
         b->type = range;
+        b->unit_cyc = strcmp(unit, "cyc") == 0;
         b->bia = val;
+        
 
         trace(2, "OSB PARSED: PRN=%s CODE=%s TYPE=%s BIAS=%.6f\n",
               prn, obs, range ? "CODE" : "PHASE", val);
@@ -598,19 +619,29 @@ static int readosbf(const char *file, biases_t *sat_bias) {
 extern int readosb(const char *file, nav_t *nav)
 {
     biases_t biases = {0};
+    osbs_t *osbs;
+    double span;
+
+    if (nav->osbs) {
+        free(nav->osbs->sat_osb);
+        free(nav->osbs);
+        nav->osbs=NULL;
+    }
     
     if (!file||!*file) {
-        nav->osbs=NULL;
         return 0;
     }
-    readosbf(file, &biases);
+    if (readosbf(file, &biases)!=1) {
+        free(biases.data);
+        return 0;
+    }
     
     int nb, ii, i;
     gtime_t tmin = {0}, tmax = {0};
     double dt = 0.0;
     
     if (biases.nb == 0) {
-        nav->osbs = NULL;
+        free(biases.data);
         return 0;
     }
     
@@ -625,48 +656,60 @@ extern int readosb(const char *file, nav_t *nav)
         if (current_dt < dt) dt = current_dt;
     }
     
-    nav->osbs = (osbs_t *)malloc(sizeof(osbs_t));
-    if (nav->osbs == NULL) {
+    if (!(dt>0.0)||!(dt<=DBL_MAX)) dt=30.0;
+    span=timediff(tmax,tmin);
+    if (!(span>=0.0)||!(span/dt<INT_MAX-1)) {
         free(biases.data);
         return 0;
     }
-    
-    nav->osbs->dt = dt;
-    nav->osbs->tmin = tmin;
-    nav->osbs->tmax = tmax;
-    
-    if (dt == 0.0) {
-        nav->osbs->dt = 30.0; 
-        dt = 30.0;
-    }
-    
-    nb = (int)(timediff(tmax, tmin) / dt) + 1;
-    nav->osbs->sat_osb = (osb_t *)calloc(nb, sizeof(osb_t));
-    if (nav->osbs->sat_osb == NULL) {
-        free(nav->osbs);
+    nb=(int)floor(span/dt)+1;
+    if ((size_t)nb>((size_t)-1)/sizeof(osb_t)||
+        !(osbs=(osbs_t *)calloc(1,sizeof(osbs_t)))) {
         free(biases.data);
         return 0;
     }
+    osbs->dt=dt;
+    osbs->tmin=tmin;
+    osbs->tmax=tmax;
+    osbs->n=nb;
+    if (!(osbs->sat_osb=(osb_t *)calloc((size_t)nb,sizeof(osb_t)))) {
+        free(osbs);
+        free(biases.data);
+        return 0;
+    }
+    nav->osbs=osbs;
     
     int sat, code;
     for (i = 0; i < biases.nb; i++) {
         sat = biases.data[i].sat - 1;
         code = biases.data[i].code;
-        int i1 = (int)(timediff(biases.data[i].ts, tmin) / dt);
-        int i2 = (int)(timediff(biases.data[i].te, tmin) / dt);
+        int i1 = (int)floor(timediff(biases.data[i].ts, tmin) / dt);
+        int i2 = (int)floor(timediff(biases.data[i].te, tmin) / dt);
+        if (i1<0) i1=0;
+        if (i2>=nb) i2=nb-1;
+        if (i1>=nb||i2<i1) continue;
         
         
-        /* Bias-SINEX intervals are [start,end). Do not overwrite a new
-         * interval with the previous day's bias at its end epoch. */
-        for (ii = i1; ii < i2; ii++) {
+        for (ii = i1; ii <= i2; ii++) {
             if (biases.data[i].type) {
                 nav->osbs->sat_osb[ii].code[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
                 nav->osbs->sat_osb[ii].valid[sat][code] |= 1;
                 trace(2, "CODE OSB: %f\n\r", nav->osbs->sat_osb[ii].code[sat][code]);
             } else {
-                nav->osbs->sat_osb[ii].phase[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
+                if (biases.data[i].unit_cyc) {
+                    double freq = sat2freq(biases.data[i].sat,
+                                        (uint8_t)code, nav);
+                    if (freq == 0.0) continue;
+
+                    nav->osbs->sat_osb[ii].phase[sat][code] =
+                        biases.data[i].bia * CLIGHT / freq;
+                }
+                else {
+                    nav->osbs->sat_osb[ii].phase[sat][code] =
+                        biases.data[i].bia * 1E-9 * CLIGHT;
+                }
+
                 nav->osbs->sat_osb[ii].valid[sat][code] |= 2;
-                trace(2, "PHASE OSB: %f\n\r", nav->osbs->sat_osb[ii].phase[sat][code]);
             }
         }
     }

@@ -475,6 +475,7 @@ extern float dX,dY,dZ,sx,sy,sz;        /* CPP stage-3 coord/std differences */
 #define AR_PROD_FCB 1
 #define AR_PROD_UPD 2
 #define AR_PROD_OSB_COD 3
+#define AR_PROD_OSB_GRG 4
 
 #define SBSOPT_LCORR 1                  /* SBAS option: long term correction */
 #define SBSOPT_FCORR 2                  /* SBAS option: fast correction */
@@ -902,12 +903,13 @@ typedef struct {
 typedef struct {
     double code[MAXSAT][MAXCODE];
     double phase[MAXSAT][MAXCODE];
-    uint8_t valid[MAXSAT][MAXCODE]; /* bit 0: code OSB, bit 1: phase OSB */
+    unsigned char valid[MAXSAT][MAXCODE]; /* bit 0: code, bit 1: phase */
 }osb_t;
 
 typedef struct {
     gtime_t tmin,tmax;
     double dt;
+    int n;                              /* allocated number of time slots */
     osb_t *sat_osb;
 }osbs_t;
 
@@ -1780,6 +1782,8 @@ EXPORT int  filter(double *x, double *P, const double *H, const double *v,
                    const double *R, int n, int m);
 EXPORT int  filter_vbakf(double *x, double *P, const double *H, const double *v,
                    const double *R, const int *vflg, int n, int m);
+EXPORT int  filter_vbakf_guarded(double *x, double *P, const double *H, const double *v,
+                   const double *R, const int *vflg, int n, int m);
 EXPORT int  smoother(const double *xf, const double *Qf, const double *xb,
                      const double *Qb, int n, double *xs, double *Qs);
 EXPORT void matprint (const double *A, int n, int m, int p, int q);
@@ -2163,7 +2167,6 @@ EXPORT int lambda_search(int n, int m, const double *a, const double *Q,
 
 /* observation model */
 EXPORT int matchcposb(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
-EXPORT int matchcposb_ar(const obsd_t *obs,const nav_t *nav,int f,double *cbias,double *pbias);
 EXPORT void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,
                          const double *dantr,const double *dants, double phw, double *L, double *P,
                          double *Lc, double *Pc,double *freqs,double *dcbs,ssat_t *sat_info);
