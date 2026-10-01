@@ -377,7 +377,7 @@ static double varerr(int sat, int sys, double el, double snr_rover,
     a=fact*opt->err[1];
     b=fact*opt->err[2];
 
-    var=fact * (SQR(a) + SQR(b / sinel));
+    var=SQR(a) + SQR(b / sinel);
 
     var*=(opt->ionoopt==IONOOPT_IFLC)?SQR(3.0):1.0;
 
