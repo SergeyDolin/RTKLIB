@@ -1307,6 +1307,16 @@ static void ambupd_flush_sat_arc(int sat, const char *reason)
     g_arc_rows_n[idx] = 0;
 }
 
+/* Explicit PPP IF initialization event, consumed before the new state is used.
+ * Flush even if the next observation will fail an export quality gate. */
+extern void ambupd_if_reinit(int sat)
+{
+    if (sat <= 0 || sat > MAXSAT) return;
+    ambupd_flush_sat_arc(sat, "if-reinit");
+    arc_reset(sat);
+    wl_last_init[sat-1] = 0;
+}
+
 static void ambupd_flush_all_arcs(const char *reason)
 {
     int sat;

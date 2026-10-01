@@ -139,6 +139,7 @@ extern int iamb_ppp(const prcopt_t *opt, int sat, int f){
     return IB(sat,f,opt);
 }
 /* AMBUPD output for integration testing. */
+extern void ambupd_if_reinit(int sat);
 extern void ambupd_write_epoch(const rtk_t *rtk, const obsd_t *obs, int n,
                                const nav_t *nav);
 __attribute__((weak)) int ppp_upd_ar_debug(const rtk_t *rtk,
@@ -1460,6 +1461,10 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                     if (sf>1.0) var_init*=sf;
                     if (var_init>VAR_BIAS*50.0) var_init=VAR_BIAS*50.0;
                 }
+                /* Close the old export arc before installing the new IF bias.
+                 * Notify on the actual initialization, not the cleared slip flag. */
+                if (rtk->opt.ionoopt==IONOOPT_IFLC && f==0 &&
+                    satsys(sat,NULL)==SYS_GPS) ambupd_if_reinit(sat);
                 initx(rtk, bias[i], var_init, IB(sat,f,&rtk->opt));
             }
             
