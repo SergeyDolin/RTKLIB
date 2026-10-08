@@ -482,13 +482,11 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         if (freq[i] == 0.0 || obs->L[i] == 0.0 || obs->P[i] == 0.0) continue;
         if (testsnr(0, i, azel[1], obs->SNR[i] * SNR_UNIT, &opt->snrmask)) continue;
 
-        /*
-         * Для OSB-режима нужен code OSB. Отсутствие phase OSB не запрещает
-         * float-измерение: фазовая неоднозначность может поглотить эту поправку.
-         */
+        /* A product may omit biases for receiver signals (for example GPS L5).
+         * Keep those observations for the float solution; ambiguity resolution
+         * separately requires complete code and phase OSBs. */
         if (opt->arprod >= AR_PROD_OSB_COD && nav->osbs) {
             osb_flags = matchcposb(obs, nav, i, &cosb, &posb);
-            if (!(osb_flags & 1)) continue;
         }
 
         /* antenna phase center and phase windup correction */
@@ -790,11 +788,18 @@ static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 /* detect cycle slip by phase/Doppler consistency --------------------------*/
 static void detslp_dop(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double freq, dt, dL, dop_pred, threshold;
-    int i, f, sat;
+    double freq, dt, dL, dop_pred, threshold, common=0.0, median, value;
+    double rate[MAXOBS][NFREQ]={{0}}, limit[MAXOBS][NFREQ]={{0}};
+    double sample[MAXOBS], sorted[MAXOBS], sample_limit[MAXOBS];
+    int valid[MAXOBS][NFREQ]={{0}}, seen[MAXSAT]={0};
+    int i, f, sat, j, count=0, agree=0;
 
+    /* Phase and Doppler can use different receiver clock references.
+     * Estimate their common difference in metres/second before testing
+     * individual signals. Use one sample per satellite, not per frequency. */
     for (i = 0; i < n && i < MAXOBS; i++) {
         sat = obs[i].sat;
+        if (sat<1||sat>MAXSAT) continue;
         for (f = 0; f < NFREQ; f++) {
             if (obs[i].L[f] == 0.0 || obs[i].D[f] == 0.0) continue;
             if (rtk->ssat[sat-1].ph[0][f] == 0.0 ||
@@ -816,11 +821,46 @@ static void detslp_dop(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             /* actual ΔL (cycles) */
             dL = obs[i].L[f] - rtk->ssat[sat-1].ph[0][f];
 
-            if (fabs(dL - dop_pred) > threshold) {
+            rate[i][f]=(dL-dop_pred)*CLIGHT/freq/dt;
+            limit[i][f]=threshold*CLIGHT/freq/fabs(dt);
+            valid[i][f]=1;
+            /* LLI already identifies a broken arc; do not use it to
+             * estimate the common clock term. */
+            if (!seen[sat-1]&&!(obs[i].LLI[f]&3)) {
+                sample[count]=sorted[count]=rate[i][f];
+                sample_limit[count++]=limit[i][f];
+                seen[sat-1]=1;
+            }
+        }
+    }
+    if (count>=4) {
+        for (i=1;i<count;i++) {
+            value=sorted[i];
+            for (j=i;j>0&&sorted[j-1]>value;j--) sorted[j]=sorted[j-1];
+            sorted[j]=value;
+        }
+        median=count%2?sorted[count/2]:
+               0.5*(sorted[count/2-1]+sorted[count/2]);
+        for (i=0;i<count;i++) {
+            if (fabs(sample[i]-median)<=sample_limit[i]) agree++;
+        }
+        /* Require consensus from at least four independent satellites. */
+        if (agree>=4&&agree*4>=count*3) common=median;
+        if (common!=0.0) {
+            trace(3,"detslp_dop: common clock rate=%.3f m/s ns=%d/%d\n",
+                  common,agree,count);
+        }
+    }
+    for (i=0;i<n&&i<MAXOBS;i++) {
+        sat=obs[i].sat;
+        if (sat<1||sat>MAXSAT) continue;
+        for (f=0;f<NFREQ;f++) {
+            if (!valid[i][f]) continue;
+            if (fabs(rate[i][f]-common)>limit[i][f]) {
                 rtk->ssat[sat-1].slip[f] |= 1;
                 char sid[8]; satno2id(sat,sid);
-                trace(3, "detslp_dop: slip %s f=%d dL=%.2f pred=%.2f\n",
-                      sid, f+1, dL, dop_pred);
+                trace(3,"detslp_dop: slip %s f=%d rate=%.3f common=%.3f\n",
+                      sid,f+1,rate[i][f],common);
             }
         }
     }
@@ -1794,14 +1834,30 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             trace(4,"%s sat=%2d %s%d res=%9.4f sig=%9.4f el=%4.1f\n",str,sat,
                   j%2?"P":"L",j/2+1,v[nv],sqrt(var[nv]),azel[1+i*2]*R2D);
             
-            /* reject satellite by pre-fit residuals */
+            /* A raw metre threshold alone rejects an uncertain clock,
+             * position or newly initialized ambiguity before the filter
+             * can estimate it. Also require a large normalized innovation.
+             * Post-fit rejection below still uses measurement noise. */
             if (!post&&opt->maxinno>0.0&&fabs(v[nv])>opt->maxinno) {
-                trace(3,"outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
-                      post,str,sat,j%2?"P":"L",j/2+1,v[nv],azel[1+i*2]*R2D);
-                exc[i]=1; rtk->ssat[sat-1].rejc[j%2]++;
-                nv=nv_sat; /* remove all rows of the rejected satellite */
-                for (k=0;k<NF(opt);k++) rtk->ssat[sat-1].vsat[k]=0;
-                break;
+                double svar=var[nv],reject_limit;
+                int a,b;
+                for (a=0;a<nx;a++) {
+                    if (H[a+nx*nv]==0.0) continue;
+                    for (b=0;b<nx;b++) {
+                        if (H[b+nx*nv]==0.0) continue;
+                        svar+=H[a+nx*nv]*rtk->P[a+b*nx]*H[b+nx*nv];
+                    }
+                }
+                reject_limit=MAX(opt->maxinno,
+                                 THRES_REJECT*sqrt(MAX(svar,var[nv])));
+                if (fabs(v[nv])>reject_limit) {
+                    trace(3,"outlier (%d) rejected %s sat=%2d %s%d res=%9.4f el=%4.1f\n",
+                          post,str,sat,j%2?"P":"L",j/2+1,v[nv],azel[1+i*2]*R2D);
+                    exc[i]=1; rtk->ssat[sat-1].rejc[j%2]++;
+                    nv=nv_sat; /* remove all rows of the rejected satellite */
+                    for (k=0;k<NF(opt);k++) rtk->ssat[sat-1].vsat[k]=0;
+                    break;
+                }
             }
             /* record large post-fit residuals */
             if (post&&fabs(v[nv])>sqrt(var[nv])*THRES_REJECT) {
