@@ -365,6 +365,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
             corr_phase_bias_ssr(obs,n,&navs);
         }
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
+        if (rtk.sol.stat==SOLQ_NONE) continue;
 
         if (mode==0) { /* forward/backward */
             if (!solstatic) {
@@ -436,9 +437,19 @@ static void combres(FILE *fp, const prcopt_t *popt, const solopt_t *sopt)
     solstatic=sopt_.solstatic&&
               (popt->mode==PMODE_STATIC||popt->mode==PMODE_PPP_STATIC);
     
-    for (i=0,j=isolb-1;i<isolf&&j>=0;i++,j--) {
-        
-        if ((tt=timediff(solf[i].time,solb[j].time))<-DTTOL) {
+    for (i=0,j=isolb-1;i<isolf||j>=0;i++,j--) {
+
+        /* Preserve solutions from either pass when the other pass has no
+         * solution at this epoch (including an entirely empty pass). */
+        if (i>=isolf) {
+            sols=solb[j];
+            for (k=0;k<3;k++) rbs[k]=rbb[k+j*3];
+        }
+        else if (j<0) {
+            sols=solf[i];
+            for (k=0;k<3;k++) rbs[k]=rbf[k+i*3];
+        }
+        else if ((tt=timediff(solf[i].time,solb[j].time))<-DTTOL) {
             sols=solf[i];
             for (k=0;k<3;k++) rbs[k]=rbf[k+i*3];
             j++;
@@ -1045,6 +1056,7 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
             ppp_set_backward(1);                          /* reset CPP, skip jumpstart backward */
             procpos(NULL,&popt_,sopt,1); /* backward */
             ppp_set_backward(0);                          /* restore forward mode */
+            trace(1,"combined passes: forward=%d backward=%d\n",isolf,isolb);
 
             /* combine forward/backward solutions */
             if (!aborts&&(fp=openfile(outfile))) {

@@ -765,7 +765,7 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
     uint8_t lli[MAXOBSTYPE]={0};
     double std[MAXOBSTYPE]={0};
     char satid[8]="";
-    int i,j,n,m,q,stat=1,p[MAXOBSTYPE],k[16],l[16],r[16];
+    int i,j,n,m,q,primary,best,extra,stat=1,p[MAXOBSTYPE],k[16],l[16],r[16];
     
     trace(4,"decode_obsdata: ver=%.2f\n",ver);
     
@@ -797,7 +797,9 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
             j=0;
         }
         if (stat) {
-            val[i]=str2num(buff,j,14)+ind->shift[i];
+            val[i]=str2num(buff,j,14);
+            /* Phase shifts must not turn missing measurements into phases. */
+            if (ind->type[i]==1&&val[i]!=0.0) val[i]+=ind->shift[i];
             lli[i]=(uint8_t)str2num(buff,j+14,1)&3;
             std[i]=str2num(buff,j+15,1);
         }
@@ -870,6 +872,25 @@ static int decode_obsdata(FILE *fp, char *buff, double ver, int mask,
             }
             else {
                 p[r[0]]=1; p[r[1]]=NEXOBS<2?-1:NFREQ+1;
+            }
+        }
+    }
+    /* RINEX 3 headers can list a preferred tracking code with no data.
+     * Select a populated code for this satellite/epoch and move all of its
+     * observation types together, preserving code/phase signal consistency. */
+    if (ver>2.99) {
+        for (i=0;i<NFREQ;i++) {
+            primary=0; best=-1;
+            for (j=0;j<ind->n;j++) {
+                if (ind->pos[j]==i) primary=ind->code[j];
+                if (ind->type[j]!=0||ind->idx[j]!=i||!ind->pri[j]||val[j]==0.0) continue;
+                if (best<0||ind->pri[j]>ind->pri[best]) best=j;
+            }
+            if (best<0||ind->code[best]==primary) continue;
+            extra=ind->pos[best]>=NFREQ?ind->pos[best]:-1;
+            for (j=0;j<ind->n;j++) {
+                if (ind->code[j]==primary) p[j]=extra;
+                else if (ind->code[j]==ind->code[best]) p[j]=i;
             }
         }
     }
