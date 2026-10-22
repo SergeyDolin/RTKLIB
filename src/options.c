@@ -46,7 +46,7 @@ static char snrmask_[NFREQ][1024];
 #define MODOPT  "0:single,1:dgps,2:kinematic,3:static,4:movingbase,5:fixed,6:ppp-kine,7:ppp-static,8:ppp-fixed,9:cpp-kine,10:cpp-static"
 #define FRQOPT  "1:l1,2:l1+l2,3:l1/2+l1/5,4:l1+l5,5:l1+l2+l5"
 #define TYPOPT  "0:forward,1:backward,2:combined"
-#define IONOPT  "0:off,1:brdc,2:sbas,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
+#define IONOPT  "0:off,1:brdc,2:sbas,3:iono-free,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
 #define TRPOPT  "0:off,1:saas,2:sbas,3:est-ztd,4:est-ztdgrad,5:ztd,6:gpt3,7:gpt3+est-zwd"
 #define EPHOPT  "0:brdc,1:precise,2:brdc+sbas,3:brdc+ssrapc,4:brdc+ssrcom"
 #define NAVOPT  "1:gps+2:sbas+4:glo+8:gal+16:qzs+32:bds+64:navic"
