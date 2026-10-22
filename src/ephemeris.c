@@ -757,8 +757,9 @@ extern int satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
 *          any pseudorange and broadcast ephemeris are always needed to get
 *          signal transmission time
 *-----------------------------------------------------------------------------*/
-extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
-                    int ephopt, double *rs, double *dts, double *var, int *svh)
+static void satposs_core(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
+                    int ephopt, double *rs, double *dts, double *var, int *svh,
+                    int com, gtime_t *tx)
 {
     gtime_t time[2*MAXOBS]={{0}};
     double dt,pr;
@@ -770,6 +771,7 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         for (j=0;j<6;j++) rs [j+i*6]=0.0;
         for (j=0;j<2;j++) dts[j+i*2]=0.0;
         var[i]=0.0; svh[i]=0;
+        if (tx) tx[i]=time[i];
         
         /* search any pseudorange */
         for (j=0,pr=0.0;j<NFREQ;j++) if ((pr=obs[i].P[j])!=0.0) break;
@@ -789,6 +791,17 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
         }
         time[i]=timeadd(time[i],-dt);
         
+        if (tx) tx[i]=time[i];
+        /* Strict triple-frequency (L1-L2-L5): centre of mass and precise clock only. */
+        if (com) {
+            if (!peph2pos(time[i],obs[i].sat,nav,0,rs+i*6,dts+i*2,var+i)||
+                dts[i*2]==0.0) {
+                svh[i]=-1;
+                memset(rs+i*6,0,sizeof(double)*6);
+                trace(3,"IF125 precise orbit/clock unavailable sat=%d\n",obs[i].sat);
+            }
+            continue;
+        }
         /* satellite position and clock at transmission time */
         if (!satpos(time[i],teph,obs[i].sat,ephopt,nav,rs+i*6,dts+i*2,var+i,
                     svh+i)) {
@@ -807,6 +820,17 @@ extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
               time_str(time[i],6),obs[i].sat,rs[i*6],rs[1+i*6],rs[2+i*6],
               dts[i*2]*1E9,var[i],svh[i]);
     }
+}
+extern void satposs(gtime_t teph, const obsd_t *obs, int n, const nav_t *nav,
+                    int ephopt, double *rs, double *dts, double *var, int *svh)
+{
+    satposs_core(teph,obs,n,nav,ephopt,rs,dts,var,svh,0,NULL);
+}
+extern void satposs_if125(gtime_t teph, const obsd_t *obs, int n,
+                         const nav_t *nav, double *rs, double *dts, double *var,
+                         int *svh, gtime_t *tx)
+{
+    satposs_core(teph,obs,n<MAXOBS?n:MAXOBS,nav,EPHOPT_PREC,rs,dts,var,svh,1,tx);
 }
 /* set selected satellite ephemeris --------------------------------------------
 * Set selected satellite ephemeris for multiple ones like LNAV - CNAV, I/NAV -

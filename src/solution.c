@@ -1452,6 +1452,13 @@ extern int outprcopts(uint8_t *buff, const prcopt_t *opt)
     if (PMODE_DGPS<=opt->mode&&opt->mode<=PMODE_FIXED) {
         p+=sprintf(p,"%s freqs     : %s\r\n",COMMENTH,s2[opt->nf-1]);
     }
+    else if (opt->if125) {
+        p+=sprintf(p,"%s freqs     : GPS L1+L2+L5 / Galileo E1+E5b+E5a (IF125)\r\n",COMMENTH);
+        p+=sprintf(p,"%s GPS clock : %s; DSB code corrections; IFCB not applied\r\n",
+                   COMMENTH,"IF(C1W,C2W)");
+    }
+    if (opt->if125&&(opt->navsys&SYS_GAL))
+        p+=sprintf(p,"%s GAL clock : IF(C1C,C5Q); DSB code corrections; IFCB not applied\r\n",COMMENTH);
     if (opt->mode>PMODE_SINGLE) {
         p+=sprintf(p,"%s solution  : %s\r\n",COMMENTH,s3[opt->soltype]);
     }

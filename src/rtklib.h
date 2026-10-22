@@ -444,7 +444,7 @@ extern float dX,dY,dZ,sx,sy,sz;        /* CPP stage-3 coord/std differences */
 #define IONOOPT_OFF 0                   /* ionosphere option: correction off */
 #define IONOOPT_BRDC 1                  /* ionosphere option: broadcast model */
 #define IONOOPT_SBAS 2                  /* ionosphere option: SBAS model */
-#define IONOOPT_IFLC 3                  /* ionosphere option: L1/L2 iono-free LC */
+#define IONOOPT_IFLC 3                  /* ionosphere option: iono-free LC */
 #define IONOOPT_EST 4                   /* ionosphere option: estimation */
 #define IONOOPT_TEC 5                   /* ionosphere option: IONEX TEC model */
 #define IONOOPT_QZS 6                   /* ionosphere option: QZSS broadcast model */
@@ -643,6 +643,10 @@ typedef struct {        /* antenna parameter type */
     gtime_t ts,te;      /* valid time start and end */
     double off[NFREQ][ 3]; /* phase center offset e/n/u or x/y/z (m) */
     double var[NFREQ][19]; /* phase center variation (m) */
+    uint8_t valid[NFREQ]; /* ANTEX: bit 0 PCO, bit 1 NOAZI PCV */
+    double gal_off[NFREQ][3]; /* IF125 Galileo E01/E07/E05, never GPS fallback */
+    double gal_var[NFREQ][19];
+    uint8_t gal_valid[NFREQ];
                         /* el=90,85,...,0 or nadir=0,1,2,3,... (deg) */
 } pcv_t;
 
@@ -906,11 +910,23 @@ typedef struct {
     unsigned char valid[MAXSAT][MAXCODE]; /* bit 0: code, bit 1: phase */
 }osb_t;
 
+/* Bias-SINEX records retain exact half-open validity intervals. */
+typedef struct {
+    gtime_t ts,te;
+    int sat,code,code2,phase,next; /* code2=0: OSB; next: 1-based satellite list */
+    double bias,slope;           /* metres, metres/second at interval midpoint */
+} sbias_t;
+typedef struct {
+    int n,nmax,head[MAXSAT];
+    sbias_t *data;
+} sbiases_t;
+
 typedef struct {
     gtime_t tmin,tmax;
     double dt;
     int n;                              /* allocated number of time slots */
-    osb_t *sat_osb;
+    osb_t *sat_osb; /* legacy in-memory slots; file products use records */
+    sbiases_t records;
 }osbs_t;
 
 typedef union {
@@ -971,6 +987,7 @@ typedef struct {        /* navigation data type */
     upds_t *upds;
     fcbs_t *fcbs;
     osbs_t *osbs;
+    sbiases_t dsbs; /* time-tagged DSBs for IF125; cbias retained for legacy */
 } nav_t;
 
 typedef struct {        /* station parameter type */
@@ -1114,6 +1131,7 @@ typedef struct {        /* processing options type */
     int soltype;        /* solution type (0:forward,1:backward,2:combined) */
     int kalman;         /* kalman filter type (0: base, 1: vbbra) */
     int nf;             /* frequency mode (1:L1,...,5:first 5,6:logical L1+L5) */
+    int if125;          /* GPS L1/L2/L5 or Galileo E1/E5b/E5a IF combination (0:legacy,1:IF125) */
     int navsys;         /* navigation system */
     int arprod;         /* products of correction for AR */
     double elmin;       /* elevation mask angle (rad) */
@@ -1318,6 +1336,13 @@ typedef struct {        /* satellite status type */
     double ppp_dop[NFREQ]; /* previous Doppler for trapezoidal phase prediction */
     uint8_t ppp_code[NFREQ]; /* signal identity of the previous PPP arc */
     uint8_t ppp_if2; /* previous secondary IF slot + 1; zero: no arc */
+    uint8_t if125_arc; /* complete three-frequency observations this epoch */
+    uint8_t if125_gf_valid[2]; /* gf[0:12,1:15], including valid zero */
+    uint8_t if125_mw_valid[2]; /* MW12/MW25 history validity */
+    double if125_mw[2][4]; /* cycles: last, mean, count, mean variance */
+    gtime_t if125_time; /* last complete triple epoch */
+    gtime_t if125_tx; /* transmission epoch for satellite PCO attitude */
+    double if125_dt; /* last continuous sampling interval (s) */
     int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
 
@@ -1972,6 +1997,16 @@ EXPORT int  peph2pos(gtime_t time, int sat, const nav_t *nav, int opt,
                      double *rs, double *dts, double *var);
 EXPORT void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
                       double *dant);
+EXPORT void satposs_if125(gtime_t teph, const obsd_t *obs, int n,
+                         const nav_t *nav, double *rs, double *dts, double *var,
+                         int *svh, gtime_t *tx);
+EXPORT int satantoff_freq(gtime_t time, const double *rs, int sat,
+                         const nav_t *nav, double off[NFREQ][3]);
+EXPORT int satantoff_pcv(gtime_t time, const double *rs, const pcv_t *pcv,
+                         double off[NFREQ][3]);
+EXPORT int if3_codebias(const obsd_t *obs, const nav_t *nav, double *bias);
+EXPORT int gpscodebias(const obsd_t *obs, const nav_t *nav, int clkref,
+                       double *bias);
 EXPORT int  satpos(gtime_t time, gtime_t teph, int sat, int ephopt,
                    const nav_t *nav, double *rs, double *dts, double *var,
                    int *svh);

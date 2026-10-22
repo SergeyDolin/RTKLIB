@@ -266,7 +266,7 @@ const double tdistb_0001[30] = {    /*ѧ��t�ֲ�������ˮƽ0.0
         4.025, 3.930, 3.852, 3.787, 3.733, 3.686, 3.646, 3.610, 3.579, 3.552,
 };
 const prcopt_t prcopt_default={ /* defaults processing options */
-    PMODE_SINGLE,0,0,2,SYS_GPS,0,  /* mode,kalman,soltype,nf,navsys,arprod */
+    PMODE_SINGLE,0,0,2,0,SYS_GPS,0, /* mode,soltype,kalman,nf,if125,navsys,arprod */
     15.0*D2R,{{0,0}},           /* elmin,snrmask */
     0,1,1,1,0,0,                /* sateph,modear,glomodear,gpsmodear,bdsmodear,arfilter */
     20,0,20,1,10,4,5,           /* maxout,minlock,minfix,armaxiter,mindropsats,minfixsats,minholdsats*/
@@ -2942,9 +2942,9 @@ static int readantex(const char *file, pcvs_t *pcvs)
     FILE *fp;
     static const pcv_t pcv0={0};
     pcv_t pcv;
-    double neu[3];
-    int i,f,freq=0,state=0,freqs[]={1,2,5,0};
-    char buff[256];
+    double neu[3],zen1=0.0,zen2=0.0,dzen=0.0,values[181],angle,x;
+    int i,j,f,nv,gridok=0,freq=0,galfreq=0,state=0,freqs[]={1,2,5,0};
+    char buff[2048];
     
     trace(3,"readantex: file=%s\n",file);
     
@@ -2958,6 +2958,7 @@ static int readantex(const char *file, pcvs_t *pcvs)
         
         if (strstr(buff+60,"START OF ANTENNA")) {
             pcv=pcv0;
+            freq=galfreq=gridok=0;
             state=1;
         }
         if (strstr(buff+60,"END OF ANTENNA")) {
@@ -2979,26 +2980,57 @@ static int readantex(const char *file, pcvs_t *pcvs)
         else if (strstr(buff+60,"VALID UNTIL")) {
             if (!str2time(buff,0,43,&pcv.te)) continue;
         }
+        else if (strstr(buff+60,"ZEN1 / ZEN2 / DZEN")) {
+            gridok=sscanf(buff,"%lf %lf %lf",&zen1,&zen2,&dzen)==3&&
+                   zen1==0.0&&zen2>zen1&&zen2<=90.0&&dzen>0.0&&
+                   (zen2-zen1)/dzen<181.0;
+        }
         else if (strstr(buff+60,"START OF FREQUENCY")) {
-            if (!pcv.sat&&buff[3]!='G') continue; /* only read rec ant for GPS */
+            freq=galfreq=0;
+            if (buff[3]=='E'&&sscanf(buff+4,"%d",&f)==1&&
+                (!pcv.sat||satsys(pcv.sat,NULL)==SYS_GAL)) {
+                galfreq=f==1?1:(f==7?2:(f==5?3:0));
+            }
+            if ((!pcv.sat||satsys(pcv.sat,NULL)==SYS_GPS)&&buff[3]!='G')
+                continue; /* GPS receiver/GPS satellite frequency identifiers */
             if (sscanf(buff+4,"%d",&f)<1) continue;
             for (i=0;freqs[i];i++) if (freqs[i]==f) break;
             if (freqs[i]) freq=i+1;
         }
         else if (strstr(buff+60,"END OF FREQUENCY")) {
-            freq=0;
+            freq=galfreq=0;
         }
         else if (strstr(buff+60,"NORTH / EAST / UP")) {
-            if (freq<1||NFREQ<freq) continue;
             if (decodef(buff,3,neu)<3) continue;
+            if (galfreq>0&&galfreq<=NFREQ) {
+                pcv.gal_off[galfreq-1][0]=neu[pcv.sat?0:1];
+                pcv.gal_off[galfreq-1][1]=neu[pcv.sat?1:0];
+                pcv.gal_off[galfreq-1][2]=neu[2];
+                pcv.gal_valid[galfreq-1]|=1;
+            }
+            if (freq<1||NFREQ<freq) continue;
             pcv.off[freq-1][0]=neu[pcv.sat?0:1]; /* x or e */
             pcv.off[freq-1][1]=neu[pcv.sat?1:0]; /* y or n */
             pcv.off[freq-1][2]=neu[2];           /* z or u */
+            pcv.valid[freq-1]|=1;
         }
         else if (strstr(buff,"NOAZI")) {
-            if (freq<1||NFREQ<freq) continue;
-            if ((i=decodef(buff+8,19,pcv.var[freq-1]))<=0) continue;
-            for (;i<19;i++) pcv.var[freq-1][i]=pcv.var[freq-1][i-1];
+            if ((freq<1||NFREQ<freq)&&(galfreq<1||NFREQ<galfreq)) continue;
+            if (!gridok) continue;
+            nv=(int)floor((zen2-zen1)/dzen+0.5)+1;
+            if (nv<2||nv>181||decodef(buff+8,nv,values)<nv) continue;
+            for (i=0;i<19;i++) {
+                angle=pcv.sat?(double)i:5.0*i;
+                if (angle>zen2) angle=zen2;
+                x=(angle-zen1)/dzen;
+                j=(int)x; if (j>nv-2) j=nv-2;
+                if (galfreq>0&&galfreq<=NFREQ)
+                    pcv.gal_var[galfreq-1][i]=values[j]*(1.0-x+j)+values[j+1]*(x-j);
+                if (freq>0&&freq<=NFREQ)
+                    pcv.var[freq-1][i]=values[j]*(1.0-x+j)+values[j+1]*(x-j);
+            }
+            if (freq>0&&freq<=NFREQ) pcv.valid[freq-1]|=2;
+            if (galfreq>0&&galfreq<=NFREQ) pcv.gal_valid[galfreq-1]|=2;
         }
     }
     fclose(fp);
@@ -3867,7 +3899,7 @@ extern void freeobs(obs_t *obs)
 *                               (0x01: gps/qzs ephmeris, 0x02: glonass ephemeris,
 *                                0x04: sbas ephemeris,   0x08: precise ephemeris,
 *                                0x10: precise clock     0x20: almanac,
-*                                0x40: tec data)
+*                                0x40: tec data, 0x80: DSB/OSB products)
 * return : none
 *-----------------------------------------------------------------------------*/
 extern void freenav(nav_t *nav, int opt)
@@ -3879,89 +3911,115 @@ extern void freenav(nav_t *nav, int opt)
     if (opt&0x10) {free(nav->pclk); nav->pclk=NULL; nav->nc=nav->ncmax=0;}
     if (opt&0x20) {free(nav->alm ); nav->alm =NULL; nav->na=nav->namax=0;}
     if (opt&0x40) {free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;}
+    if (opt&0x80) {
+        free(nav->dsbs.data); memset(&nav->dsbs,0,sizeof(nav->dsbs));
+        if (nav->osbs) {
+            free(nav->osbs->records.data); free(nav->osbs->sat_osb);
+            free(nav->osbs); nav->osbs=NULL;
+        }
+    }
+}
+
+/* Bias-SINEX intervals are [start,end); slope refers to their midpoint. */
+static int biasvalue(const sbias_t *b, gtime_t time, double *value)
+{
+    if (timediff(time,b->ts)<0.0||timediff(time,b->te)>=0.0) return 0;
+    *value=b->bias+b->slope*(timediff(time,b->ts)-0.5*timediff(b->te,b->ts));
+    return fabs(*value)<=DBL_MAX;
+}
+
+/* Code delays relative to fixed GPS IF(C1W,C2W) or Galileo IF(C1C,C5Q).
+ * No OSB/SSR substitution: all edges are actual, epoch-valid DSB records.
+ * DSB(a,b)=b(a)-b(b), so P_corrected=P-(b(signal)-b_clock).
+ * Phase delays remain in the single Float ambiguity. IFCB is a separate,
+ * time-dependent satellite correction and must not be hidden in this datum. */
+extern int if3_codebias(const obsd_t *obs, const nav_t *nav,
+                       double *bias)
+{
+    double edge[MAXCODE][MAXCODE]={{0}},relative[MAXCODE]={0},value,datum;
+    uint8_t present[MAXCODE][MAXCODE]={{0}},known[MAXCODE]={0};
+    int queue[MAXCODE],first=0,last=0,i,j,a,b,k,sys,ref1,ref2;
+    const sbias_t *rec;
+    double beta,fref;
+    if (!obs||!nav||!bias||!nav->dsbs.data) return 0;
+    sys=satsys(obs->sat,NULL);
+    if (sys==SYS_GPS) { ref1=CODE_L1W; ref2=CODE_L2W; fref=FREQ2; }
+    else if (sys==SYS_GAL) { ref1=CODE_L1C; ref2=CODE_L5Q; fref=FREQ5; }
+    else return 0;
+    beta=-SQR(fref)/(SQR(FREQ1)-SQR(fref));
+    for (k=nav->dsbs.head[obs->sat-1];k;k=rec->next) {
+        rec=nav->dsbs.data+k-1;
+        a=rec->code; b=rec->code2;
+        if (a<=0||a>=MAXCODE||b<=0||b>=MAXCODE||a==b||
+            !biasvalue(rec,obs->time,&value)||present[a][b]) continue;
+        edge[a][b]=value; edge[b][a]=-value;
+        present[a][b]=present[b][a]=1;
+    }
+    /* Shortest available signal paths, starting with the first clock code. */
+    queue[last++]=ref1; known[ref1]=1;
+    while (first<last) {
+        a=queue[first++];
+        for (b=1;b<MAXCODE;b++) {
+            if (!present[a][b]||known[b]) continue;
+            relative[b]=relative[a]-edge[a][b];
+            known[b]=1; queue[last++]=b;
+        }
+    }
+    if (!known[ref2]) return 0;
+    datum=beta*relative[ref2]; /* relative[ref1]=0 */
+    for (i=0;i<3;i++) {
+        j=obs->code[i];
+        if (j<=0||j>=MAXCODE||!known[j]) return 0;
+        bias[i]=relative[j]-datum;
+    }
+    return 1;
+}
+
+/* Compatibility API for existing GPS callers. */
+extern int gpscodebias(const obsd_t *obs, const nav_t *nav, int clkref,
+                       double *bias)
+{
+    if (!obs||clkref!=1||satsys(obs->sat,NULL)!=SYS_GPS) return 0;
+    return if3_codebias(obs,nav,bias);
 }
 
 extern int matchcposb(const obsd_t *obs, const nav_t *nav, int f,
                       double *cbias, double *pbias)
 {
-    int i, sys, sat, code;
-    int fallback = 0;
-    int flags = 0, valid;
-    double slot;
-
-    if (cbias) *cbias = 0.0;
-    if (pbias) *pbias = 0.0;
-
-    if (!obs || !nav || f < 0 || f >= NFREQ + NEXOBS) return 0;
-
-    sat  = obs->sat;
-    code = obs->code[f];
-
-    if (sat < 1 || sat > MAXSAT || code < 1 || code >= MAXCODE ||
-        !nav->osbs || !nav->osbs->sat_osb ||
-        nav->osbs->n <= 0 || nav->osbs->dt <= 0.0) {
+    const osbs_t *osbs;
+    const sbias_t *rec;
+    double value,slot;
+    int i,sat,code,flags=0,bit;
+    if (cbias) *cbias=0.0;
+    if (pbias) *pbias=0.0;
+    if (!obs||!nav||f<0||f>=NFREQ+NEXOBS) return 0;
+    sat=obs->sat; code=obs->code[f]; osbs=nav->osbs;
+    if (sat<1||sat>MAXSAT||code<=0||code>=MAXCODE||!osbs) return 0;
+    if (osbs->records.data) {
+        for (i=osbs->records.head[sat-1];i;i=rec->next) {
+            rec=osbs->records.data+i-1;
+            bit=rec->phase?2:1;
+            if (rec->code!=code||(flags&bit)||!biasvalue(rec,obs->time,&value)) continue;
+            if (bit==1&&cbias) *cbias=value;
+            if (bit==2&&pbias) *pbias=value;
+            flags|=bit;
+        }
+        return flags;
+    }
+    /* Compatibility with callers supplying an in-memory slot product.
+     * Exact signal identity is mandatory; Q, X, I are not interchangeable. */
+    if (!osbs->sat_osb||osbs->n<=0||osbs->dt<=0.0||
+        timediff(obs->time,osbs->tmin)<0.0||timediff(obs->time,osbs->tmax)>=0.0)
         return 0;
-    }
-
-    slot = timediff(obs->time, nav->osbs->tmin) / nav->osbs->dt;
-    if (!(slot >= 0.0)) return 0;
-
-    i = slot >= nav->osbs->n ? nav->osbs->n - 1 : (int)slot;
-
-    /* Сначала берём OSB для точного кода сигнала. */
-    valid = nav->osbs->sat_osb[i].valid[sat - 1][code] & 3;
-
-    if (valid & 1) {
-        if (cbias) *cbias = nav->osbs->sat_osb[i].code[sat - 1][code];
-        flags |= 1;
-    }
-    if (valid & 2) {
-        if (pbias) *pbias = nav->osbs->sat_osb[i].phase[sat - 1][code];
-        flags |= 2;
-    }
-
-    /*
-     * Запасное соответствие кодов:
-     * Galileo L1B <-> L1X, GPS/QZSS L5Q <-> L5X.
-     */
-    sys = satsys(sat, NULL);
-
-    if (sys == SYS_GAL && code == CODE_L1B) {
-        fallback = CODE_L1X;
-    }
-    else if (sys == SYS_GAL && code == CODE_L1X) {
-        fallback = CODE_L1B;
-    }
-    else if ((sys == SYS_GPS || sys == SYS_QZS) && code == CODE_L5Q) {
-        fallback = CODE_L5X;
-    }
-    else if ((sys == SYS_GPS || sys == SYS_QZS) && code == CODE_L5X) {
-        fallback = CODE_L5Q;
-    }
-
-    /*
-     * Если для точного кода есть только одна из двух поправок,
-     * запасной код может дать недостающую.
-     */
-    if (fallback > 0 && fallback < MAXCODE) {
-        valid = nav->osbs->sat_osb[i].valid[sat - 1][fallback] & 3;
-
-        if (!(flags & 1) && (valid & 1)) {
-            if (cbias) {
-                *cbias = nav->osbs->sat_osb[i].code[sat - 1][fallback];
-            }
-            flags |= 1;
-        }
-        if (!(flags & 2) && (valid & 2)) {
-            if (pbias) {
-                *pbias = nav->osbs->sat_osb[i].phase[sat - 1][fallback];
-            }
-            flags |= 2;
-        }
-    }
-
+    slot=timediff(obs->time,osbs->tmin)/osbs->dt;
+    if (slot<0.0||slot>=osbs->n) return 0;
+    i=(int)slot;
+    flags=osbs->sat_osb[i].valid[sat-1][code]&3;
+    if ((flags&1)&&cbias) *cbias=osbs->sat_osb[i].code[sat-1][code];
+    if ((flags&2)&&pbias) *pbias=osbs->sat_osb[i].phase[sat-1][code];
     return flags;
 }
+
 /* correct obs --------------------------------------------------------------*/
 /* correct DCB, receiver PCV, satellite PCV, phw, UC obs, IF obs(single-,dual-,triple-) */
 extern void getcorrobs(const prcopt_t *popt,const obsd_t *obs,const nav_t *nav,const int *frq_idxs,

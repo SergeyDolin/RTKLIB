@@ -360,13 +360,31 @@ static double varerr_signal(int sys, double el, int frq, int code,
     return (SQR(a)+SQR(b))*scale;
 }
 
+static int if3_coeff(const obsd_t *obs, const nav_t *nav, double *e);
+
 static double varerr(int sys, double el, int frq, int code,
                      const prcopt_t *opt, const obsd_t *obs, const nav_t *nav)
 {
-    double f1,f2,c1,c2;
+    double f1,f2,c1,c2,e[3],var=0.0;
     int k;
+    /* Расчет дисперсии трёхчастотной ИСЛК */
+    if (opt->if125) {
+        if (opt->ionoopt!=IONOOPT_IFLC ||              /* включена ИСЛК */
+            opt->nf<3 ||                               /* кол-во частот 3 */
+            opt->freqopt ||                            /* убедиться, что двухчастотный режим отключен */
+            !(opt->navsys&satsys(obs->sat,NULL)) ||                    /* active supported system */
+            (sys!=SYS_GPS&&sys!=SYS_GAL) ||                            /* active supported system */
+            !if3_coeff(obs,nav,e)) return 1E8;   /* проверка наличия коэффициентов для IF125 */
+        /* References: Pan et al. (2019), equation (22) */
+        /* Дисперсии каждого отдельного наблюдения объединяются с возведением в квадрат */
+        for (k=0;k<3;k++)
+            var+=SQR(e[k])*varerr_signal(sys,el,k,code,opt,obs);
+        return var;
+    }
+    /* Дисперсия без ИСЛК */
     if (opt->ionoopt!=IONOOPT_IFLC)
         return varerr_signal(sys,el,frq,code,opt,obs);
+    /* Расчет для ИСЛК L1-L2 и L1-L5 */
     k=ppp_if2(obs,opt);
     f1=sat2freq(obs->sat,obs->code[0],nav);
     f2=sat2freq(obs->sat,obs->code[k],nav);
@@ -386,12 +404,13 @@ static void initx(rtk_t *rtk, double xi, double var, int i)
     }
 }
 /* geometry-free phase measurement -------------------------------------------*/
-static double gfmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt)
+static double gfmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
+                     int pair)
 {
     double freq1,freq2;
     int f2;
 
-    f2=ppp_if2(obs,opt);
+    f2=opt->if125?pair+1:ppp_if2(obs,opt); /* IF125: pair=0 для L1-L2, pair=1 для L1-L5 */
 
     freq1=sat2freq(obs->sat,obs->code[0],nav);
     freq2=sat2freq(obs->sat,obs->code[f2],nav);
@@ -400,9 +419,10 @@ static double gfmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt)
     return (obs->L[0]/freq1-obs->L[f2]/freq2)*CLIGHT;
 }
 /* Melbourne-Wubbena linear combination --------------------------------------*/
-static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, double *var, double el)
+static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt,
+                     double *var, double el, int pair)
 {
-    int prn,f2;
+    int prn,f1,f2;
     double freq1,freq2,lam_wl,lam1,lam2;
     double osb_L1=0.0,osb_L2=0.0,osb_P1=0.0,osb_P2=0.0;
     double mea_L1=0.0,mea_L2=0.0,mea_P1=0.0,mea_P2=0.0;
@@ -410,18 +430,22 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
 
     satsys(obs->sat,&prn);
 
-    f2=ppp_if2(obs,opt);
+    f1=opt->if125?pair:0;
+    f2=opt->if125?pair+1:ppp_if2(obs,opt); /* IF125: pair=0 для L1-L2, pair=1 для L2-L5 */
 
-    freq1=sat2freq(obs->sat,obs->code[0],nav);
+    freq1=sat2freq(obs->sat,obs->code[f1],nav);
     freq2=sat2freq(obs->sat,obs->code[f2],nav);
    
-    if (freq1==0.0||freq2==0.0||freq1==freq2||obs->L[0]==0.0||obs->L[f2]==0.0||
-        obs->P[0]==0.0||obs->P[f2]==0.0) return 0.0;
+    if (freq1==0.0||freq2==0.0||freq1==freq2||obs->L[f1]==0.0||obs->L[f2]==0.0||
+        obs->P[f1]==0.0||obs->P[f2]==0.0) return 0.0;
 
-    mea_L1=obs->L[0];mea_L2=obs->L[f2];
-    mea_P1=obs->P[0];mea_P2=obs->P[f2];
+    mea_L1=obs->L[f1];mea_L2=obs->L[f2];
+    mea_P1=obs->P[f1];mea_P2=obs->P[f2];
 
-    if (opt->arprod >= AR_PROD_OSB_COD) {
+    /* IF125 slip monitoring uses raw MW differences within a signal arc.
+     * Constant biases cancel; missing phase OSBs must not disable L5 checks.
+     * Preserve the corrected MW used by legacy IF12/IF15 and AR. */
+    if (!opt->if125&&opt->arprod >= AR_PROD_OSB_COD) {
         if (matchcposb(obs, nav, 0, &osb_P1, &osb_L1) != 3 ||
             matchcposb(obs, nav, f2, &osb_P2, &osb_L2) != 3) {
             return 0.0;
@@ -443,28 +467,115 @@ static double mwmeas(const obsd_t *obs, const nav_t *nav, const prcopt_t *opt, d
     MW/=lam_wl;
 
     if (var) {
+        /* Перенос дисперсий кода и фазы в дисперсию MW в циклах в квадрате */
         double a=freq1/(freq1+freq2), b=freq2/(freq1+freq2);
         int sys=satsys(obs->sat,NULL);
-        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,0,0,opt,obs)+
+        *var=(SQR(freq1/(freq1-freq2))*varerr_signal(sys,el,f1,0,opt,obs)+
               SQR(freq2/(freq1-freq2))*varerr_signal(sys,el,f2,0,opt,obs)+
-              SQR(a)*varerr_signal(sys,el,0,1,opt,obs)+
+              SQR(a)*varerr_signal(sys,el,f1,1,opt,obs)+
               SQR(b)*varerr_signal(sys,el,f2,1,opt,obs))/SQR(lam_wl);
     }
     return MW;
 #endif
 }
 
+/* References: Pan L, Zhang X, Liu J (2019) https://doi.org/10.1007/s10291-019-0914-3
+ * Minimum-noise L1-L2-L5 combination for Iono-Free */
+static int if3_coeff(const obsd_t *obs, const nav_t *nav, double *e)
+{
+    /* Frequency ratios
+     * gamma1 = 1.0
+     * gamma2 = f1^2/f2^2
+     * gamma5 = f1^2/f5^2 */
+    const double gps[3]={FREQ1,FREQ2,FREQ5},gal[3]={FREQ1,FREQ7,FREQ5};
+    const double *expected;
+    double gamma2,gamma5;
+    double freq,d;
+    int i,sys=satsys(obs->sat,NULL);
+
+    if (NFREQ<3||(sys!=SYS_GPS&&sys!=SYS_GAL)) return 0;
+    expected=sys==SYS_GPS?gps:gal;
+    gamma2=SQR(expected[0]/expected[1]);
+    gamma5=SQR(expected[0]/expected[2]);
+    /* Slots 0/1/2: GPS L1/L2/L5, Galileo E1/E5b/E5a. */
+    for (i=0;i<3;i++) {
+        freq=sat2freq(obs->sat,obs->code[i],nav);
+        if (freq!=expected[i]) return 0;
+    }
+    /* Pan et al. (2019), equation (5) */
+    d=2.0*(SQR(gamma2)+SQR(gamma5)-gamma2*gamma5-gamma2-gamma5+1.0);
+    e[0]=(SQR(gamma2)+SQR(gamma5)-gamma2-gamma5)/d;
+    e[1]=(SQR(gamma5)-gamma2*gamma5-gamma2+1.0)/d;
+    e[2]=(SQR(gamma2)-gamma2*gamma5-gamma5+1.0)/d;
+    return 1;
+}
+/* Проверка настроек, кодовых поправок и полного набора наблюдений для IF125 */
+static int if3_observed(const obsd_t *obs, const nav_t *nav,
+                             const prcopt_t *opt, double el)
+{
+    double e[3],bias[3];
+    int f;
+    if (opt->ionoopt!=IONOOPT_IFLC ||   /* включена ИСЛК */
+        opt->nf<3 ||                    /* кол-во частот 3 */
+        opt->freqopt ||                  /* убедиться, что двухчастотный режим отключен */
+        !(opt->navsys&satsys(obs->sat,NULL)) ||         /* active supported system */
+        opt->sateph!=EPHOPT_PREC ||     /* наличие точных эфемерид */
+        !if3_coeff(obs,nav,e) ||  /* успешное выполнение предыдущей функции */
+        !if3_codebias(obs,nav,bias)) return 0;   /* NOTE: возможно сделать менее строгие условия по DSB */
+    /* наличие всех 6 наблюдений, код и фаза на каждой частоте */
+    for (f=0;f<3;f++) {
+        if (obs->L[f]==0.0||obs->P[f]==0.0|| /* проверка наличия фазы и кода */
+            testsnr(0,f,el,obs->SNR[f]*SNR_UNIT,&opt->snrmask)) return 0; /* проверка по SNR маске */
+    }
+    return 1;
+}
+/* Проверка наличия срыва хотя бы на одной из частот L1, L2, L5 */
+static int slip_if125(const ssat_t *ss)
+{
+    return (ss->slip[0]|ss->slip[1]|ss->slip[2])&1;
+}
+/* Сброс при срыве дуги наблюдений */
+static void reset_if125_history(ssat_t *ss)
+{
+    int f;
+    /* Сброс Geometry-Free и Meulbourne-Wübbena */
+    for (f=0;f<2;f++) {
+        ss->gf[f]=0.0;
+        ss->if125_gf_valid[f]=ss->if125_mw_valid[f]=0;
+    }
+    memset(ss->if125_mw,0,sizeof(ss->if125_mw)); /* Сброс значений и статистики MW */
+    memset(ss->delta_gf,0,sizeof(ss->delta_gf)); /* Сброс диагностических скачков и порогов */
+    memset(ss->delta_mw,0,sizeof(ss->delta_mw));
+    for (f=0;f<3;f++) {
+        ss->ph[0][f]=ss->ppp_dop[f]=0.0;   /* Сброс допплера */
+        ss->hatch_n[f]=0;                  /* Сброс Hatch фильтра */
+        ss->hatch_P[f]=ss->hatch_L[f]=0.0;
+    }
+}
 /* antenna corrected measurements --------------------------------------------*/
 static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
                       const prcopt_t *opt, const double *dantr,
                       const double *dants, double phw, double *L, double *P,
                       double *Lc, double *Pc)
 {
-    double freq[NFREQ] = {0}, C1, C2;
+    double freq[NFREQ] = {0}, C1, C2, e[3],codebias[3]={0};
     int *codes;
     int i, sys = satsys(obs->sat, NULL), frq2;
 
     int use_dcb = !(opt->arprod >= AR_PROD_OSB_COD && nav->osbs);
+
+    if (opt->if125) {
+        memset(L,0,sizeof(double)*NFREQ); memset(P,0,sizeof(double)*NFREQ);
+        *Lc=*Pc=0.0;
+        /* При неполных данных или отсутствии кодовых поправок спутник исключается */
+        if (!if3_observed(obs,nav,opt,azel[1])||
+            !if3_codebias(obs,nav,codebias)) {
+            trace(3,"IF125 unavailable observations/DCB datum sat=%d time=%s\n",
+                  obs->sat,time_str(obs->time,3));
+            return;
+        }
+        use_dcb=0; /* corrected below: never mix legacy DCB/SSR/OSB */
+    }
 
     codes = (int *)calloc(NFREQ, sizeof(int));
     if (!codes) {
@@ -485,7 +596,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         /* A product may omit biases for receiver signals (for example GPS L5).
          * Keep those observations for the float solution; ambiguity resolution
          * separately requires complete code and phase OSBs. */
-        if (opt->arprod >= AR_PROD_OSB_COD && nav->osbs) {
+        if (!opt->if125 && opt->arprod >= AR_PROD_OSB_COD && nav->osbs) {
             osb_flags = matchcposb(obs, nav, i, &cosb, &posb);
         }
 
@@ -497,6 +608,7 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         /* Apply available OSBs in meters. */
         if (osb_flags & 2) L[i] -= posb;
         if (osb_flags & 1) P[i] -= cosb;
+        if (opt->if125&&i<3) P[i]-=codebias[i]; /* Приведение кода к системному датуму часов */
 
         codes[i] = obs->code[i];
 
@@ -639,8 +751,29 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         }
     }
 
+    /* Future IFCB products belong in this shared corrected-measurement path,
+     * in metres with an explicit epoch, signal and clock datum. No IFCB is
+     * applied now; a DSB or a receiver-clock adjustment is not an IFCB model. */
     /* iono-free LC */
     *Lc = *Pc = 0.0;
+
+    if (opt->if125) {
+        /* All six corrected observations are required. Never fall back to
+         * IF12/IF15 when a signal is missing or rejected by the SNR mask. */
+        free(codes);
+        if (opt->ionoopt!=IONOOPT_IFLC||opt->nf<3||opt->freqopt||
+            !(opt->navsys&satsys(obs->sat,NULL))||!if3_coeff(obs,nav,e)) return;
+        for (i=0;i<3;i++) {
+            if (L[i]==0.0||P[i]==0.0) return;
+        }
+        for (i=0;i<3;i++) {
+            /* Одни и те же веса применяются к исправленным фазе и коду в метрах */
+            *Lc+=e[i]*L[i]; /* Исправленная фазовая ИСЛК в метрах */
+            *Pc+=e[i]*P[i];
+        }
+        return;
+    }
+
     frq2 = ppp_if2(obs, opt);
 
     if (freq[0] == 0.0 || freq[frq2] == 0.0 || freq[0] == freq[frq2]) {
@@ -714,13 +847,38 @@ static void detslp_gf(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     /*The accuracy is high, and small periodic jumps can be detected, but the (L1, L2) 
     periodic jumps with a comparison value close to lam2/lam1 are not sensitive.*/
     double g0,g1,el,thres;
-    int i;
+    int i,pair;
+    ssat_t *ss;
     
     trace(4,"detslp_gf: n=%d\n",n);
     
     for (i=0;i<n&&i<MAXOBS;i++) {
+        if (rtk->opt.if125) {
+            ss=rtk->ssat+obs[i].sat-1;
+            if (!ss->if125_arc||ss->azel[1]<rtk->opt.elmin) continue;
+            el=ss->azel[1]*R2D;
+            thres=rtk->opt.cs_gf*(el>=15.0?1.0:-0.4*el+7.0);
+            /* Независимая проверка скачков GF12 и GF15 относительно прошлой эпохи */
+            for (pair=0;pair<2;pair++) {
+                g1=gfmeas(obs+i,nav,&rtk->opt,pair);
+                if (!ss->if125_gf_valid[pair]) continue;
+                g0=ss->gf[pair];
+                if (pair==0) {
+                    ss->delta_gf[0]=fabs(g1-g0);
+                    ss->delta_gf[1]=thres;
+                }
+                if (fabs(g1-g0)>thres) {
+                    /* Срыв отмечается на обеих частотах проверяемой пары */
+                    ss->slip[0]|=1;
+                    ss->slip[pair+1]|=1;
+                    trace(3,"IF125 GF%d slip sat=%d jump=%.4f threshold=%.4f\n",
+                          pair==0?12:15,obs[i].sat,g1-g0,thres);
+                }
+            }
+            continue;
+        }
         
-        if ((g1=gfmeas(obs+i,nav,&rtk->opt))==0.0){
+        if ((g1=gfmeas(obs+i,nav,&rtk->opt,0))==0.0){
             rtk->ssat[obs[i].sat-1].delta_gf[0]=rtk->ssat[obs[i].sat-1].delta_gf[1]=0.0;
             continue;
         }
@@ -747,22 +905,50 @@ static void detslp_gf(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 /* detect slip by Melbourne-Wubbena linear combination jump ------------------*/
 static void detslp_mw(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    double w0,w1;
-    int i,sat;
+    double w0,w1,var1;
+    int i,sat,pair;
     double thres,el;
+    ssat_t *ss;
     
     trace(4,"detslp_mw: n=%d\n",n);
 
 
     for (i=0;i<n&&i<MAXOBS;i++) {
         sat=obs[i].sat;
+        if (rtk->opt.if125) {
+            ss=rtk->ssat+sat-1;
+            if (!ss->if125_arc||ss->azel[1]<rtk->opt.elmin) continue;
+            el=ss->azel[1]*R2D;
+            for (pair=0;pair<2;pair++) {
+                /* Проверка MW12 и MW25 относительно сглаженного среднего своей дуги */
+                if (!ss->if125_mw_valid[pair]) continue;
+                w1=mwmeas(obs+i,nav,&rtk->opt,&var1,ss->azel[1],pair);
+                w0=ss->if125_mw[pair][1];
+                /* Compare against the arc mean in cycles. Account for
+                 * code noise, including unequal SNR and MW wavelengths. */
+                thres=rtk->opt.cs_mw*(el>15.0?1.0:-0.2*el+4.0);
+                /* Порог не ниже четырёх СКО разности текущего MW и среднего */
+                thres=MAX(thres,4.0*sqrt(var1+ss->if125_mw[pair][3]));
+                if (pair==0) {
+                    ss->delta_mw[0]=fabs(w1-w0);
+                    ss->delta_mw[1]=thres;
+                }
+                if (fabs(w1-w0)>thres) {
+                    ss->slip[pair]|=1;
+                    ss->slip[pair+1]|=1;
+                    trace(3,"IF125 MW%d slip sat=%d jump=%.4f threshold=%.4f\n",
+                          pair==0?12:25,sat,w1-w0,thres);
+                }
+            }
+            continue;
+        }
         if (fabs(timediff(rtk->sol.time, rtk->ssat[sat-1].ct)) > 2.0*fabs(rtk->tt)+DTTOL) {
             rtk->ssat[sat-1].mw[1] = 0.0;
             rtk->ssat[sat-1].mw[2] = 0.0;
             rtk->ssat[sat-1].delta_mw[0]=rtk->ssat[sat-1].delta_mw[1]=0.0;
         }
 
-        if ((w1=mwmeas(obs+i,nav,&rtk->opt,NULL,0.0))==0.0) continue;
+        if ((w1=mwmeas(obs+i,nav,&rtk->opt,NULL,0.0,0))==0.0) continue;
 
         w0=rtk->ssat[obs[i].sat-1].mw[0];
         rtk->ssat[obs[i].sat-1].mw[0]=w1;
@@ -930,8 +1116,46 @@ static void hatch_smooth(rtk_t *rtk, const obsd_t *obs, obsd_t *obsh, int n,
 
 static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 {
-    int i,sat;
-    double w0,w1,var1,gf;
+    int i,sat,pair;
+    double w0,w1,var1,gf,gain,*mw;
+    ssat_t *ss;
+
+    if (rtk->opt.if125) {
+        for (i=0;i<n&&i<MAXOBS;i++) {
+            ss=rtk->ssat+obs[i].sat-1;
+            if (!ss->if125_arc) continue;
+            if (slip_if125(ss)) reset_if125_history(ss);
+            ss->ct=obs[i].time;
+            for (pair=0;pair<2;pair++) {
+                /* Сохранение GF12/GF15 для сравнения со следующей эпохой */
+                ss->gf[pair]=gfmeas(obs+i,nav,&rtk->opt,pair);
+                ss->if125_gf_valid[pair]=1;
+                mw=ss->if125_mw[pair]; /* MW: текущее значение, среднее, число эпох, дисперсия среднего */
+                if (ss->azel[1]<rtk->opt.elmin) {
+                    ss->if125_mw_valid[pair]=0;
+                    memset(mw,0,4*sizeof(double));
+                    continue;
+                }
+                w1=mwmeas(obs+i,nav,&rtk->opt,&var1,ss->azel[1],pair);
+                mw[0]=w1;
+                if (ss->if125_mw_valid[pair]) {
+                    /* Обновление среднего MW с учётом дисперсии нового измерения */
+                    gain=mw[3]+var1>0.0?mw[3]/(mw[3]+var1):1.0;
+                    mw[1]+=gain*(w1-mw[1]);
+                    mw[3]*=1.0-gain;
+                    mw[2]+=1.0;
+                }
+                else {
+                    /* Первое измерение MW начинает статистику новой дуги */
+                    mw[1]=w1;
+                    mw[2]=1.0;
+                    mw[3]=var1;
+                }
+                ss->if125_mw_valid[pair]=1;
+            }
+        }
+        return;
+    }
 
     for(i=0;i<MAXSAT;i++){
         rtk->ssat[i].mw[0]=0.0;
@@ -942,7 +1166,7 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
         sat=obs[i].sat;
         rtk->ssat[sat-1].ct=rtk->sol.time;
 
-        if ((gf=gfmeas(obs+i,nav,&rtk->opt))!=0.0)
+        if ((gf=gfmeas(obs+i,nav,&rtk->opt,0))!=0.0)
             rtk->ssat[sat-1].gf[0]=gf;
 
         if ((rtk->ssat[sat-1].slip[0]&1)||
@@ -952,7 +1176,7 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
             rtk->ssat[sat-1].mw[3]=0.0;
         }
         if (rtk->ssat[sat-1].azel[1]<rtk->opt.elmin) continue;
-        if ((w1=mwmeas(obs+i,nav,&rtk->opt,&var1,rtk->ssat[sat-1].azel[1]))==0.0) {
+        if ((w1=mwmeas(obs+i,nav,&rtk->opt,&var1,rtk->ssat[sat-1].azel[1],0))==0.0) {
             continue;
         }
         w0=rtk->ssat[sat-1].mw[1];
@@ -977,10 +1201,63 @@ static void saveinfo(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav)
 }
 
 /* Reset histories before comparing observations from different signal arcs. */
-static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n)
+static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
-    int i,f,k,pair,changed;
-    double gap;
+    int i,f,k,pair,changed,valid,seen[MAXSAT]={0};
+    double gap,interval,limit;
+    ssat_t *ss;
+
+    if (rtk->opt.if125) {
+        for (i=0;i<n&&i<MAXOBS;i++) {
+            if (obs[i].sat<1||obs[i].sat>MAXSAT) continue;
+            ss=rtk->ssat+obs[i].sat-1;
+            seen[obs[i].sat-1]=1;
+            valid=if3_observed(obs+i,nav,&rtk->opt,ss->azel[1]);
+            /* Дуга общая для трёх частот: потеря любого наблюдения разрывает её */
+            changed=!valid||(!ss->if125_arc&&ss->if125_time.time);
+            interval=fabs(rtk->tt); /* Оценка шага эпох с учётом истории данного спутника */
+            if (ss->if125_dt>DTTOL&&
+                (interval<DTTOL||ss->if125_dt<interval))
+                interval=ss->if125_dt;
+            limit=1.5*interval+DTTOL;
+            gap=fabs(timediff(obs[i].time,ss->if125_time));
+            if (ss->if125_time.time&&interval>DTTOL&&gap>limit) changed=1;
+            /* Смена кода сигнала или пропуск фазы также начинает новую дугу */
+            for (f=0;f<3;f++) {
+                if (ss->ppp_code[f]&&ss->ppp_code[f]!=obs[i].code[f])
+                    changed=1;
+                if (ss->pt[0][f].time&&interval>DTTOL&&
+                    fabs(timediff(obs[i].time,ss->pt[0][f]))>limit)
+                    changed=1;
+                ss->ppp_code[f]=obs[i].code[f];
+            }
+            if (changed) {
+                /* Разрыв общей дуги требует сброса истории всех трёх частот */
+                for (f=0;f<3;f++) ss->slip[f]|=1;
+                reset_if125_history(ss);
+                trace(3,"IF125 arc reset sat=%d complete=%d gap=%.3f\n",
+                      obs[i].sat,valid,gap);
+            }
+            if (valid) {
+                /* Сохранение времени и шага только для полного набора наблюдений */
+                if (!changed&&ss->if125_arc&&gap>DTTOL) ss->if125_dt=gap;
+                else if (fabs(rtk->tt)>DTTOL) ss->if125_dt=fabs(rtk->tt);
+                ss->if125_time=obs[i].time;
+            }
+            ss->if125_arc=(uint8_t)valid;
+        }
+        /* An entirely absent satellite also breaks the joint arc, even
+         * for one epoch; maxout must not allow reusing its old ambiguity. */
+        for (i=0;i<MAXSAT;i++) {
+            ss=rtk->ssat+i;
+            if (seen[i]||!ss->if125_arc) continue;
+            /* Отсутствие спутника даже в одной эпохе разрывает общую дугу */
+            for (f=0;f<3;f++) ss->slip[f]|=1;
+            reset_if125_history(ss);
+            ss->if125_arc=0;
+        }
+        return;
+    }
     for (i=0;i<n&&i<MAXOBS;i++) {
         ssat_t *ss=rtk->ssat+obs[i].sat-1;
         pair=ppp_if2(obs+i,&rtk->opt);
@@ -1024,7 +1301,7 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
         }
     }
 
-    detarc_ppp(rtk,obs,n);
+    detarc_ppp(rtk,obs,n,nav);
     detslp_dop(rtk,obs,n,nav);  /* Doppler-based — fastest, catches sharp slips */
     detslp_ll(rtk,obs,n);
     detslp_mw(rtk,obs,n,nav);
@@ -1393,12 +1670,20 @@ static void uddcb_ppp(rtk_t *rtk)
     if (rtk->P[i+i*rtk->nx]<=0.0) initx(rtk,0.1,VAR_DCB,i);
 }
 /* temporal update of phase biases -------------------------------------------*/
-static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
+static int corr_meas_ppp(const obsd_t *obs, const nav_t *nav,
+                        const prcopt_t *opt, const double *rs, const double *rr,
+                        const double *azel, ssat_t *ss, double *L, double *P,
+                        double *Lc, double *Pc);
+
+static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav,
+                       const double *rs)
 {
     double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS],offset=0.0,pos[3]={0};
     double freq1,freq2,ion,dantr[NFREQ]={0},dants[NFREQ]={0};
+    double rr[3],dr[3]={0},los[3],azel[2];
     int i,j,k,f,f2,sat,clk_jump=0;
     int slip_detected[MAXOBS] = {0};
+    int bias_valid[MAXOBS]={0};
     
     trace(3,"udbias  : n=%d\n",n);
     
@@ -1408,17 +1693,35 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
     
     ecef2pos(rtk->sol.rr,pos);
+    if (rtk->opt.if125) {
+        /* Match the receiver geometry and corrections used in ppp_res(). */
+        /* Геометрия с приливами должна совпадать при инициализации неоднозначности и невязках */
+        if (rtk->opt.tidecorr)
+            tidedisp(gpst2utc(obs[0].time),rtk->x,rtk->opt.tidecorr==1?1:7,
+                     &nav->erp,rtk->opt.odisp[0],dr);
+        for (i=0;i<3;i++) rr[i]=rtk->x[i]+dr[i];
+        ecef2pos(rr,pos);
+    }
     
     for (f=0;f<NF(&rtk->opt);f++) {
         offset=0.0;
         memset(bias,0,sizeof(bias));
         memset(slip_detected,0,sizeof(slip_detected));
+        memset(bias_valid,0,sizeof(bias_valid));
         
         /* reset phase-bias if expire obs outage counter */
         for (i=0;i<MAXSAT;i++) {
             if (++rtk->ssat[i].outc[f]>(uint32_t)rtk->opt.maxout||
                 rtk->opt.modear==ARMODE_INST||clk_jump) {
                 initx(rtk,0.0,0.0,IB(i+1,f,&rtk->opt));
+            }
+            if (rtk->opt.if125&&
+                (!rtk->ssat[i].if125_arc||slip_if125(rtk->ssat+i))) {
+                /* При срыве на любой частоте сбрасывается общая неоднозначность IF125 */
+                j=IB(i+1,f,&rtk->opt);
+                if (rtk->x[j]!=0.0||rtk->P[j+j*rtk->nx]!=0.0)
+                    initx(rtk,0.0,0.0,j);
+                rtk->ssat[i].lock[f]=-rtk->opt.minlock;
             }
         }
         
@@ -1428,13 +1731,27 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             f2=ppp_if2(obs+i,&rtk->opt);
             if ((rtk->ssat[sat-1].slip[f]&1)||
                 (rtk->opt.ionoopt==IONOOPT_IFLC&&
-                 (rtk->ssat[sat-1].slip[f2]&1))) {
+                 (rtk->ssat[sat-1].slip[f2]&1))||
+                (rtk->opt.if125&&slip_if125(rtk->ssat+sat-1))) {
                 initx(rtk,0.0,0.0,j);
                 rtk->ssat[sat-1].lock[f]=-rtk->opt.minlock;
             }
             if(rtk->ssat[sat-1].azel[1]<rtk->opt.elmin) continue;
-            corr_meas(obs+i,nav,rtk->ssat[sat-1].azel,&rtk->opt,dantr,dants,
-                      0.0,L,P,&Lc,&Pc);
+            if (rtk->opt.if125) {
+                if (!rtk->ssat[sat-1].if125_arc||!rs) continue;
+                /* Подготовка тех же исправленных Lc/Pc, которые используются в невязках */
+                if (geodist(rs+i*6,rr,los)<=0.0||
+                    satazel(pos,los,azel)<rtk->opt.elmin) continue;
+                if (!corr_meas_ppp(obs+i,nav,&rtk->opt,rs+i*6,rr,azel,
+                                  rtk->ssat+sat-1,L,P,&Lc,&Pc)) {
+                    initx(rtk,0.0,0.0,j);
+                    continue;
+                }
+            }
+            else {
+                corr_meas(obs+i,nav,rtk->ssat[sat-1].azel,&rtk->opt,dantr,dants,
+                          0.0,L,P,&Lc,&Pc);
+            }
             
             bias[i]=0.0;
             slip_detected[i] = 0;
@@ -1443,12 +1760,20 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             f2=ppp_if2(obs+i,&rtk->opt);
             if ((rtk->ssat[sat-1].slip[f]&1) ||
                 (rtk->opt.ionoopt==IONOOPT_IFLC &&
-                 (rtk->ssat[sat-1].slip[f2]&1))) {
+                 (rtk->ssat[sat-1].slip[f2]&1))||
+                (rtk->opt.if125&&slip_if125(rtk->ssat+sat-1))) {
                 slip_detected[i] = 1;
             }
             
             if (rtk->opt.ionoopt==IONOOPT_IFLC) {
-                if (Lc!=0.0&&Pc!=0.0) bias[i]=Lc-Pc;
+                if (Lc!=0.0&&Pc!=0.0) {
+                    bias[i]=Lc-Pc;
+                    /* Нулевая разность допустима; наличие оценки отмечается отдельно */
+                    bias_valid[i]=1;
+                }
+                else if (rtk->opt.if125) {
+                    initx(rtk,0.0,0.0,j);
+                }
             }
             else if (L[f]!=0.0&&P[f]!=0.0) {
                 freq1=sat2freq(sat,obs[i].code[0],nav);
@@ -1463,16 +1788,21 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             }
             
             /* Если был slip или bias невалидный - сбрасываем состояние */
-            if (slip_detected[i] || bias[i]==0.0) {
+            if (slip_detected[i] ||
+                (rtk->opt.if125?!bias_valid[i]:bias[i]==0.0)) {
                 if (slip_detected[i]) {
                     /* Сброс ambiguity state при обнаружении slip */
                     if (rtk->x[j]!=0.0) initx(rtk, 0.0, 0.0, j);
                     /* Сброс lock counter (отрицательное значение запрещает AR) */
                     rtk->ssat[sat-1].lock[f] = -rtk->opt.minlock;
                     /* Сброс Hatch filter state */
-                    rtk->ssat[sat-1].hatch_n[f] = 0;
-                    rtk->ssat[sat-1].hatch_P[f] = 0.0;
-                    rtk->ssat[sat-1].hatch_L[f] = 0.0;
+                    /* IF125 histories were reset together before Hatch
+                     * processing; retain the new arc's first samples. */
+                    if (!rtk->opt.if125) {
+                        rtk->ssat[sat-1].hatch_n[f] = 0;
+                        rtk->ssat[sat-1].hatch_P[f] = 0.0;
+                        rtk->ssat[sat-1].hatch_L[f] = 0.0;
+                    }
                     
                     trace(3,"udbias_ppp: reset ambiguity sat=%d f=%d due to slip\n", sat, f);
                 }
@@ -1506,7 +1836,8 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             if (rtk->ssat[sat-1].azel[1]<rtk->opt.elmin) continue;
             if (rtk->x[j]!=0.0)
                 rtk->P[j+j*rtk->nx]+=SQR(rtk->opt.prn[0])*fabs(rtk->tt);
-            if (bias[i]==0.0 || (rtk->x[j]!=0.0 && !slip_detected[i])) continue;
+            if ((rtk->opt.if125?!bias_valid[i]:bias[i]==0.0)||
+                (rtk->x[j]!=0.0&&!slip_detected[i])) continue;
             initx(rtk,bias[i],rtk->opt.std[0]>0.0?
                   SQR(rtk->opt.std[0]):VAR_BIAS,j);
 
@@ -1522,7 +1853,8 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
 }
 /* temporal update of states --------------------------------------------------*/
-static void udstate_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
+static void udstate_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav,
+                        const double *rs)
 {
     trace(3,"udstate_ppp: n=%d\n",n);
     
@@ -1544,7 +1876,7 @@ static void udstate_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 
     uddcb_ppp(rtk);
     /* temporal update of phase-bias */
-    udbias_ppp(rtk,obs,n,nav);
+    udbias_ppp(rtk,obs,n,nav,rs);
 }
 /* satellite antenna phase center variation ----------------------------------*/
 static void satantpcv(const double *rs, const double *rr, const pcv_t *pcv,
@@ -1564,6 +1896,57 @@ static void satantpcv(const double *rs, const double *rr, const pcv_t *pcv,
     nadir=acos(cosa);
     
     antmodel_s(pcv,nadir,dant);
+}
+/* Общие поправки IF125 для инициализации неоднозначностей и расчёта невязок */
+static int corr_meas_ppp(const obsd_t *obs, const nav_t *nav,
+                        const prcopt_t *opt, const double *rs, const double *rr,
+                        const double *azel, ssat_t *ss, double *L, double *P,
+                        double *Lc, double *Pc)
+{
+    double dantr[NFREQ]={0},dants[NFREQ]={0},off[NFREQ][3],los[3];
+    pcv_t satcal=nav->pcvs[obs->sat-1],rcvcal=opt->pcvr[0];
+    const pcv_t *satpcv=&satcal;
+    gtime_t tx=ss->if125_tx.time?ss->if125_tx:obs->time; /* Время передачи для ориентации спутника */
+    int f;
+    if (satsys(obs->sat,NULL)==SYS_GAL) {
+        memcpy(satcal.off,satcal.gal_off,sizeof(satcal.off));
+        memcpy(satcal.var,satcal.gal_var,sizeof(satcal.var));
+        memcpy(satcal.valid,satcal.gal_valid,sizeof(satcal.valid));
+        memcpy(rcvcal.off,rcvcal.gal_off,sizeof(rcvcal.off));
+        memcpy(rcvcal.var,rcvcal.gal_var,sizeof(rcvcal.var));
+        memcpy(rcvcal.valid,rcvcal.gal_valid,sizeof(rcvcal.valid));
+    }
+    /* Проверка срока действия калибровок антенн спутника и приёмника */
+    if ((satpcv->ts.time&&timediff(obs->time,satpcv->ts)<0.0)||
+        (satpcv->te.time&&timediff(obs->time,satpcv->te)>0.0)||
+        (opt->pcvr[0].ts.time&&timediff(obs->time,opt->pcvr[0].ts)<0.0)||
+        (opt->pcvr[0].te.time&&timediff(obs->time,opt->pcvr[0].te)>0.0)) {
+        trace(3,"IF125 expired ANTEX calibration sat=%d\n",obs->sat);
+        return 0;
+    }
+    /* На каждой частоте нужны PCO и, при включённой модели, PCV */
+    for (f=0;f<3;f++) {
+        if (!(satpcv->valid[f]&1)||
+            (opt->posopt[0]&&!(satpcv->valid[f]&2))||
+            !(rcvcal.valid[f]&1)||
+            (opt->posopt[1]&&!(rcvcal.valid[f]&2))) {
+            trace(3,"IF125 missing ANTEX frequency sat=%d slot=%d satellite=%u receiver=%u\n",
+                  obs->sat,f,(unsigned)satpcv->valid[f],(unsigned)rcvcal.valid[f]);
+            return 0;
+        }
+    }
+    if (opt->posopt[0]) satantpcv(rs,rr,satpcv,dants); /* Вариации фазового центра спутника */
+    /* IF125 uses centre-of-mass orbits. Project each frequency's PCO once,
+     * before combination, using the same attitude as legacy satantoff(). */
+    if (!satantoff_pcv(tx,rs,satpcv,off)||geodist(rs,rr,los)<=0.0) return 0;
+    for (f=0;f<3;f++) dants[f]+=dot(off[f],los,3); /* Проекция PCO каждой частоты на луч зрения */
+    /* Поправки антенны приёмника и фазового вращения (phase windup) */
+    antmodel(&rcvcal,opt->antdel[0],azel,opt->posopt[1],dantr);
+    if (!model_phw(obs->time,obs->sat,nav->pcvs[obs->sat-1].type,
+                   opt->posopt[2]?2:0,rs,rr,&ss->phw)) return 0;
+    /* Применение поправок и формирование трёхчастотных комбинаций Lc/Pc */
+    corr_meas(obs,nav,azel,opt,dantr,dants,ss->phw,L,P,Lc,Pc);
+    return 1;
 }
 /* precise tropospheric model ------------------------------------------------*/
 static double trop_model_prec(gtime_t time, const double *pos,
@@ -1753,20 +2136,30 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             !model_iono(obs[i].time,pos,azel+i*2,opt,sat,x,nav,&dion,&vari)) {
             continue;
         }
-        /* satellite and receiver antenna model */
-        if (opt->posopt[0]) satantpcv(rs+i*6,rr,nav->pcvs+sat-1,dants);
-        antmodel(opt->pcvr,opt->antdel[0],azel+i*2,opt->posopt[1],dantr);
-        
-        /* phase windup model */
-        if (!model_phw(rtk->sol.time,sat,nav->pcvs[sat-1].type,
-                       opt->posopt[2]?2:0,rs+i*6,rr,&rtk->ssat[sat-1].phw)) {
-            continue;
+        if (opt->if125) {
+            /* Общий путь поправок обеспечивает согласованность невязок и начальной неоднозначности */
+            if (!corr_meas_ppp(obs+i,nav,opt,rs+i*6,rr,azel+i*2,
+                              rtk->ssat+sat-1,L,P,&Lc,&Pc)) continue;
+            /* A usable IF125 satellite contributes exactly one phase and
+             * one code row, sharing a single initialized ambiguity. */
+            if (Lc==0.0||Pc==0.0||x[IB(sat,0,opt)]==0.0) continue;
         }
+        else {
+            /* satellite and receiver antenna model */
+            if (opt->posopt[0]) satantpcv(rs+i*6,rr,nav->pcvs+sat-1,dants);
+            antmodel(opt->pcvr,opt->antdel[0],azel+i*2,opt->posopt[1],dantr);
 
-        shapiro=shapiro_corr(satsys(sat,NULL),rs+i*6,rr); 
-        /* corrected phase and code measurements */
-        corr_meas(obs+i,nav,azel+i*2,&rtk->opt,dantr,dants,
-                  rtk->ssat[sat-1].phw,L,P,&Lc,&Pc);        
+            /* phase windup model */
+            if (!model_phw(rtk->sol.time,sat,nav->pcvs[sat-1].type,
+                           opt->posopt[2]?2:0,rs+i*6,rr,&rtk->ssat[sat-1].phw)) {
+                continue;
+            }
+
+            /* corrected phase and code measurements */
+            corr_meas(obs+i,nav,azel+i*2,&rtk->opt,dantr,dants,
+                      rtk->ssat[sat-1].phw,L,P,&Lc,&Pc);
+        }
+        shapiro=shapiro_corr(satsys(sat,NULL),rs+i*6,rr);
 #if 0
         if(rtk->ssat[sat-1].lock[0]<0&&rtk->ssat[sat-1].outc[0]>1){
             rtk->ssat[sat-1].new_sat=1;
@@ -2018,7 +2411,13 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }  
     
     /* satellite positions and clocks */
-    satposs(obs[0].time,obs,n,nav,rtk->opt.sateph,rs,dts,var,svh);
+    if (opt->if125) {
+        gtime_t tx[MAXOBS];
+        /* Точные орбиты центра масс, часы и времена передачи для IF125 */
+        satposs_if125(obs[0].time,obs,n,nav,rs,dts,var,svh,tx);
+        for (i=0;i<n&&i<MAXOBS;i++) rtk->ssat[obs[i].sat-1].if125_tx=tx[i];
+    }
+    else satposs(obs[0].time,obs,n,nav,rtk->opt.sateph,rs,dts,var,svh);
     
     /* detect cycle slip */
     detecs_ppp(obs,rtk,n,nav);
@@ -2034,7 +2433,7 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
     }
 
     /* temporal update of ekf states */
-    udstate_ppp(rtk,obsh,n,nav);
+    udstate_ppp(rtk,obsh,n,nav,rs);
 
     /* exclude measurements of eclipsing satellite (block IIA) */
     if (rtk->opt.posopt[3]) {
@@ -2117,8 +2516,8 @@ extern void pppos(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         /* start AR from the filtered float states: fix_sol/resetamb overwrite
          * only the fixed entries of xa, the rest must be the float solution */
         matcpy(xa,rtk->x,rtk->nx,1);
-        /* ambiguity resolution in ppp */
-        if(manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc) &&
+        /* Целочисленная фиксация отключена для IF125; используется float-решение */
+        if(!opt->if125&&manage_ppp_ar(rtk,bias,xa,Pa,1,obsh,n,nav,exc) &&
            /* sanity gate: a correct AR fix nudges the position by at most a
             * few cm (NL-cycle-scale correction). A jump beyond MAX_AR_JUMP
             * is a strong sign of a false fix (common on noisy/low-cost

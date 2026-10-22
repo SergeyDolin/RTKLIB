@@ -361,7 +361,7 @@ static void procpos(FILE *fp, const prcopt_t *popt, const solopt_t *sopt,
         if (n<=0) continue;
 
         /* carrier-phase bias correction */
-        if (!strstr(popt->pppopt,"-ENA_FCB")) {
+        if (!popt->if125&&!strstr(popt->pppopt,"-ENA_FCB")) {
             corr_phase_bias_ssr(obs,n,&navs);
         }
         if (!rtkpos(&rtk,obs,n,&navs)) continue;
@@ -615,6 +615,7 @@ static void freepreceph(nav_t *nav, sbs_t *sbs)
     }
     free(nav->tec ); nav->tec =NULL; nav->nt=nav->ntmax=0;
     if (nav->osbs) {
+        free(nav->osbs->records.data);
         free(nav->osbs->sat_osb);
         free(nav->osbs);
         nav->osbs=NULL;
@@ -691,6 +692,7 @@ static void freeobsnav(obs_t *obs, nav_t *nav)
 {
     trace(3,"freeobsnav:\n");
     
+    free(nav->dsbs.data); memset(&nav->dsbs,0,sizeof(nav->dsbs));
     free(obs->data); obs->data=NULL; obs->n =obs->nmax =0;
     free(nav->eph ); nav->eph =NULL; nav->n =nav->nmax =0;
     free(nav->geph); nav->geph=NULL; nav->ng=nav->ngmax=0;
@@ -991,7 +993,11 @@ static int execses(gtime_t ts, gtime_t te, double ti, const prcopt_t *popt,
     /* read dcb parameters */
     if (*fopt->dcb) {
         reppath(fopt->dcb,path,ts,"","");
-        readdcb(path,&navs,stas);
+        if (!readdcb(path,&navs,stas)&&popt_.if125) {
+            showmsg("error : IF125 cannot read satellite DSB records: %s",path);
+            freeobsnav(&obss,&navs);
+            return 0;
+        }
     }
     /* set antenna paramters */
     if (popt_.mode!=PMODE_SINGLE) {
@@ -1237,6 +1243,30 @@ extern int postpos(gtime_t ts, gtime_t te, double ti, double tu,
     char *ifile[MAXINFILE],ofile[1024],*ext;
     
     trace(3,"postpos : ti=%.0f tu=%.0f n=%d outfile=%s\n",ti,tu,n,outfile);
+
+    if (popt->if125) {
+        if (popt->sateph!=EPHOPT_PREC||
+            popt->arprod!=0||!*fopt->dcb) {
+            showmsg("error : IF125 requires precise clocks, "
+                    "pos1-arprod=off and file-dcbfile (Bias-SINEX DSB)");
+            return -1;
+        }
+        if (NFREQ<3||popt->nf<3||popt->freqopt||
+            popt->ionoopt!=IONOOPT_IFLC||
+            popt->mode<PMODE_PPP_KINEMA||popt->mode>PMODE_PPP_FIXED) {
+            showmsg("error : IF125 requires PPP, dual-freq and L1/L2/L5");
+            return -1;
+        }
+        if (!(popt->navsys&(SYS_GPS|SYS_GAL))||
+            (popt->navsys&~(SYS_GPS|SYS_GAL))) {
+            showmsg("error : IF125 requires GPS/Galileo only (pos1-navsys=1,8,9)");
+            return -1;
+        }
+        if (popt->modear!=ARMODE_OFF) {
+            showmsg("error : IF125 requires Float PPP (pos2-armode=off)");
+            return -1;
+        }
+    }
     
     /* open processing session */
     if (!openses(popt,sopt,fopt,&navs,&pcvss,&pcvsr)) return -1;

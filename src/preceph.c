@@ -62,20 +62,6 @@
 
 
 
-typedef struct {
-    int sat;
-    gtime_t ts,te;
-    int code;
-    int type;
-    int unit_cyc;  /* phase OSB is in cycles */
-    double bia;
-}bias_t;
-
-typedef struct {
-    int nb,nmax;
-    bias_t *data;
-}biases_t;
-
 /* satellite code to satellite system ----------------------------------------*/
 static int code2sys(char code)
 {
@@ -489,234 +475,99 @@ static int code2idx_obs(const char *obs)
 static int biasstr2time_str(const char *s, gtime_t *time)
 {
     int year, doy, sec;
+    double ep[6]={0};
     if (sscanf(s, "%d:%d:%d", &year, &doy, &sec) != 3) return -1;
     if (year<1970||year>2099||doy<1||doy>(year%4==0?366:365)||
         sec<0||sec>86400) return -1;
-    *time = timeadd(epoch2time((double[]){year, 1, 1, 0, 0, 0}),
+    ep[0]=year; ep[1]=ep[2]=1.0;
+    *time = timeadd(epoch2time(ep),
                     (doy - 1) * 86400.0 + sec);
     return 0;
 }
 
-static int readosbf(const char *file, biases_t *sat_bias) {
+/* Read satellite DSB/OSB records. Bias-SINEX eq. (7): DSB(a,b)=b(a)-b(b).
+ * Receiver records are deliberately not imported into satellite corrections.
+ * A zero estimate is valid. Intervals and slopes are kept, never quantized. */
+static int readbiasfile(const char *file, nav_t *nav, sbiases_t *prod, int osb)
+{
     FILE *fp;
-    if (!(fp = fopen(file, "rb"))) {
-        trace(0, "OSB file open error: %s\n", file);
-        return 0;
+    sbias_t b,*tmp;
+    char line[2048],kind[8],svn[16],prn[16],o1[8],o2[8];
+    char t1[32],t2[32],unit[8],tsys[8];
+    double val,sd,slope,scale,freq;
+    int active=0,n,start=prod->n,sat,c1,c2;
+    if (!(fp=fopen(file,"r"))) return 0;
+    while (fgets(line,sizeof(line),fp)) {
+        if (sscanf(line," TIME_SYSTEM %7s",tsys)==1&&strcmp(tsys,"G")) {
+            trace(1,"unsupported Bias-SINEX time system: %s (%s)\n",tsys,file);
+            fclose(fp);
+            return 0;
+        }
+        if (strstr(line,"+BIAS/SOLUTION")) { active=1; continue; }
+        if (strstr(line,"-BIAS/SOLUTION")) break;
+        if (!active||line[0]=='*') continue;
+        slope=0.0; o2[0]='\0';
+        if (osb) n=sscanf(line,"%7s %15s %15s %7s %31s %31s %7s %lf %lf %lf",
+                         kind,svn,prn,o1,t1,t2,unit,&val,&sd,&slope);
+        else n=sscanf(line,"%7s %15s %15s %7s %7s %31s %31s %7s %lf %lf %lf",
+                      kind,svn,prn,o1,o2,t1,t2,unit,&val,&sd,&slope);
+        if (n<(osb?9:10)||strcmp(kind,osb?"OSB":"DSB")) continue;
+        sat=satid2no(prn); c1=code2idx_obs(o1); c2=osb?0:code2idx_obs(o2);
+        if (sat<1||sat>MAXSAT||strlen(prn)!=3||!isdigit((unsigned char)prn[1])||
+            !isdigit((unsigned char)prn[2])||c1<=0||c1>=MAXCODE||
+            (!osb&&(c2<=0||c2>=MAXCODE||o1[0]!='C'||o2[0]!='C'))||
+            (o1[0]!='C'&&o1[0]!='L')||strlen(o1)!=3||
+            !(fabs(val)<=DBL_MAX)||!(fabs(slope)<=DBL_MAX)||
+            !(sd>=0.0&&sd<=DBL_MAX)) continue;
+        memset(&b,0,sizeof(b));
+        if (biasstr2time_str(t1,&b.ts)||biasstr2time_str(t2,&b.te)||
+            timediff(b.te,b.ts)<=0.0) continue;
+        if (!strcmp(unit,"ns")) scale=1E-9*CLIGHT;
+        else if (osb&&o1[0]=='L'&&!strcmp(unit,"cyc")) {
+            freq=sat2freq(sat,(uint8_t)c1,nav);
+            if (freq<=0.0) continue;
+            scale=CLIGHT/freq;
+        }
+        else continue;
+        b.sat=sat; b.code=c1; b.code2=c2; b.phase=o1[0]=='L';
+        b.bias=val*scale; b.slope=slope*scale;
+        if (prod->n==prod->nmax) {
+            tmp=(sbias_t *)realloc(prod->data,sizeof(sbias_t)*(prod->nmax+1024));
+            if (!tmp) { fclose(fp); return 0; }
+            prod->data=tmp; prod->nmax+=1024;
+        }
+        b.next=prod->head[sat-1];
+        prod->data[prod->n++]=b; prod->head[sat-1]=prod->n;
+        /* Preserve the existing table and conventions for legacy consumers. */
+        if (!osb) nav->cbias[sat-1][c1][c2]=b.bias;
     }
-
-    fseek(fp, 0, SEEK_END);
-    long size = ftell(fp);
-    if (size <= 0 || size > 100 * 1024 * 1024) {
-        fclose(fp);
-        trace(0, "invalid file size\n");
-        return 0;
-    }
-    fseek(fp, 0, SEEK_SET);
-
-    char *content = (char *)malloc(size + 1);
-    if (!content) { fclose(fp); return 0; }
-    if (fread(content, 1, size, fp) != (size_t)size) { free(content); fclose(fp); return 0; }
-    content[size] = '\0';
     fclose(fp);
-
-    /* --- Найти начало секции с заголовком *BIAS SVN_ --- */
-    char *header = strstr(content, "*BIAS SVN_ PRN");
-    if (!header) {
-        trace(0, "section '*BIAS SVN_' not found\n");
-        free(content);
-        return 0;
-    }
-
-    /* Найти начало первой строки после заголовка */
-    char *p = strstr(header, "OSB ");
-    if (!p) {
-        trace(0, "no OSB records found after header\n");
-        free(content);
-        return 0;
-    }
-
-    /* --- Найти конец секции --- */
-    char *end = strstr(p, "-BIAS/SOLUTION");
-    if (!end) {
-        end = content + size;
-    }
-
-    char svn[16], prn[16], obs[16];
-    char t1s[20], t2s[20], unit[8];
-    double val, std;
-    int n;
-
-    memset(sat_bias, 0, sizeof(biases_t));
-    while (p < end && (p = strstr(p, "OSB ")) != NULL && p < end) {
-        n = sscanf(p, "OSB %15s %15s %15s %19s %19s %7s %lf %lf",
-                   svn, prn, obs, t1s, t2s, unit, &val, &std);
-
-        if (n != 8 ||
-            (strcmp(unit, "ns") != 0 && strcmp(unit, "cyc") != 0)) {
-            p += 4;
-            continue;
-        }
-
-        /* Убедимся, что svn и prn — спутниковые (второй символ — цифра) */
-        if (strlen(svn) < 2 || strlen(prn) < 2 || !isdigit(svn[1]) || !isdigit(prn[1])) {
-            p += 4;
-            continue;
-        }
-
-        int sat = satid2no(prn);
-        if (sat <= 0 || sat > MAXSAT) { p += 4; continue; }
-
-        int code = code2idx_obs(obs);
-        if (code <= 0 || code >= MAXCODE) { p += 4; continue; }
-
-        int range = (obs[0] == 'C') ? 1 : (obs[0] == 'L') ? 0 : -1;
-
-        /* Code OSB in cycles is invalid; phase OSB may be in ns or cycles. */
-        if (range < 0 || (range && strcmp(unit, "cyc") == 0)) {
-            p += 4;
-            continue;
-        }
-
-        gtime_t t1, t2;
-        if (biasstr2time_str(t1s, &t1) || biasstr2time_str(t2s, &t2)||
-            timediff(t2,t1)<=0.0||!(fabs(val)<=DBL_MAX)) {
-            p += 4;
-            continue;
-        }
-
-        /* Увеличиваем буфер */
-        if (sat_bias->nb >= sat_bias->nmax) {
-            sat_bias->nmax += 1024;
-            bias_t *tmp = (bias_t *)realloc(sat_bias->data, sizeof(bias_t) * sat_bias->nmax);
-            if (!tmp) {
-                free(content);
-                trace(0, "mem error\n");
-                return -1;
-            }
-            sat_bias->data = tmp;
-        }
-
-        bias_t *b = &sat_bias->data[sat_bias->nb++];
-        b->ts = t1;
-        b->te = t2;
-        b->sat = sat;
-        b->code = code;
-        b->type = range;
-        b->unit_cyc = strcmp(unit, "cyc") == 0;
-        b->bia = val;
-        
-
-        trace(2, "OSB PARSED: PRN=%s CODE=%s TYPE=%s BIAS=%.6f\n",
-              prn, obs, range ? "CODE" : "PHASE", val);
-
-        p += 4;
-    }
-
-    free(content);
-    return 1;
+    trace(3,"readbiasfile: %s records=%d file=%s\n",osb?"OSB":"DSB",prod->n-start,file);
+    return prod->n>start;
 }
 
 extern int readosb(const char *file, nav_t *nav)
 {
-    biases_t biases = {0};
     osbs_t *osbs;
-    double span;
-
+    int i;
     if (nav->osbs) {
+        free(nav->osbs->records.data);
         free(nav->osbs->sat_osb);
-        free(nav->osbs);
-        nav->osbs=NULL;
+        free(nav->osbs); nav->osbs=NULL;
     }
-    
-    if (!file||!*file) {
-        return 0;
+    if (!file||!*file||!(osbs=(osbs_t *)calloc(1,sizeof(osbs_t)))) return 0;
+    if (!readbiasfile(file,nav,&osbs->records,1)) {
+        free(osbs->records.data); free(osbs); return 0;
     }
-    if (readosbf(file, &biases)!=1) {
-        free(biases.data);
-        return 0;
-    }
-    
-    int nb, ii, i;
-    gtime_t tmin = {0}, tmax = {0};
-    double dt = 0.0;
-    
-    if (biases.nb == 0) {
-        free(biases.data);
-        return 0;
-    }
-    
-    tmin = biases.data[0].ts;
-    tmax = biases.data[0].te;
-    dt = timediff(tmax, tmin);
-    
-    for (i = 1; i < biases.nb; i++) {
-        if (timediff(biases.data[i].ts, tmin) < 0.0) tmin = biases.data[i].ts;
-        if (timediff(biases.data[i].te, tmax) > 0.0) tmax = biases.data[i].te;
-        double current_dt = timediff(biases.data[i].te, biases.data[i].ts);
-        if (current_dt < dt) dt = current_dt;
-    }
-    
-    if (!(dt>0.0)||!(dt<=DBL_MAX)) dt=30.0;
-    span=timediff(tmax,tmin);
-    if (!(span>=0.0)||!(span/dt<INT_MAX-1)) {
-        free(biases.data);
-        return 0;
-    }
-    nb=(int)floor(span/dt)+1;
-    if ((size_t)nb>((size_t)-1)/sizeof(osb_t)||
-        !(osbs=(osbs_t *)calloc(1,sizeof(osbs_t)))) {
-        free(biases.data);
-        return 0;
-    }
-    osbs->dt=dt;
-    osbs->tmin=tmin;
-    osbs->tmax=tmax;
-    osbs->n=nb;
-    if (!(osbs->sat_osb=(osb_t *)calloc((size_t)nb,sizeof(osb_t)))) {
-        free(osbs);
-        free(biases.data);
-        return 0;
+    osbs->tmin=osbs->records.data[0].ts;
+    osbs->tmax=osbs->records.data[0].te;
+    for (i=1;i<osbs->records.n;i++) {
+        if (timediff(osbs->records.data[i].ts,osbs->tmin)<0.0)
+            osbs->tmin=osbs->records.data[i].ts;
+        if (timediff(osbs->records.data[i].te,osbs->tmax)>0.0)
+            osbs->tmax=osbs->records.data[i].te;
     }
     nav->osbs=osbs;
-    
-    int sat, code;
-    for (i = 0; i < biases.nb; i++) {
-        sat = biases.data[i].sat - 1;
-        code = biases.data[i].code;
-        int i1 = (int)floor(timediff(biases.data[i].ts, tmin) / dt);
-        int i2 = (int)floor(timediff(biases.data[i].te, tmin) / dt);
-        if (i1<0) i1=0;
-        if (i2>=nb) i2=nb-1;
-        if (i1>=nb||i2<i1) continue;
-        
-        
-        for (ii = i1; ii <= i2; ii++) {
-            if (biases.data[i].type) {
-                nav->osbs->sat_osb[ii].code[sat][code] = biases.data[i].bia * 1E-9 * CLIGHT;
-                nav->osbs->sat_osb[ii].valid[sat][code] |= 1;
-                trace(2, "CODE OSB: %f\n\r", nav->osbs->sat_osb[ii].code[sat][code]);
-            } else {
-                if (biases.data[i].unit_cyc) {
-                    double freq = sat2freq(biases.data[i].sat,
-                                        (uint8_t)code, nav);
-                    if (freq == 0.0) continue;
-
-                    nav->osbs->sat_osb[ii].phase[sat][code] =
-                        biases.data[i].bia * CLIGHT / freq;
-                }
-                else {
-                    nav->osbs->sat_osb[ii].phase[sat][code] =
-                        biases.data[i].bia * 1E-9 * CLIGHT;
-                }
-
-                nav->osbs->sat_osb[ii].valid[sat][code] |= 2;
-            }
-        }
-    }
-    
-    free(biases.data);
-    biases.data = NULL;
-    biases.nmax = biases.nb = 0;
     return 1;
 }
 /* read satellite antenna parameters -------------------------------------------
@@ -747,60 +598,9 @@ extern int readsap(const char *file, gtime_t time, nav_t *nav)
 /* read DCB parameters file --------------------------------------------------*/
 static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 {
-    FILE *fp;
-    double cbias;
-     /*
-     str1 -> BIAS, str2 -> SVN, str3 -> PRN, str4 -> OBS1, 
-     str5 -> OBS2, str6 -> BIAS_START, str7 -> BIAS_END, 
-     str8 -> UNIT, str9 -> VALUE, str10 -> STD
-     */
-    char buff[2048],str1[32]="",str2[32]="",str3[32]="";
-    char str4[32],str5[32]="",str6[32]="",str7[32],str8[32]="";
-    char str9[32]="",str10[32]="",str11[32]="",str12[32]="",target_code1[4]="",target_code2[4]="";    
-    int sat,start=0;
-
-    
-
-    trace(3,"readdcbf: file=%s\n",file);
-    
-    if (!(fp=fopen(file,"r"))) {
-        trace(0,"dcb parameters file open error: %s\n",file);
-        return 0;
-    }
-
-
-    
-    while (fgets(buff,sizeof(buff),fp)) {
-        if (strstr(buff, "*BIAS SVN_ PRN STATION__ OBS1 OBS2 BIAS_START____ BIAS_END______ UNIT __ESTIMATED_VALUE____ _STD_DEV___")) start=1;
-        if (strstr(buff,"POINTS")) start=0;
-        if (strstr(buff,"DSB  G    G")) start=3;
-        if (!start||sscanf(buff,"%s %s %s %3s %s %s %s %s %s %s %s %s",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12)<0) continue;
-        trace(3,"%s %s %s %s %s %s %s %s %s %s %s %s\n\r",str1,str2,str3,str4,str5,str6,str7,str8,str9,str10,str11,str12);
-        if(start == 3) {
-            fclose(fp);
-            return 1;
-        }
-        if (start == 2)
-        {   
-            strcpy(target_code1, str4);
-            strcpy(target_code2, str5);
-            if(!strcmp(target_code1, str4) && !strcmp(target_code2, str5))
-            {
-                cbias = atof(str9); /*DCB*/
-                sat=satid2no(str3);
-                nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)]=(cbias*1E-9*CLIGHT);
-            }   
-            trace(2, "%f %s %s %d\n\r", nav->cbias[sat-1][codeconv(target_code1)][codeconv(target_code2)], target_code1, target_code2, sat-1);
-        }
-        start=2;
-    }
-    
-    fclose(fp);
-    
-    return 1;
+    (void)sta;
+    return readbiasfile(file,nav,&nav->dsbs,0);
 }
-
-
 
 /* read DCB parameters ---------------------------------------------------------
 * read differential code bias (DCB) parameters
@@ -809,15 +609,17 @@ static int readdcbf(const char *file, nav_t *nav, const sta_t *sta)
 *          sta_t  *sta        I   station info data to inport receiver DCB
 *                                 (NULL: no use)
 * return : status (1:ok,0:error)
-* notes  : currently only support P1-P2, P1-C1, P2-C2, bias in DCB file
+* notes  : satellite code DSB records in Bias-SINEX, GPST, ns units
 *-----------------------------------------------------------------------------*/
 extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
 {
-    int i,j,k,n;
+    int i,j,k,n,ok=0;
     char *efiles[MAXEXFILE]={0};
     
     trace(3,"readdcb : file=%s\n",file);
     
+    free(nav->dsbs.data);
+    memset(&nav->dsbs,0,sizeof(nav->dsbs));
     for (i=0;i<MAXSAT;i++) for (j=0;j<MAXCODE;j++) for (k=0;k<MAXCODE;k++) {
         nav->cbias[i][j][k]=0.0;
     }
@@ -830,11 +632,11 @@ extern int readdcb(const char *file, nav_t *nav, const sta_t *sta)
     n=expath(file,efiles,MAXEXFILE);
     
     for (i=0;i<n;i++) {
-        readdcbf(efiles[i],nav,sta);
+        if (readdcbf(efiles[i],nav,sta)) ok=1;
     }
     for (i=0;i<MAXEXFILE;i++) free(efiles[i]);
     
-    return 1;
+    return ok;
 }
 /* polynomial interpolation by Neville's algorithm ---------------------------*/
 static double interppol(const double *x, double *y, int n)
@@ -996,30 +798,42 @@ static int pephclk(gtime_t time, int sat, const nav_t *nav, double *dts,
 *            BDS      : B1I-B2I
 *            NavIC    : L5-S
 *-----------------------------------------------------------------------------*/
-extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
-                      double *dant)
+/* Per-frequency satellite PCO in ECEF, using the established yaw frame. */
+extern int satantoff_freq(gtime_t time, const double *rs, int sat,
+                         const nav_t *nav, double off[NFREQ][3])
 {
-    const pcv_t *pcv=nav->pcvs+sat-1;
-    double ex[3],ey[3],ez[3],es[3],r[3],rsun[3],gmst,erpv[5]={0},freq[2];
-    double C1,C2,dant1,dant2;
-    int i,sys;
-    
-    trace(4,"satantoff: time=%s sat=%2d\n",time_str(time,3),sat);
-    
-    dant[0]=dant[1]=dant[2]=0.0;
-    
+    return satantoff_pcv(time,rs,nav->pcvs+sat-1,off);
+}
+
+extern int satantoff_pcv(gtime_t time, const double *rs, const pcv_t *pcv,
+                         double off[NFREQ][3])
+{
+    double ex[3],ey[3],ez[3],es[3],r[3],rsun[3],gmst,erpv[5]={0};
+    int i,f;
     /* sun position in ecef */
     sunmoonpos(gpst2utc(time),erpv,rsun,NULL,&gmst);
     
     /* unit vectors of satellite fixed coordinates */
     for (i=0;i<3;i++) r[i]=-rs[i];
-    if (!normv3(r,ez)) return;
+    if (!normv3(r,ez)) return 0;
     for (i=0;i<3;i++) r[i]=rsun[i]-rs[i];
-    if (!normv3(r,es)) return;
+    if (!normv3(r,es)) return 0;
     cross3(ez,es,r);
-    if (!normv3(r,ey)) return;
+    if (!normv3(r,ey)) return 0;
     cross3(ey,ez,ex);
     
+    for (f=0;f<NFREQ;f++) for (i=0;i<3;i++)
+        off[f][i]=pcv->off[f][0]*ex[i]+pcv->off[f][1]*ey[i]+pcv->off[f][2]*ez[i];
+    return 1;
+}
+
+extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
+                      double *dant)
+{
+    double freq[2],off[NFREQ][3],C1,C2;
+    int i,sys;
+    dant[0]=dant[1]=dant[2]=0.0;
+    if (!satantoff_freq(time,rs,sat,nav,off)) return;
     /* iono-free LC coefficients */
     sys=satsys(sat,NULL);
     if (sys==SYS_GPS||sys==SYS_QZS) { /* L1-L2 */
@@ -1049,9 +863,7 @@ extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
     
     /* iono-free LC */
     for (i=0;i<3;i++) {
-        dant1=pcv->off[0][0]*ex[i]+pcv->off[0][1]*ey[i]+pcv->off[0][2]*ez[i];
-        dant2=pcv->off[1][0]*ex[i]+pcv->off[1][1]*ey[i]+pcv->off[1][2]*ez[i];
-        dant[i]=C1*dant1+C2*dant2;
+        dant[i]=C1*off[0][i]+C2*off[1][i];
     }
 }
 /* satellite position/clock by precise ephemeris/clock -------------------------
@@ -1067,7 +879,8 @@ extern void satantoff(gtime_t time, const double *rs, int sat, const nav_t *nav,
 *          double *var        IO  sat position and clock error variance (m)
 *                                 (NULL: no output)
 * return : status (1:ok,0:error or data outage)
-* notes  : clock includes relativistic correction but does not contain code bias
+* notes  : clock includes relativity and retains the input product datum;
+*          this routine does not apply additional observable code corrections
 *          before calling the function, nav->peph, nav->ne, nav->pclk and
 *          nav->nc must be set by calling readsp3(), readrnx() or readrnxt()
 *          if precise clocks are not set, clocks in sp3 are used instead

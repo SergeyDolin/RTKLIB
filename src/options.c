@@ -34,6 +34,7 @@
 static prcopt_t prcopt_;
 static solopt_t solopt_;
 static filopt_t filopt_;
+static int frequency_; /* configuration selector, separate from slot count */
 static int antpostype_[2];
 static double elmask_,elmaskar_,elmaskhold_;
 static double antpos_[2][3];
@@ -43,7 +44,7 @@ static char snrmask_[NFREQ][1024];
 /* system options table ------------------------------------------------------*/
 #define SWTOPT  "0:off,1:on"
 #define MODOPT  "0:single,1:dgps,2:kinematic,3:static,4:movingbase,5:fixed,6:ppp-kine,7:ppp-static,8:ppp-fixed,9:cpp-kine,10:cpp-static"
-#define FRQOPT  "1:l1,2:l1+l2,3:l1+l2+l5,4:l1+l5"
+#define FRQOPT  "1:l1,2:l1+l2,3:l1/2+l1/5,4:l1+l5,5:l1+l2+l5"
 #define TYPOPT  "0:forward,1:backward,2:combined"
 #define IONOPT  "0:off,1:brdc,2:sbas,3:dual-freq,4:est-stec,5:ionex-tec,6:qzs-brdc"
 #define TRPOPT  "0:off,1:saas,2:sbas,3:est-ztd,4:est-ztdgrad,5:ztd,6:gpt3,7:gpt3+est-zwd"
@@ -68,7 +69,7 @@ static char snrmask_[NFREQ][1024];
 EXPORT opt_t sysopts[]={
     {"pos1-posmode",    3,  (void *)&prcopt_.mode,       MODOPT },
     {"pos1-kalman",     3,  (void *)&prcopt_.kalman,     KALMAN },
-    {"pos1-frequency",  3,  (void *)&prcopt_.nf,         FRQOPT },
+    {"pos1-frequency",  3,  (void *)&frequency_,         FRQOPT },
     {"pos1-soltype",    3,  (void *)&prcopt_.soltype,    TYPOPT },
     {"pos1-elmask",     1,  (void *)&elmask_,            "deg"  },
     {"pos1-snrmask_r",  3,  (void *)&prcopt_.snrmask.ena[0],SWTOPT},
@@ -472,11 +473,10 @@ static void buff2sysopts(void)
             prcopt_.snrmask.mask[i][j++]=atof(p);
         }
     }
-    /* number of frequency (4:L1+L5) */
-    if (prcopt_.nf==4) {
-        prcopt_.nf=3;
-        prcopt_.freqopt=1;
-    }
+    /* Select the combination without using its ID as an array dimension. */
+    prcopt_.nf=(frequency_==4||frequency_==5)?3:frequency_;
+    prcopt_.freqopt=frequency_==4;
+    prcopt_.if125=frequency_==5;
 }
 /* options to system options buffer ------------------------------------------*/
 static void sysopts2buff(void)
@@ -519,11 +519,8 @@ static void sysopts2buff(void)
             p+=sprintf(p,"%s%.0f",j>0?",":"",prcopt_.snrmask.mask[i][j]);
         }
     }
-    /* number of frequency (4:L1+L5) */
-    if (prcopt_.nf==3&&prcopt_.freqopt==1) {
-        prcopt_.nf=4;
-        prcopt_.freqopt=0;
-    }
+    frequency_=prcopt_.if125?5:
+               (prcopt_.nf==3&&prcopt_.freqopt==1?4:prcopt_.nf);
 }
 /* reset system options to default ---------------------------------------------
 * reset system options to default
@@ -537,6 +534,7 @@ extern void resetsysopts(void)
     trace(3,"resetsysopts:\n");
     
     prcopt_=prcopt_default;
+    frequency_=prcopt_.nf;
     solopt_=solopt_default;
     filopt_.satantp[0]='\0';
     filopt_.rcvantp[0]='\0';

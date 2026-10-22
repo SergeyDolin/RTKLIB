@@ -2,12 +2,12 @@
 
 SRC    = ../../src
 #CFLAGS = -Wall -O3 -ansi -pedantic -I$(SRC) -DENAGLO
-CFLAGS = -Wall -O3 -ansi -pedantic -I$(SRC) -DTRACE -DENAGLO -DENAQZS
+CFLAGS = -Wall -O3 -ansi -pedantic -I$(SRC) -DTRACE -DENAGLO -DENAQZS -DENAGAL
 LDLIBS = -lm -llapack -lblas
 CC = gcc
 
 BIN    = t_matrix t_time t_coord t_rinex t_lambda t_atmos t_misc t_preceph t_gloeph \
-t_geoid t_ppp t_ionex t_tle
+t_geoid t_ppp t_ionex t_tle t_if125
 
 all        : $(BIN)
 t_matrix   : t_matrix.o rtkcmn.o preceph.o
@@ -22,6 +22,13 @@ t_gloeph   : t_gloeph.o rtkcmn.o rinex.o ephemeris.o sbas.o preceph.o qzslex.o
 t_geoid    : t_geoid.o rtkcmn.o preceph.o geoid.o
 t_ppp      : t_ppp.o rtkcmn.o ephemeris.o preceph.o sbas.o ionex.o pntpos.o ppp.o ppp_ar.o qzslex.o
 t_ppp      : lambda.o
+IF125_SRC = $(addprefix $(SRC)/,rtkcmn.c options.c rtkpos.c rinex.c preceph.c ephemeris.c sbas.c ionex.c tides.c gpt3.c)
+t_if125    : t_if125.c t_if125_products.c $(SRC)/ppp.c $(SRC)/rtklib.h $(IF125_SRC)
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ t_if125.c $(IF125_SRC) -lm -lpthread
+
+.PHONY: check-if125
+check-if125: t_if125
+	./t_if125
 t_ionex    : t_ionex.o rtkcmn.o preceph.o ionex.o
 t_tle      : t_tle.o rtkcmn.o rinex.o ephemeris.o sbas.o preceph.o tle.o
 
