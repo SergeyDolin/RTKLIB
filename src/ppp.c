@@ -109,12 +109,12 @@
 #define QZS_EC_BETA 20.0            /* max beta angle for qzss Ec (deg) */
 
 /* number and index of states */
-#define NF(opt)     PPP_NF(opt)
+#define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
 #define NP(opt)     ((opt)->dynamics?9:3)
 #define NC(opt)     (NSYS)
 #define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
-#define ND(opt)     PPP_ND(opt)
+#define ND(opt)     ((opt)->nf>=3?1:0)
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
 #define NB(opt)     (NF(opt)*MAXSAT)
 #define NX(opt)     (NR(opt)+NB(opt))
@@ -333,47 +333,6 @@ static int model_phw(gtime_t time, int sat, const char *type, int opt,
     *phw=ph+floor(*phw-ph+0.5); /* in cycle */
     return 1;
 }
-/* Receiver IF code delays are independent even for systems sharing a clock. */
-static int ifdcbidx(int sys)
-{
-    switch (sys) {
-        case SYS_GLO: return 1;
-        case SYS_GAL: return 2;
-        case SYS_CMP: return 3;
-        case SYS_IRN: return 4;
-        case SYS_QZS: return 5;
-        case SYS_SBS: return 6;
-        default: return 0;
-    }
-}
-
-/* Fixed IF pair identity must not change when one signal disappears. */
-static int ifslot(const obsd_t *obs, const prcopt_t *opt, int f)
-{
-    return PPP_JOINT_IF(opt)?f+1:ppp_if2(obs,opt);
-}
-
-static int ifcoef(const obsd_t *obs, const nav_t *nav, int k,
-                  double *a, double *b)
-{
-    double f1=sat2freq(obs->sat,obs->code[0],nav);
-    double f2=sat2freq(obs->sat,obs->code[k],nav);
-    if (f1==0.0||f2==0.0||f1==f2) return 0;
-    *a=SQR(f1)/(SQR(f1)-SQR(f2));
-    *b=1.0-*a;
-    return 1;
-}
-
-static void ifmeas(const obsd_t *obs, const nav_t *nav, int k,
-                   const double *L, const double *P, double *Lc, double *Pc)
-{
-    double a,b;
-    *Lc=*Pc=0.0;
-    if (!ifcoef(obs,nav,k,&a,&b)) return;
-    if (L[0]!=0.0&&L[k]!=0.0) *Lc=a*L[0]+b*L[k];
-    if (P[0]!=0.0&&P[k]!=0.0) *Pc=a*P[0]+b*P[k];
-}
-
 /* measurement error variance ------------------------------------------------*/
 /* Per-signal variance in metres squared. eratio scales sigma, not variance. */
 static double varerr_signal(int sys, double el, int frq, int code,
@@ -408,7 +367,7 @@ static double varerr(int sys, double el, int frq, int code,
     int k;
     if (opt->ionoopt!=IONOOPT_IFLC)
         return varerr_signal(sys,el,frq,code,opt,obs);
-    k=ifslot(obs,opt,frq);
+    k=ppp_if2(obs,opt);
     f1=sat2freq(obs->sat,obs->code[0],nav);
     f2=sat2freq(obs->sat,obs->code[k],nav);
     if (f1==0.0||f2==0.0||f1==f2) return 1E8;
@@ -1053,42 +1012,6 @@ static void detarc_ppp(rtk_t *rtk, const obsd_t *obs, int n)
     }
 }
 
-/* Test both physical pairs independently. A jump on the secondary signal
- * invalidates that pair only; an L1 LLI/Doppler slip invalidates both. */
-static void detslp_pairs(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
-{
-    int i,f,k;
-    for (i=0;i<n&&i<MAXOBS;i++) {
-        ssat_t *ss=rtk->ssat+obs[i].sat-1;
-        for (f=0;f<2;f++) {
-            double f1,f2,g,w,el=ss->azel[1]*R2D,threshold;
-            int reset;
-            k=f+1;
-            reset=(ss->slip[0]&1)||(ss->slip[k]&1);
-            f1=sat2freq(obs[i].sat,obs[i].code[0],nav);
-            f2=sat2freq(obs[i].sat,obs[i].code[k],nav);
-            if (!f1||!f2||f1==f2||!obs[i].L[0]||!obs[i].L[k]) {
-                ss->ppp_pair_gf[f]=ss->ppp_pair_mw[f]=0.0;
-                continue;
-            }
-            g=CLIGHT*(obs[i].L[0]/f1-obs[i].L[k]/f2);
-            threshold=(el>=15.0?1.0:-0.4*el+7.0)*rtk->opt.cs_gf;
-            if (!reset&&el>=rtk->opt.elmin*R2D&&ss->ppp_pair_gf[f]!=0.0&&
-                fabs(g-ss->ppp_pair_gf[f])>threshold) ss->slip[k]|=1;
-            ss->ppp_pair_gf[f]=g;
-            if (!obs[i].P[0]||!obs[i].P[k]) {
-                ss->ppp_pair_mw[f]=0.0;
-                continue;
-            }
-            w=obs[i].L[0]-obs[i].L[k]-
-                (f1*obs[i].P[0]+f2*obs[i].P[k])/(f1+f2)*(f1-f2)/CLIGHT;
-            if (!reset&&el>=rtk->opt.elmin*R2D&&ss->ppp_pair_mw[f]!=0.0&&
-                fabs(w-ss->ppp_pair_mw[f])>THRES_MW_JUMP) ss->slip[k]|=1;
-            ss->ppp_pair_mw[f]=w;
-        }
-    }
-}
-
 static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
     int i,j;
 
@@ -1104,11 +1027,8 @@ static void detecs_ppp(const obsd_t *obs,rtk_t *rtk,int n,const nav_t *nav){
     detarc_ppp(rtk,obs,n);
     detslp_dop(rtk,obs,n,nav);  /* Doppler-based — fastest, catches sharp slips */
     detslp_ll(rtk,obs,n);
-    if (PPP_JOINT_IF(&rtk->opt)) detslp_pairs(rtk,obs,n,nav);
-    else {
-        detslp_mw(rtk,obs,n,nav);
-        detslp_gf(rtk,obs,n,nav);
-    }
+    detslp_mw(rtk,obs,n,nav);
+    detslp_gf(rtk,obs,n,nav);
     saveinfo(obs,rtk,n,nav);
 }
 
@@ -1469,12 +1389,6 @@ HAS CHANGES BUT NOT INCLUDE*/
 static void uddcb_ppp(rtk_t *rtk)
 {
     int i=ID(&rtk->opt);
-    if (PPP_JOINT_IF(&rtk->opt)) {
-        int k;
-        for (k=0;k<ND(&rtk->opt);k++) if (rtk->P[i+k+(i+k)*rtk->nx]<=0.0)
-            initx(rtk,0.1,VAR_DCB,i+k);
-        return;
-    }
     if (rtk->opt.ionoopt==IONOOPT_IFLC||!ND(&rtk->opt)) return;
     if (rtk->P[i+i*rtk->nx]<=0.0) initx(rtk,0.1,VAR_DCB,i);
 }
@@ -1483,7 +1397,7 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
 {
     double L[NFREQ],P[NFREQ],Lc,Pc,bias[MAXOBS],offset=0.0,pos[3]={0};
     double freq1,freq2,ion,dantr[NFREQ]={0},dants[NFREQ]={0};
-    int i,j,k,f,f2,hatch_f,sat,clk_jump=0;
+    int i,j,k,f,f2,sat,clk_jump=0;
     int slip_detected[MAXOBS] = {0};
     
     trace(3,"udbias  : n=%d\n",n);
@@ -1511,8 +1425,8 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
         for (i=k=0;i<n&&i<MAXOBS;i++) {
             sat=obs[i].sat;
             j=IB(sat,f,&rtk->opt);
-            f2=ifslot(obs+i,&rtk->opt,f);
-            if ((rtk->ssat[sat-1].slip[rtk->opt.ionoopt==IONOOPT_IFLC?0:f]&1)||
+            f2=ppp_if2(obs+i,&rtk->opt);
+            if ((rtk->ssat[sat-1].slip[f]&1)||
                 (rtk->opt.ionoopt==IONOOPT_IFLC&&
                  (rtk->ssat[sat-1].slip[f2]&1))) {
                 initx(rtk,0.0,0.0,j);
@@ -1522,25 +1436,19 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
             corr_meas(obs+i,nav,rtk->ssat[sat-1].azel,&rtk->opt,dantr,dants,
                       0.0,L,P,&Lc,&Pc);
             
-            if (PPP_JOINT_IF(&rtk->opt))
-                ifmeas(obs+i,nav,f2,L,P,&Lc,&Pc);
             bias[i]=0.0;
             slip_detected[i] = 0;
             
             /* Проверяем наличие slip ДО того, как флаги будут сброшены */
-            f2=ifslot(obs+i,&rtk->opt,f);
-            if ((rtk->ssat[sat-1].slip[rtk->opt.ionoopt==IONOOPT_IFLC?0:f]&1) ||
+            f2=ppp_if2(obs+i,&rtk->opt);
+            if ((rtk->ssat[sat-1].slip[f]&1) ||
                 (rtk->opt.ionoopt==IONOOPT_IFLC &&
                  (rtk->ssat[sat-1].slip[f2]&1))) {
                 slip_detected[i] = 1;
             }
             
             if (rtk->opt.ionoopt==IONOOPT_IFLC) {
-                if (Lc!=0.0&&Pc!=0.0) {
-                    bias[i]=Lc-Pc;
-                    if (PPP_JOINT_IF(&rtk->opt)&&f==1)
-                        bias[i]+=rtk->x[ID(&rtk->opt)+ifdcbidx(satsys(sat,NULL))];
-                }
+                if (Lc!=0.0&&Pc!=0.0) bias[i]=Lc-Pc;
             }
             else if (L[f]!=0.0&&P[f]!=0.0) {
                 freq1=sat2freq(sat,obs[i].code[0],nav);
@@ -1562,15 +1470,9 @@ static void udbias_ppp(rtk_t *rtk, const obsd_t *obs, int n, const nav_t *nav)
                     /* Сброс lock counter (отрицательное значение запрещает AR) */
                     rtk->ssat[sat-1].lock[f] = -rtk->opt.minlock;
                     /* Сброс Hatch filter state */
-                    hatch_f=rtk->opt.ionoopt==IONOOPT_IFLC?f2:f;
-                    rtk->ssat[sat-1].hatch_n[hatch_f] = 0;
-                    rtk->ssat[sat-1].hatch_P[hatch_f] = 0.0;
-                    rtk->ssat[sat-1].hatch_L[hatch_f] = 0.0;
-                    if (rtk->opt.ionoopt==IONOOPT_IFLC&&
-                        (rtk->ssat[sat-1].slip[0]&1)) {
-                        rtk->ssat[sat-1].hatch_n[0]=0;
-                        rtk->ssat[sat-1].hatch_P[0]=rtk->ssat[sat-1].hatch_L[0]=0.0;
-                    }
+                    rtk->ssat[sat-1].hatch_n[f] = 0;
+                    rtk->ssat[sat-1].hatch_P[f] = 0.0;
+                    rtk->ssat[sat-1].hatch_L[f] = 0.0;
                     
                     trace(3,"udbias_ppp: reset ambiguity sat=%d f=%d due to slip\n", sat, f);
                 }
@@ -1818,9 +1720,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     double var[MAXOBS*2*NFREQ],dtrp=0.0,dion=0.0,vart=0.0,vari=0.0,dcb=0.0,freq;
     double dantr[NFREQ]={0},dants[NFREQ]={0};
     double ve[MAXOBS*2*NFREQ]={0},vare[MAXOBS*2*NFREQ]={0},vmax=0,shapiro=0;
-    double common[MAXOBS*2*NFREQ],l1coef[MAXOBS*2*NFREQ];
-    double row_scale[MAXOBS*2*NFREQ];
-    int row_obs[MAXOBS*2*NFREQ],row_code[MAXOBS*2*NFREQ];
     char str[40];
     int ne=0,obsi[MAXOBS*2*NFREQ]={0},frqi[MAXOBS*2*NFREQ],maxobs,maxfrq,rej;
     int i,j,k,sat,sys,nv=0,nx=rtk->nx,stat=1,prn,nv_sat,ns=0;
@@ -1880,8 +1779,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             dcb=bias=0.0;
             
             if (opt->ionoopt==IONOOPT_IFLC) {
-                if (PPP_JOINT_IF(opt))
-                    ifmeas(obs+i,nav,ifslot(obs+i,opt,j/2),L,P,&Lc,&Pc);
                 if ((y=j%2==0?Lc:Pc)==0.0) continue;
             }
             else {
@@ -1913,14 +1810,7 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
                 if (rtk->x[II(sat,opt)]==0.0) continue;
                 H[II(sat,opt)+nx*nv]=C;
             }
-            if (PPP_JOINT_IF(opt)&&j/2==1&&j%2==1) {
-                /* Differential receiver code bias between the two IF pairs.
-                 * Separate constellation offsets avoid imposing GPS hardware
-                 * delays on Galileo, BeiDou, etc. */
-                dcb=x[ID(opt)+ifdcbidx(sys)];
-                H[ID(opt)+ifdcbidx(sys)+nx*nv]=1.0;
-            }
-            if (!PPP_JOINT_IF(opt)&&j/2==2&&j%2==1) { /* L5-receiver-dcb */
+            if (j/2==2&&j%2==1) { /* L5-receiver-dcb */
                 dcb+=x[ID(opt)];
                 H[ID(opt)+nx*nv]=1.0;
             }
@@ -1937,15 +1827,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             else        rtk->ssat[sat-1].resp[j/2]=v[nv];
             /* variance */
             var[nv]=varerr(sys,azel[1+i*2],j/2,j%2,opt,obs+i,nav)+vart+SQR(C)*vari+var_rs[i];
-            row_obs[nv]=i; row_code[nv]=j%2;
-            common[nv]=vart+var_rs[i];
-            l1coef[nv]=0.0;
-            if (PPP_JOINT_IF(opt)) {
-                double a,b;
-                ifcoef(obs+i,nav,ifslot(obs+i,opt,j/2),&a,&b);
-                l1coef[nv]=a;
-            }
-            row_scale[nv]=sqrt(rtk->ssat[sat-1].var_fact[j%2][j/2]);
             var[nv]*=rtk->ssat[sat-1].var_fact[j%2][j/2];
 
             if (sys==SYS_GLO&&j%2==1) var[nv]+=VAR_GLO_IFB;
@@ -1953,10 +1834,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
             trace(4,"%s sat=%2d %s%d res=%9.4f sig=%9.4f el=%4.1f\n",str,sat,
                   j%2?"P":"L",j/2+1,v[nv],sqrt(var[nv]),azel[1+i*2]*R2D);
             
-            if (PPP_JOINT_IF(opt))
-                trace(4,"PPP IF sat=%d pair=0/%d type=%s res=%.4f\n",
-                      sat,ifslot(obs+i,opt,j/2),j%2?"code":"phase",v[nv]);
-
             /* A raw metre threshold alone rejects an uncertain clock,
              * position or newly initialized ambiguity before the filter
              * can estimate it. Also require a large normalized innovation.
@@ -2007,14 +1884,6 @@ static int ppp_res(int post, const obsd_t *obs, int n, const double *rs,
     }
     for (i=0;i<nv;i++) for (j=0;j<nv;j++) {
         R[i+j*nv]=i==j?var[i]:0.0;
-        if (i!=j&&PPP_JOINT_IF(opt)&&row_obs[i]==row_obs[j]) {
-            int u=row_obs[i];
-            double cov=common[i];
-            if (row_code[i]==row_code[j])
-                cov+=l1coef[i]*l1coef[j]*varerr_signal(
-                    satsys(obs[u].sat,NULL),azel[1+u*2],0,row_code[i],opt,obs+u);
-            R[i+j*nv]=cov*row_scale[i]*row_scale[j];
-        }
     }
 
     for (i=0;i<n&&i<MAXOBS;i++) if (!exc[i]) {
@@ -2052,11 +1921,7 @@ static void update_stat(rtk_t *rtk, const obsd_t *obs, int n, int stat)
              * (rtk->opt.minlock) can never be reached and AR is permanently
              * disabled */
             rtk->ssat[i].lock[j]++;
-            if (PPP_JOINT_IF(opt)?j<NF(opt):j==0) {
-                int f,first=1;
-                for (f=0;f<j;f++) if (rtk->ssat[i].vsat[f]) first=0;
-                if (first) rtk->sol.ns++;
-            }
+            if (j==0) rtk->sol.ns++;
         }
     }
     rtk->sol.stat=rtk->sol.ns<MIN_NSAT_SOL?SOLQ_NONE:stat;

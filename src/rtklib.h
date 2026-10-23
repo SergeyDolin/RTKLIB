@@ -1317,7 +1317,6 @@ typedef struct {        /* satellite status type */
     double hatch_L[NFREQ]; /* prev phase for Hatch filter (m) */
     double ppp_dop[NFREQ]; /* previous Doppler for trapezoidal phase prediction */
     uint8_t ppp_code[NFREQ]; /* signal identity of the previous PPP arc */
-    double ppp_pair_gf[2], ppp_pair_mw[2]; /* joint IF slip histories */
     uint8_t ppp_if2; /* previous secondary IF slot + 1; zero: no arc */
     int    hatch_n[NFREQ]; /* Hatch filter epoch counter */
 } ssat_t;
@@ -2185,12 +2184,6 @@ EXPORT void rtkclosestat(void);
 EXPORT int  rtkoutstat(rtk_t *rtk, char *buff);
 
 /* precise point positioning -------------------------------------------------*/
-/* Joint dual-frequency IF rows use fixed physical pairs (0,1) and (0,2).
- * freqopt explicitly requests only (0,2). Shared by PPP and PPP-AR layouts. */
-#define PPP_JOINT_IF(opt) ((opt)->ionoopt==IONOOPT_IFLC&&(opt)->nf>=3&&!(opt)->freqopt)
-#define PPP_NF(opt) ((opt)->ionoopt==IONOOPT_IFLC?(PPP_JOINT_IF(opt)?2:1):(opt)->nf)
-/* Independent receiver IF code delays: GPS,GLO,GAL,BDS,IRN,QZS,SBAS. */
-#define PPP_ND(opt) (PPP_JOINT_IF(opt)?7:((opt)->nf>=3?1:0))
 EXPORT int ppp_if2(const obsd_t *obs, const prcopt_t *opt);
 EXPORT int seliflc(int optnf, int sys);
 EXPORT int pri_res_check(gtime_t t,rtk_t *rtk,const double *pri_v,const int *vflag,int nv,int *exc);
