@@ -58,12 +58,12 @@
                                  * when most other ambiguities are clean. */
 
 /* number and index of ekf states */
-#define NF(opt)     ((opt)->ionoopt==IONOOPT_IFLC?1:(opt)->nf)
+#define NF(opt)     PPP_NF(opt)
 #define NP(opt)     ((opt)->dynamics?9:3)
 #define NC(opt)     (NSYS) /* must match ppp.c state layout */
 #define NT(opt)     (((opt)->tropopt<TROPOPT_EST||(opt)->tropopt==TROPOPT_GPT3)?0:((opt)->tropopt==TROPOPT_ESTG?3:1))
 #define NI(opt)     ((opt)->ionoopt==IONOOPT_EST?MAXSAT:0)
-#define ND(opt)     ((opt)->nf>=3?1:0)
+#define ND(opt)     PPP_ND(opt)
 #define NR(opt)     (NP(opt)+NC(opt)+NT(opt)+NI(opt)+ND(opt))
 #define IB(s,f,opt) (NR(opt)+MAXSAT*(f)+(s)-1)
 
