@@ -367,7 +367,7 @@ static double varerr(int sys, double el, int frq, int code,
 {
     double f1,f2,c1,c2,e[3],var=0.0;
     int k;
-    /* Расчет дисперсии трёхчастотной ИСЛК */
+    /* Расчет дисперсии трехчастотной ИСЛК */
     if (opt->if125) {
         if (opt->ionoopt!=IONOOPT_IFLC ||              /* включена ИСЛК */
             opt->nf<3 ||                               /* кол-во частот 3 */
@@ -561,6 +561,8 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
     double freq[NFREQ] = {0}, C1, C2, e[3],codebias[3]={0};
     int *codes;
     int i, sys = satsys(obs->sat, NULL), frq2;
+    FILE *fp_if125;
+    char if125_time[32],if125_sat[16];
 
     int use_dcb = !(opt->arprod >= AR_PROD_OSB_COD && nav->osbs);
 
@@ -766,10 +768,28 @@ static void corr_meas(const obsd_t *obs, const nav_t *nav, const double *azel,
         for (i=0;i<3;i++) {
             if (L[i]==0.0||P[i]==0.0) return;
         }
+        /* Append diagnostics for every satellite accepted by IF125. */
+        fp_if125=fopen("if125.txt","a");
+        if (fp_if125) {
+            time2str(obs->time,if125_time,3);
+            satno2id(obs->sat,if125_sat);
+        }
+        else perror("IF125: cannot open if125.txt");
         for (i=0;i<3;i++) {
             /* Одни и те же веса применяются к исправленным фазе и коду в метрах */
             *Lc+=e[i]*L[i]; /* Исправленная фазовая ИСЛК в метрах */
             *Pc+=e[i]*P[i];
+
+            if (fp_if125) {
+                fprintf(fp_if125,"IF125 time=%s sat=%s slot=%d C%s/L%s f=%.3f MHz e=%+.12f Praw=%.4f Lraw=%.4f Pcorr=%.4f Lcorr=%.4f eP=%+.4f eL=%+.4f\n",
+                     if125_time,if125_sat,i+1,code2obs(obs->code[i]),code2obs(obs->code[i]),
+                     freq[i]/1E6,e[i],obs->P[i],obs->L[i],P[i],L[i],e[i]*P[i],e[i]*L[i]);
+            }
+        }
+        if (fp_if125) {
+            fprintf(fp_if125,"IF125 time=%s sat=%s RESULT Pc=%.4f m Lc=%.4f m sum_e=%.12f iono_check=%+.3e\n",
+                if125_time,if125_sat,*Pc,*Lc,e[0]+e[1]+e[2],e[0]+e[1]*SQR(freq[0]/freq[1])+e[2]*SQR(freq[0]/freq[2]));
+            if (fclose(fp_if125)!=0) perror("IF125: cannot write if125.txt");
         }
         return;
     }
